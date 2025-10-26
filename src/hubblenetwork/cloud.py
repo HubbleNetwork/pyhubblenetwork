@@ -14,7 +14,7 @@ from .errors import (
     raise_for_response,
 )
 
-_API_BASE: str = "https://api.hubble.com/api"
+_API_BASE_PROD: str = "https://api.hubble.com"
 
 
 def _auth_headers(api_token: str) -> dict[str, str]:
@@ -49,6 +49,7 @@ def cloud_request(
     json: Any = None,
     timeout_s: float = 10.0,
     params: Optional[MutableMapping[str, Any]] = None,
+    base_url: Optional[str] = None,
 ) -> Any:
     """
     Make a single HTTP request to the Hubble Cloud API and return parsed JSON.
@@ -63,7 +64,9 @@ def cloud_request(
     - `params`: optional HTTP request parameters
     """
     path = path.lstrip("/")
-    url = f"{_API_BASE}/{path}"
+    base_url = base_url if base_url is not None else _API_BASE_PROD
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/api/{path}"
 
     # headers
     headers: MutableMapping[str, str] = {
@@ -99,13 +102,12 @@ def cloud_request(
         raise BackendError(f"Non-JSON response from {url}") from e
 
 
-def ingest(*, org_id: str, api_token: str, packet: EncryptedPacket) -> None:
-    """Push an encrypted packet to the cloud."""
-    pass
-
-
 def register_device(
-    *, org_id: str, api_token: str, name: Optional[str] = None
+    *,
+    org_id: str,
+    api_token: str,
+    name: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> Device:
     """Create a new device and return it."""
     data = {
@@ -117,10 +119,13 @@ def register_device(
         path=_register_device_endpoint(org_id),
         api_token=api_token,
         json=data,
+        base_url=base_url,
     )
 
 
-def list_devices(*, org_id: str, api_token: str) -> list[Device]:
+def list_devices(
+    *, org_id: str, api_token: str, base_url: Optional[str] = None
+) -> list[Device]:
     """
     List devices for the org (keys typically omitted).
 
@@ -132,11 +137,17 @@ def list_devices(*, org_id: str, api_token: str) -> list[Device]:
         method="GET",
         path=_list_devices_endpoint(org_id),
         api_token=api_token,
+        base_url=base_url,
     )
 
 
 def retrieve_packets(
-    *, org_id: str, api_token: str, device_id: Optional[str] = None, days: int = 7
+    *,
+    org_id: str,
+    api_token: str,
+    device_id: Optional[str] = None,
+    days: int = 7,
+    base_url: Optional[str] = None,
 ) -> Optional[DecryptedPacket]:
     """Fetch decrypted packets for a device."""
     params = {"start": (int(time.time()) - (days * 24 * 60 * 60))}
@@ -147,10 +158,17 @@ def retrieve_packets(
         path=_retrive_org_packets_endpoint(org_id),
         api_token=api_token,
         params=params,
+        base_url=base_url,
     )
 
 
-def ingest_packet(*, org_id: str, api_token: str, packet: EncryptedPacket) -> None:
+def ingest_packet(
+    *,
+    org_id: str,
+    api_token: str,
+    packet: EncryptedPacket,
+    base_url: Optional[str] = None,
+) -> None:
     body = {
         "ble_locations": [
             {
@@ -177,4 +195,5 @@ def ingest_packet(*, org_id: str, api_token: str, packet: EncryptedPacket) -> No
         path=_ingest_packets_endpoint(org_id),
         api_token=api_token,
         json=body,
+        base_url=base_url,
     )

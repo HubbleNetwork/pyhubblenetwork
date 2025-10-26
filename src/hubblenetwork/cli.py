@@ -184,16 +184,15 @@ def ble_scan(timeout, ingest: bool = False, key: str = None) -> None:
         click.echo("[SUCCESS]")
 
 
+pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
+
+
 @cli.group()
-def org() -> None:
-    """Organization utilities."""
-    # subgroup for organization-related commands
-
-
 @click.option(
     "--org-id",
     "-o",
     type=str,
+    envvar="HUBBLE_ORG_ID",
     default=None,
     show_default=False,
     help="Organization ID (if not using HUBBLE_ORG_ID env var)",
@@ -202,62 +201,44 @@ def org() -> None:
     "--token",
     "-t",
     type=str,
+    envvar="HUBBLE_API_TOKEN",
     default=None,
-    show_default=False,  # show default in --help
+    show_default=False,
     help="Token (if not using HUBBLE_API_TOKEN env var)",
 )
-@org.command("list-devices")
-def list_devices(org_id, token) -> None:
-    org_id, token = _get_org_and_token(org_id, token)
+@click.option(
+    "--url",
+    "-u",
+    type=str,
+    envvar="HUBBLE_BASE_URL",
+    default=None,
+    show_default=False,
+    help="Base URL to override production (if not using HUBBLE_BASE_URL env var)",
+)
+@click.pass_context
+def org(ctx, org_id, token, url) -> None:
+    """Organization utilities."""
+    # subgroup for organization-related commands
+    ctx.obj = Organization(org_id=org_id, api_token=token)
+    ctx.obj.base_url = url
 
-    org = Organization(org_id=org_id, api_token=token)
+
+@org.command("list-devices")
+@pass_orgcfg
+def list_devices(org: Organization) -> None:
     devices = org.list_devices()
     for device in devices:
         _print_device(device)
 
 
-@click.option(
-    "--org-id",
-    "-o",
-    type=str,
-    default=None,
-    show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
-)
-@click.option(
-    "--token",
-    "-t",
-    type=str,
-    default=None,
-    show_default=False,  # show default in --help
-    help="Token (if not using HUBBLE_API_TOKEN env var)",
-)
-@org.command("register_device")
-def register_device(org_id, token) -> None:
-    org_id, token = _get_org_and_token(org_id, token)
-
-    org = Organization(org_id=org_id, api_token=token)
+@org.command("register-device")
+@pass_orgcfg
+def register_device(org: Organization) -> None:
     click.secho(str(org.register_device()))
 
 
 @org.command("get-packets")
 @click.argument("device-id", type=str)
-@click.option(
-    "--org-id",
-    "-o",
-    type=str,
-    default=None,
-    show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
-)
-@click.option(
-    "--token",
-    "-t",
-    type=str,
-    default=None,
-    show_default=False,  # show default in --help
-    help="Token (if not using HUBBLE_API_TOKEN env var)",
-)
 @click.option(
     "--output",
     type=str,
@@ -273,18 +254,13 @@ def register_device(org_id, token) -> None:
     show_default=False,  # show default in --help
     help="Number of days to query back (from now)",
 )
-def get_packets(device_id, org_id, token, output: str = None, days: int = 7) -> None:
-    org_id, token = _get_org_and_token(org_id, token)
-
-    org = Organization(org_id=org_id, api_token=token)
+@pass_orgcfg
+def get_packets(
+    org: Organization, device_id, output: str = None, days: int = 7
+) -> None:
     device = Device(id=device_id)
     packets = org.retrieve_packets(device, days=days)
     _print_packets(packets, output)
-
-
-@cli.group()
-def demo() -> None:
-    """Demo functionality"""
 
 
 def main(argv: Optional[list[str]] = None) -> int:

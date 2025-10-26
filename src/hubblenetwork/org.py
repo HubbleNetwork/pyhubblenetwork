@@ -18,8 +18,8 @@ class Organization:
     org_id: str
     api_token: str
 
-    # Optional per-request timeout
-    timeout_s: float = 10.0
+    # Optional override of base URL (e.g. for testing vs production environments)
+    base_url: Optional[str] = None
 
     def register_device(self, name: Optional[str] = None) -> Device:
         """
@@ -27,7 +27,10 @@ class Organization:
         Returned Device will have an ID and provisioned key.
         """
         resp = cloud.register_device(
-            org_id=self.org_id, api_token=self.api_token, name=name
+            org_id=self.org_id,
+            api_token=self.api_token,
+            name=name,
+            base_url=self.base_url,
         )
         # Currently, only registering a single device and taking the
         # first in the returned list
@@ -42,7 +45,9 @@ class Organization:
             list[Device]
         """
 
-        payload = cloud.list_devices(org_id=self.org_id, api_token=self.api_token)
+        payload = cloud.list_devices(
+            org_id=self.org_id, api_token=self.api_token, base_url=self.base_url
+        )
         raw_list = payload["devices"]
 
         # Turn each JSON object into a Device
@@ -59,7 +64,11 @@ class Organization:
         or None if none exists.
         """
         resp = cloud.retrieve_packets(
-            org_id=self.org_id, api_token=self.api_token, device_id=device.id, days=days
+            org_id=self.org_id,
+            api_token=self.api_token,
+            device_id=device.id,
+            days=days,
+            base_url=self.base_url,
         )
         packets = []
         for packet in resp["packets"]:
@@ -84,4 +93,9 @@ class Organization:
         return packets
 
     def ingest_packet(self, packet: EncryptedPacket) -> None:
-        cloud.ingest_packet(org_id=self.org_id, api_token=self.api_token, packet=packet)
+        cloud.ingest_packet(
+            org_id=self.org_id,
+            api_token=self.api_token,
+            packet=packet,
+            base_url=self.base_url,
+        )
