@@ -41,6 +41,10 @@ def _ingest_packets_endpoint(org_id: str) -> str:
     return f"/org/{org_id}/packets"
 
 
+def _update_device_endpoint(org_id: str, device_id: str) -> str:
+    return f"org/{org_id}/devices/{device_id}"
+
+
 def cloud_request(
     method: str,
     path: str,
@@ -62,6 +66,7 @@ def cloud_request(
     - `json`: request JSON body (for POST/PUT/PATCH)
     - `timeout_s`: request timeout in seconds
     - `params`: optional HTTP request parameters
+    - `base_url`: URL to use in place of default production URL
     """
     path = path.lstrip("/")
     base_url = base_url if base_url is not None else _API_BASE_PROD
@@ -106,7 +111,6 @@ def register_device(
     *,
     org_id: str,
     api_token: str,
-    name: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> Device:
     """Create a new device and return it."""
@@ -117,6 +121,28 @@ def register_device(
     return cloud_request(
         method="POST",
         path=_register_device_endpoint(org_id),
+        api_token=api_token,
+        json=data,
+        base_url=base_url,
+    )
+
+
+def update_device(
+    *,
+    org_id: str,
+    api_token: str,
+    base_url: Optional[str] = None,
+    name: str,
+    device_id: str,
+) -> Device:
+    """Update a device."""
+    data = {
+        "set_name": name,
+        "set_tags": {},
+    }
+    return cloud_request(
+        method="PATCH",
+        path=_update_device_endpoint(org_id, device_id),
         api_token=api_token,
         json=data,
         base_url=base_url,

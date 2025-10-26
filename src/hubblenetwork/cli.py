@@ -237,6 +237,14 @@ def register_device(org: Organization) -> None:
     click.secho(str(org.register_device()))
 
 
+@org.command("set-device-name")
+@click.argument("device-id", type=str)
+@click.argument("name", type=str)
+@pass_orgcfg
+def set_device_name(org: Organization, device_id: str, name: str) -> None:
+    click.secho(str(org.set_device_name(device_id, name)))
+
+
 @org.command("get-packets")
 @click.argument("device-id", type=str)
 @click.option(

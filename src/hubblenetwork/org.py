@@ -21,7 +21,7 @@ class Organization:
     # Optional override of base URL (e.g. for testing vs production environments)
     base_url: Optional[str] = None
 
-    def register_device(self, name: Optional[str] = None) -> Device:
+    def register_device(self) -> Device:
         """
         Register a new device in this organization and return it.
         Returned Device will have an ID and provisioned key.
@@ -29,13 +29,26 @@ class Organization:
         resp = cloud.register_device(
             org_id=self.org_id,
             api_token=self.api_token,
-            name=name,
             base_url=self.base_url,
         )
         # Currently, only registering a single device and taking the
         # first in the returned list
         device = resp["devices"][0]
-        return Device(id=device["device_id"], key=device["key"], name=name)
+        return Device(id=device["device_id"], key=device["key"])
+
+    def set_device_name(self, device_id: str, name: str) -> Device:
+        """
+        Register a new device in this organization and return it.
+        Returned Device will have an ID and provisioned key.
+        """
+        resp = cloud.update_device(
+            org_id=self.org_id,
+            api_token=self.api_token,
+            name=name,
+            device_id=device_id,
+            base_url=self.base_url,
+        )
+        return Device(id=resp["id"], name=resp["name"])
 
     def list_devices(self) -> list[Device]:
         """
