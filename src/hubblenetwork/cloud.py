@@ -13,7 +13,11 @@ from .errors import (
     raise_for_response,
 )
 
-_API_BASE_PROD: str = "https://api.hubble.com"
+ENVIRONMENTS = {
+    "PROD": "https://api.hubble.com",
+    "TESTING": "https://api-testing.hubblenetwork.io",
+}
+default_env_url = None
 
 
 def _auth_headers(api_token: str) -> dict[str, str]:
@@ -41,7 +45,15 @@ def _ingest_packets_endpoint(org_id: str) -> str:
 
 
 def _update_device_endpoint(org_id: str, device_id: str) -> str:
-    return f"org/{org_id}/devices/{device_id}"
+    return f"/org/{org_id}/devices/{device_id}"
+
+
+def _retrive_org_metadata_endpoint(org_id: str) -> str:
+    return f"/org/{org_id}"
+
+
+def set_env(env: str) -> None:
+    default_env_url = env
 
 
 def cloud_request(
@@ -68,7 +80,7 @@ def cloud_request(
     - `base_url`: URL to use in place of default production URL
     """
     path = path.lstrip("/")
-    base_url = base_url if base_url is not None else _API_BASE_PROD
+    base_url = base_url if base_url is not None else default_env_url
     base_url = base_url.rstrip("/")
     url = f"{base_url}/api/{path}"
 
@@ -220,5 +232,26 @@ def ingest_packet(
         path=_ingest_packets_endpoint(org_id),
         api_token=api_token,
         json=body,
+        base_url=base_url,
+    )
+
+
+def retrieve_org_metadata(
+    *,
+    org_id: str,
+    api_token: str,
+    base_url: Optional[str] = None,
+) -> Any:
+    """
+    Get organizational metadata
+
+    Returns:
+        json response from server
+
+    """
+    return cloud_request(
+        method="GET",
+        path=_retrive_org_metadata_endpoint(org_id),
+        api_token=api_token,
         base_url=base_url,
     )

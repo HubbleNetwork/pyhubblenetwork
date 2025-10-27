@@ -6,9 +6,9 @@ from typing import Optional, List
 from . import cloud
 from .packets import DecryptedPacket, Location
 from .device import Device
+from .errors import BackendError
 
 
-@dataclass
 class Organization:
     """
     Organization-scoped operations that require org ID and API token.
@@ -18,8 +18,29 @@ class Organization:
     org_id: str
     api_token: str
 
-    # Optional override of base URL (e.g. for testing vs production environments)
-    base_url: Optional[str] = None
+    api_base_url: str
+    env: str
+    name: str
+
+    def __init__(self, org_id: str, api_token: str) -> str:
+        self.org_id = org_id
+        self.api_token = api_token
+
+        # Attempt to resolve environment (testing or prod)
+        resp = None
+        for env, url in cloud.ENVIRONMENTS.items():
+            try:
+                resp = cloud.retrieve_org_metadata(
+                    org_id=self.org_id, api_token=self.api_token, base_url=url
+                )
+                self.api_base_url = url
+                self.env = env
+                break
+            except:
+                pass
+        if not resp:
+            raise BackendError(f"Unable to determine environment")
+        self.name = resp["name"]
 
     def register_device(self) -> Device:
         """
@@ -29,7 +50,7 @@ class Organization:
         resp = cloud.register_device(
             org_id=self.org_id,
             api_token=self.api_token,
-            base_url=self.base_url,
+            base_url=self.api_base_url,
         )
         # Currently, only registering a single device and taking the
         # first in the returned list
@@ -46,7 +67,7 @@ class Organization:
             api_token=self.api_token,
             name=name,
             device_id=device_id,
-            base_url=self.base_url,
+            base_url=self.api_base_url,
         )
         return Device(id=resp["id"], name=resp["name"])
 
@@ -59,7 +80,7 @@ class Organization:
         """
 
         payload = cloud.list_devices(
-            org_id=self.org_id, api_token=self.api_token, base_url=self.base_url
+            org_id=self.org_id, api_token=self.api_token, base_url=self.api_base_url
         )
         raw_list = payload["devices"]
 
@@ -79,7 +100,7 @@ class Organization:
             api_token=self.api_token,
             device_id=device.id,
             days=days,
-            base_url=self.base_url,
+            base_url=self.api_base_url,
         )
         packets = []
         for packet in resp["packets"]:
@@ -108,5 +129,5 @@ class Organization:
             org_id=self.org_id,
             api_token=self.api_token,
             packet=packet,
-            base_url=self.base_url,
+            base_url=self.api_base_url,
         )

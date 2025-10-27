@@ -229,6 +229,15 @@ def org(ctx, org_id, token, url) -> None:
     ctx.obj.base_url = url
 
 
+@org.command("info")
+@pass_orgcfg
+def info(org: Organization) -> None:
+    click.echo("Organization info:")
+    click.echo(f"\tID:   {org.org_id}")
+    click.echo(f"\tName: {org.name}")
+    click.echo(f"\tEnv:  {org.env}")
+
+
 @org.command("list-devices")
 @pass_orgcfg
 def list_devices(org: Organization) -> None:
