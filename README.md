@@ -1,43 +1,60 @@
-# Hubble Network Python Library
+# pyhubblenetwork
 
-A small, typed Python library and CLI for host‑side interactions with the Hubble SDK. It provides:
+[![PyPI](https://img.shields.io/pypi/v/pyhubblenetwork.svg)](https://pypi.org/project/pyhubblenetwork)
+[![Python](https://img.shields.io/pypi/pyversions/pyhubblenetwork.svg)](https://pypi.org/project/pyhubblenetwork)
+[![License](https://img.shields.io/github/license/HubbleNetwork/pyhubblenetwork)](LICENSE)
 
-* **Stateless utilities**: `scan()` (BLE), `ingest()` (push encrypted packets to the cloud)
-* **Domain objects**: `Organization`, `Device`, `EncryptedPacket`, `DecryptedPacket`, `Location`
-* **CLI** (optional): `hubblenetwork` command that wraps common flows
+**pyhubblenetwork** is a Python SDK for communicating with Hubble Network devices over Bluetooth Low Energy (BLE) and securely relaying data to the Hubble Cloud. It provides a simple API for scanning, sending, and managing devices—no embedded firmware knowledge required.
 
----
+
+## Table of contents
+
+- [Quick links](#quick-links)
+- [Requirements & supported platforms](#requirements--supported-platforms)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [CLI usage](#cli-usage)
+- [Configuration](#configuration)
+- [Public API (summary)](#public-api-summary)
+- [Development & tests](#development--tests)
+- [Troubleshooting](#troubleshooting)
+- [Releases & versioning](#releases--versioning)
+
+
+## Quick links
+
+- [PyPI](https://pypi.org/project/pyhubblenetwork/): `pip install pyhubblenetwork`
+- [Hubble official doc site](https://docs.hubble.com/docs/intro)
+- [Hubble embedded SDK](https://github.com/HubbleNetwork/sdk)
+
+
+## Requirements & supported platforms
+
+- Python **3.9+** (3.11/3.12 recommended)
+- BLE platform prerequisites (only needed if you use `ble.scan()`):
+  - **macOS**: CoreBluetooth; run in a regular user session (GUI).
+  - **Linux**: BlueZ required; user must have permission to access the BLE adapter (often `bluetooth` group).
+  - **Windows**: Requires a compatible BLE stack/adapter.
 
 ## Installation
-
-### Requirements
-
-* Python **3.9+** (3.11/3.12 recommended)
-* Platform prerequisites if you use BLE scanning (`scan()`):
-
-  * macOS: CoreBluetooth (built‑in); run in a regular user session
-  * Linux: BlueZ; user must have permission to access BLE (often `bluetooth` group)
-  * Windows: requires a compatible BLE stack
 
 ### Users (stable release)
 
 ```bash
 pip install pyhubblenetwork
-# Or install CLI in an isolated venv:
+# or install CLI into an isolated environment:
 pipx install pyhubblenetwork
 ```
 
 ### Developers (editable install)
 
-From the repo root:
+From the repo root (recommended):
 
 ```bash
 cd python
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .[dev]
+pip install -e '.[dev]'
 ```
-
----
 
 ## Quick start
 
@@ -46,30 +63,32 @@ pip install -e .[dev]
 ```python
 from hubblenetwork import ble, Organization
 
-org = Organization(org_id="org_123", api_token="<token>")
-pkt = ble.scan(timeout=5.0)
-if pkt is not None:
-    org.ingest_packet(pkt)
+org = Organization(org_id="org_123", api_token="sk_XXX")
+pkts = ble.scan(timeout=5.0)
+if len(pkts) > 0:
+    org.ingest_packet(pkts[0])
+else:
+    print("No packet seen within timeout")
 ```
 
-### Manage devices and query packets (Organization API)
+### Manage devices and query packets
 
 ```python
 from hubblenetwork import Organization
 
-org = Organization(org_id="org_123", api_token="<token>")
+org = Organization(org_id="org_123", api_token="sk_XXX")
 
 # Create a new device
-new_dev = org.register_device(name="field-node-01")
+new_dev = org.register_device()
 print("new device id:", new_dev.id)
 
 # List devices
 for d in org.list_devices():
     print(d.id, d.name)
 
-# Get packets from a device
-packets = org.get_packets(new_dev)
-if latest:
+# Get packets from a device (returns a list of DecryptedPacket)
+packets = org.retrieve_packets(new_dev)
+if len(packets) > 0:
     print("latest RSSI:", packets[0].rssi, "payload bytes:", len(packets[0].payload))
 ```
 
@@ -77,45 +96,47 @@ if latest:
 
 ```python
 from hubblenetwork import Device, ble, decrypt
+from typing import Optional
 
-# Device with a provisioned key
 dev = Device(id="dev_abc", key=b"<secret-key>")
 
-pkts = ble.scan(timeout=5.0)
-if len(pkts) > 0:
-    pkt = pkts[0]
+pkts = ble.scan(timeout=5.0)  # might return a list or a single packet depending on API
+for pkt in pkts:
     maybe_dec = decrypt(dev.key, pkt)
     if maybe_dec:
         print("payload:", maybe_dec.payload)
+    else:
+        print("failed to decrypt packet")
 ```
-
----
 
 ## CLI usage (optional)
 
-If installed (via `pipx install`), a `hubblenetwork` command is available.
+If installed, the `hubblenetwork` command is available:
 
 ```bash
 hubblenetwork --help
 hubblenetwork ble scan
 ```
 
----
-
 ## Configuration
 
-Some functions (e.g., `org.ingest_packet`) may read defaults from environment variables if not provided explicitly. Suggested variables:
+Some functions read defaults from environment variables if not provided explicitly. Suggested variables:
 
-* `HUBBLE_ORG_ID` – default organization id
-* `HUBBLE_API_TOKEN` – API token
+* `HUBBLE_ORG_ID` — default organization id
+* `HUBBLE_API_TOKEN` — API token (base64 encoded)
 
-You can also provide an explicit `Organization(org_id, api_token)` and pass objects directly where supported.
+Example:
 
----
+```bash
+export HUBBLE_ORG_ID=org_123
+export HUBBLE_API_TOKEN=sk_XXXX
+```
+
+You can also pass org ID and API token into API calls.
 
 ## Public API (summary)
 
-Import from the top‑level package for a stable surface:
+Import from the package top-level for a stable surface:
 
 ```python
 from hubblenetwork import (
@@ -125,175 +146,42 @@ from hubblenetwork import (
 )
 ```
 
-### Stateless functions
+Key objects & functions:
 
-* `ble.scan(timeout: float) -> Optional[EncryptedPacket]` — Listen via BLE and return the first packet observed, or `None` on timeout.
+* `Organization` provides credentials for performing cloud actions (e.g. registering devices, retrieving decrypted packets, retrieving devices, etc.)
+* `EncryptedPacket` a packet that has not been decrypted (can be decrypted locally given a key or ingested to the backend)
+* `DecryptedPacket` a packet that has been successfully decrypted either locally or by the backend.
+* `Location` data about where a packet was seen.
+* `ble.scan` function for locally scanning for devices with BLE.
 
-### Classes
+See code for full details.
 
-* `Organization(org_id: str, api_token: str)`
+## Development & tests
 
-  * `register_device(name: Optional[str] = None) -> Device`
-  * `list_devices() -> list[Device]`
-  * `get_packets(device: Device | str) -> Optional[DecryptedPacket]`
-* `Device(id: str, key: Optional[bytes] = None, name: Optional[str] = None)`
-* `EncryptedPacket(timestamp, location, payload: bytes, rssi: int)`
-* `DecryptedPacket(timestamp, location, tags: list[str], payload: bytes, rssi: int, counter: Optional[int], sequence: Optional[int])`
-* `Location(lat: float, lon: float, alt_m: Optional[float])`
-
----
-
-## Project layout
-
-```
-src/hubblenetwork/
-├─ __init__.py       # public API façade (re-exports)
-├─ packets.py        # data models: packets, location, ids
-├─ device.py         # Device class: local decrypt
-├─ crypto.py         # Crypto functionality
-├─ org.py            # Organization class: backend ops
-├─ ble.py            # scan() BLE discovery
-├─ cloud.py          # cloud functionality
-├─ errors.py         # exceptions
-└─ cli/__init__.py   # CLI entry: main()
-```
-
----
-
-## Development
-
-Run tests and linters from the `python/` directory:
-
-```bash
-pytest -q
-ruff check src
-mypy src
-```
-
-Recommended editor settings:
-
-* Enable `ruff` and `mypy`
-* 100‑column soft wrap
-* `python.analysis.typeCheckingMode = basic/strict` (VS Code)
-
----
-
-## Versioning & releases
-
-* Follows **SemVer** (MAJOR.MINOR.PATCH)
-* Tagged releases (e.g., `v0.1.0`) publish wheels/sdists to PyPI
-* CLI entry point: `hubblenetwork = "hubblenetwork.cli:main"` (stable)
-
----
-
-# Testing
-
-This package uses **pytest** with a small set of markers to separate fast unit tests from hardware/OS-dependent integration tests (e.g., BLE).
-
-## Test layout
-
-```
-python/
-├─ src/hubblenetwork/...
-└─ tests/
-   ├─ unit/            # fast, hermetic tests
-   └─ integration/     # slower or environment-dependent tests
-      └─ test_ble_scan.py
-```
-
-Markers (declared in `pyproject.toml`):
-
-* `integration` – slow or environment-dependent tests
-* `ble` – tests that require BLE hardware/permissions
-
-## Setup (one-time per venv)
+Set up a virtualenv and install dev deps:
 
 ```bash
 cd python
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Dev tools only:
 pip install -e '.[dev]'
 ```
 
-## Running tests
-
-### All fast unit tests
+Run linters:
 
 ```bash
-pytest -q tests/unit
+ruff check src
 ```
 
-### Only integration tests
-
-```bash
-pytest -q -m integration
-```
-
-### BLE scan integration test (opt-in)
-
-BLE tests are disabled by default to avoid flakiness on CI or machines without radio permissions. Enable explicitly:
-
-```bash
-export HUBBLE_BLE_TEST=1         # opt-in gate used by the test
-pytest -q -m ble                 # run only BLE-marked tests
-# or target a single file:
-pytest -q tests/integration/test_ble_scan.py
-```
-
-You can adjust the scan timeout:
-
-```bash
-HUBBLE_BLE_TIMEOUT=8 pytest -q -m ble
-```
-
-### Coverage (optional)
-
-```bash
-pytest --cov=hubblenetwork --cov-report=term-missing
-```
-
-### Test Troubleshooting
-
-* **`zsh: no matches found: .[dev]`**
-  Quote the extras spec (zsh globs brackets):
-  `pip install -e '.[dev]'` or `pip install -e '.[dev,ble]'`.
-
-* **BLE on macOS/Linux/Windows**
-
-  * macOS: works in a user session (CoreBluetooth).
-  * Linux: ensure BlueZ is installed and your user has adapter permissions.
-  * Windows: requires a compatible BLE adapter; run in a standard desktop session.
-
-* **Running from repo root**
-  Either change into `python/` before running `pytest`, or pass the path:
-  `pytest -q python/tests`
-
----
-
-## General Troubleshooting
+## Troubleshooting
 
 * **`ble.scan()` finds nothing**: verify BLE permissions and adapter state; try increasing `timeout`.
 * **Auth errors**: confirm `Organization(org_id, api_token)` or env vars are set; check token scope/expiry.
-* **Import errors**: ensure you installed into the Python you’re running (`python -m pip …`). Prefer `pipx` for CLI‑only usage.
+* **Import errors**: ensure you installed into the Python you’re running (`python -m pip …`). Prefer `pipx` for CLI-only usage.
 
----
 
-## Contributing
+## Releases & versioning
 
-* Open issues/PRs with clear repro steps
-* Keep modules cohesive; avoid mixing concerns
-* Add/extend unit tests for new behavior
-
----
-
-## License
-
-This project is licensed under the **MIT License**. See `LICENSE` for details.
-
----
-
-## Security / responsible disclosure
-
-If you believe you’ve found a security issue, please email [support@hubble.com](mailto:support@hubble.com) with details and a way to reproduce. We’ll acknowledge receipt and follow up promptly.
+* Follows **SemVer** (MAJOR.MINOR.PATCH).
+* Tagged releases (e.g., `v0.1.0`) publish wheels/sdists to PyPI.
+* Release process: (add short steps for how to cut a release—tagging, CI release job, PyPI publish credentials).

@@ -69,9 +69,7 @@ class Organization:
             devices.append(Device.from_json(item))
         return devices
 
-    def retrieve_packets(
-        self, device: Device, days: int = 7
-    ) -> Optional[DecryptedPacket]:
+    def retrieve_packets(self, device: Device, days: int = 7) -> List[DecryptedPacket]:
         """
         Return the most recent decrypted packet for the given device,
         or None if none exists.
@@ -96,7 +94,7 @@ class Organization:
                         lat=packet["location"]["latitude"],
                         lon=packet["location"]["longitude"],
                     ),
-                    tags=None,
+                    tags=packet["device"]["tags"],
                     payload=packet["device"]["payload"],
                     rssi=packet["device"]["rssi"],
                     counter=packet["device"]["counter"],

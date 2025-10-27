@@ -28,10 +28,3 @@ class Device:
             created_ts=json.get("created_ts"),
             active=json.get("active"),
         )
-
-    def decrypt_packet(self, packet: EncryptedPacket) -> Optional[DecryptedPacket]:
-        """
-        Decrypt packet using this device's key (if present).
-        Returns a DecryptedPacket if `key` is set, else None.
-        """
-        pass

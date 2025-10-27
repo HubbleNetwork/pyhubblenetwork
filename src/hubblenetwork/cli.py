@@ -35,6 +35,9 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
 
 
 def _print_packets_pretty(pkts) -> None:
+    if len(pkts) == 0:
+        click.echo("No packets!")
+        return
     """Pretty-print an EncryptedPacket."""
     for pkt in pkts:
         ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
@@ -89,6 +92,9 @@ def _print_packets_kepler(pkts) -> None:
 
 
 def _print_packets(pkts, output: str = "pretty") -> None:
+    if not output:
+        _print_packets_pretty(pkts)
+        return
     func_name = f"_print_packets_{output.lower().strip()}"
     func = getattr(sys.modules[__name__], func_name, None)
     if callable(func):

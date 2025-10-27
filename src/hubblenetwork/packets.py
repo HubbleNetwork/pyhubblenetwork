@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class DecryptedPacket:
     device_id: str
     device_name: str
     location: Optional[Location]
-    tags: list[str]  # arbitrary tags
+    tags: Dict[str, str]  # arbitrary tags
     payload: bytes  # decrypted payload bytes
     rssi: int  # received signal strength (dBm)
     counter: Optional[int] = None

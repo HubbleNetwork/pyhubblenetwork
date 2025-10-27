@@ -5,8 +5,7 @@ import time
 import base64
 from typing import Any, Optional
 from collections.abc import MutableMapping
-from .packets import EncryptedPacket, DecryptedPacket
-from .device import Device
+from .packets import EncryptedPacket
 from .errors import (
     BackendError,
     NetworkError,
@@ -33,7 +32,7 @@ def _register_device_endpoint(org_id: str) -> str:
     return f"/v2/org/{org_id}/devices"
 
 
-def _retrive_org_packets_endpoint(org_id: str) -> str:
+def _retrieve_org_packets_endpoint(org_id: str) -> str:
     return f"/org/{org_id}/packets"
 
 
@@ -91,7 +90,7 @@ def cloud_request(
     except httpx.HTTPError as e:
         raise NetworkError(f"Network error: {method} {url}: {e}") from e
 
-    if resp.status_code != 200:
+    if resp.is_error:
         body = None
         try:
             body = resp.json()
@@ -112,7 +111,7 @@ def register_device(
     org_id: str,
     api_token: str,
     base_url: Optional[str] = None,
-) -> Device:
+) -> Any:
     """Create a new device and return it."""
     data = {
         "n_devices": 1,
@@ -134,7 +133,7 @@ def update_device(
     base_url: Optional[str] = None,
     name: str,
     device_id: str,
-) -> Device:
+) -> Any:
     """Update a device."""
     data = {
         "set_name": name,
@@ -151,7 +150,7 @@ def update_device(
 
 def list_devices(
     *, org_id: str, api_token: str, base_url: Optional[str] = None
-) -> list[Device]:
+) -> list[Any]:
     """
     List devices for the org (keys typically omitted).
 
@@ -174,14 +173,14 @@ def retrieve_packets(
     device_id: Optional[str] = None,
     days: int = 7,
     base_url: Optional[str] = None,
-) -> Optional[DecryptedPacket]:
+) -> Any:
     """Fetch decrypted packets for a device."""
     params = {"start": (int(time.time()) - (days * 24 * 60 * 60))}
     if device_id:
         params["device_id"] = device_id
     return cloud_request(
         method="GET",
-        path=_retrive_org_packets_endpoint(org_id),
+        path=_retrieve_org_packets_endpoint(org_id),
         api_token=api_token,
         params=params,
         base_url=base_url,
@@ -194,7 +193,7 @@ def ingest_packet(
     api_token: str,
     packet: EncryptedPacket,
     base_url: Optional[str] = None,
-) -> None:
+) -> Any:
     body = {
         "ble_locations": [
             {

@@ -29,19 +29,18 @@ are 128-bit strings. So matching against the normalized 128-bit form is the most
 _TARGET_UUID = "0000fca6-0000-1000-8000-00805f9b34fb"
 
 
-def _get_location() -> Location:
+def _get_location() -> Optional[Location]:
     geo = geocoder.ip("me")
+    if not geo:
+        return None
     lat, lon = geo.latlng
     return Location(lat=lat, lon=lon)
 
 
-def scan(timeout: float) -> Optional[EncryptedPacket]:
+def scan(timeout: float) -> List[EncryptedPacket]:
     """
-    Scan for a BLE advertisement that includes service data for UUID 0xFCA6 and
-    return it as an EncryptedPacket (payload=data bytes, rssi from the adv).
-    Returns None if nothing is found within `timeout` seconds.
-
-    This is a synchronous convenience wrapper around an asyncio scanner.
+    Scan for a BLE advertisements that includes service data for UUID 0xFCA6 and
+    return it as a List[EncryptedPacket] (payload=data bytes, rssi from the adv).
     """
 
     async def _scan_async(ttl: float) -> List[EncryptedPacket]:
