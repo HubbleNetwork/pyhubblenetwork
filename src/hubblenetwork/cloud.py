@@ -1,5 +1,6 @@
 # hubble/cloud_api.py
 from __future__ import annotations
+from dataclasses import dataclass
 import httpx
 import time
 import base64
@@ -13,11 +14,23 @@ from .errors import (
     raise_for_response,
 )
 
-ENVIRONMENTS = {
-    "PROD": "https://api.hubble.com",
-    "TESTING": "https://api-testing.hubblenetwork.io",
-}
-default_env_url = None
+
+@dataclass(frozen=True)
+class Environment:
+    name: str
+    url: str
+
+
+@dataclass(frozen=True)
+class Credentials:
+    org_id: str
+    api_token: str
+
+
+_ENVIRONMENTS = [
+    Environment("PROD", "https://api.hubble.com"),
+    Environment("TESTING", "https://api-testing.hubblenetwork.io"),
+]
 
 
 def _auth_headers(api_token: str) -> dict[str, str]:
@@ -28,69 +41,64 @@ def _auth_headers(api_token: str) -> dict[str, str]:
     }
 
 
-def _list_devices_endpoint(org_id: str) -> str:
-    return f"/org/{org_id}/devices"
+def _list_devices_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}/devices"
 
 
-def _register_device_endpoint(org_id: str) -> str:
-    return f"/v2/org/{org_id}/devices"
+def _register_device_endpoint(credentials: Credentials) -> str:
+    return f"/v2/org/{credentials.org_id}/devices"
 
 
-def _retrieve_org_packets_endpoint(org_id: str) -> str:
-    return f"/org/{org_id}/packets"
+def _retrieve_org_packets_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}/packets"
 
 
-def _ingest_packets_endpoint(org_id: str) -> str:
-    return f"/org/{org_id}/packets"
+def _ingest_packets_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}/packets"
 
 
-def _update_device_endpoint(org_id: str, device_id: str) -> str:
-    return f"/org/{org_id}/devices/{device_id}"
+def _update_device_endpoint(credentials: Credentials, device_id: str) -> str:
+    return f"/org/{credentials.org_id}/devices/{device_id}"
 
 
-def _retrive_org_metadata_endpoint(org_id: str) -> str:
-    return f"/org/{org_id}"
+def _retrieve_org_metadata_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}"
 
 
-def set_env(env: str) -> None:
-    default_env_url = env
+def _validate_key_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}/check"
 
 
 def cloud_request(
+    *,
     method: str,
     path: str,
-    *,
-    api_token: Optional[str] = None,
+    env: Environment,
+    credentials: Optional[credentials] = None,
     json: Any = None,
     timeout_s: float = 10.0,
     params: Optional[MutableMapping[str, Any]] = None,
-    base_url: Optional[str] = None,
 ) -> Any:
     """
     Make a single HTTP request to the Hubble Cloud API and return parsed JSON.
 
     - `method`: "GET", "POST", etc.
     - `path`: endpoint path (e.g., "/devices" or "orgs/{id}/devices")
-    - `api_token`: API token for auth (optional, but recommended)
-    - `org_id`: if provided, will be added as query param `orgId=<org_id>`
-               (skip or embed in `path` if your endpoint uses a path param instead)
+    - `credentials`: Credentials to use for this call
+    - `env`: Environment to call into (typically prod or testing)
     - `json`: request JSON body (for POST/PUT/PATCH)
     - `timeout_s`: request timeout in seconds
     - `params`: optional HTTP request parameters
-    - `base_url`: URL to use in place of default production URL
     """
-    path = path.lstrip("/")
-    base_url = base_url if base_url is not None else default_env_url
-    base_url = base_url.rstrip("/")
-    url = f"{base_url}/api/{path}"
+    url = f"{env.url.rstrip('/')}/api/{path.lstrip('/')}"
 
     # headers
     headers: MutableMapping[str, str] = {
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    if api_token:
-        headers["Authorization"] = f"Bearer {api_token}"
+    if credentials:
+        headers["Authorization"] = f"Bearer {credentials.api_token}"
 
     try:
         with httpx.Client(timeout=timeout_s) as client:
@@ -118,11 +126,25 @@ def cloud_request(
         raise BackendError(f"Non-JSON response from {url}") from e
 
 
+def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
+    for env in _ENVIRONMENTS:
+        try:
+            resp = cloud_request(
+                method="GET",
+                path=_validate_key_endpoint(credentials),
+                credentials=credentials,
+                env=env,
+            )
+            return env
+        except:
+            pass
+    return None
+
+
 def register_device(
     *,
-    org_id: str,
-    api_token: str,
-    base_url: Optional[str] = None,
+    credentials: Credentials,
+    env: Environment,
 ) -> Any:
     """Create a new device and return it."""
     data = {
@@ -131,18 +153,17 @@ def register_device(
     }
     return cloud_request(
         method="POST",
-        path=_register_device_endpoint(org_id),
-        api_token=api_token,
+        env=env,
+        path=_register_device_endpoint(credentials),
+        credentials=credentials,
         json=data,
-        base_url=base_url,
     )
 
 
 def update_device(
     *,
-    org_id: str,
-    api_token: str,
-    base_url: Optional[str] = None,
+    credentials: Credentials,
+    env: Environment,
     name: str,
     device_id: str,
 ) -> Any:
@@ -153,15 +174,17 @@ def update_device(
     }
     return cloud_request(
         method="PATCH",
-        path=_update_device_endpoint(org_id, device_id),
-        api_token=api_token,
+        env=env,
+        path=_update_device_endpoint(credentials, device_id),
+        credentials=credentials,
         json=data,
-        base_url=base_url,
     )
 
 
 def list_devices(
-    *, org_id: str, api_token: str, base_url: Optional[str] = None
+    *,
+    credentials: Credentials,
+    env: Environment,
 ) -> list[Any]:
     """
     List devices for the org (keys typically omitted).
@@ -172,19 +195,18 @@ def list_devices(
     """
     return cloud_request(
         method="GET",
-        path=_list_devices_endpoint(org_id),
-        api_token=api_token,
-        base_url=base_url,
+        env=env,
+        path=_list_devices_endpoint(credentials),
+        credentials=credentials,
     )
 
 
 def retrieve_packets(
     *,
-    org_id: str,
-    api_token: str,
-    device_id: Optional[str] = None,
+    credentials: Credentials,
+    env: Environment,
+    device_id: str,
     days: int = 7,
-    base_url: Optional[str] = None,
 ) -> Any:
     """Fetch decrypted packets for a device."""
     params = {"start": (int(time.time()) - (days * 24 * 60 * 60))}
@@ -192,19 +214,18 @@ def retrieve_packets(
         params["device_id"] = device_id
     return cloud_request(
         method="GET",
-        path=_retrieve_org_packets_endpoint(org_id),
-        api_token=api_token,
+        env=env,
+        path=_retrieve_org_packets_endpoint(credentials),
+        credentials=credentials,
         params=params,
-        base_url=base_url,
     )
 
 
 def ingest_packet(
     *,
-    org_id: str,
-    api_token: str,
+    credentials: Credentials,
+    env: Environment,
     packet: EncryptedPacket,
-    base_url: Optional[str] = None,
 ) -> Any:
     body = {
         "ble_locations": [
@@ -229,18 +250,17 @@ def ingest_packet(
     }
     return cloud_request(
         method="POST",
-        path=_ingest_packets_endpoint(org_id),
-        api_token=api_token,
+        env=env,
+        path=_ingest_packets_endpoint(credentials),
+        credentials=credentials,
         json=body,
-        base_url=base_url,
     )
 
 
 def retrieve_org_metadata(
     *,
-    org_id: str,
-    api_token: str,
-    base_url: Optional[str] = None,
+    credentials: Credentials,
+    env: Environment,
 ) -> Any:
     """
     Get organizational metadata
@@ -251,7 +271,7 @@ def retrieve_org_metadata(
     """
     return cloud_request(
         method="GET",
-        path=_retrive_org_metadata_endpoint(org_id),
-        api_token=api_token,
-        base_url=base_url,
+        env=env,
+        path=_retrieve_org_metadata_endpoint(credentials),
+        credentials=credentials,
     )

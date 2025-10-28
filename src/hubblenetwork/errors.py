@@ -40,6 +40,10 @@ class APITimeout(BackendError):
     """The API call exceeded its allowed timeout."""
 
 
+class InvalidCredentialsError(BackendError):
+    """Invalid credentials passed in"""
+
+
 # Request/response semantics
 class ValidationError(BackendError):
     """The request was invalid (schema/semantics)."""

@@ -6,7 +6,7 @@ from typing import Optional, List
 from . import cloud
 from .packets import DecryptedPacket, Location
 from .device import Device
-from .errors import BackendError
+from .errors import BackendError, InvalidCredentialsError
 
 
 class Organization:
@@ -15,43 +15,26 @@ class Organization:
     Used to manage devices and fetch decrypted packets from the backend.
     """
 
-    org_id: str
-    api_token: str
-
-    api_base_url: str
-    env: str
     name: str
 
-    def __init__(self, org_id: str, api_token: str) -> str:
-        self.org_id = org_id
-        self.api_token = api_token
+    credentials: cloud.Credentials
+    env: cloud.Environment
 
-        # Attempt to resolve environment (testing or prod)
-        resp = None
-        for env, url in cloud.ENVIRONMENTS.items():
-            try:
-                resp = cloud.retrieve_org_metadata(
-                    org_id=self.org_id, api_token=self.api_token, base_url=url
-                )
-                self.api_base_url = url
-                self.env = env
-                break
-            except:
-                pass
-        if not resp:
-            raise BackendError(f"Unable to determine environment")
-        self.name = resp["name"]
+    def __init__(self, credentials: cloud.Credentials) -> str:
+        self.credentials = credentials
+        self.env = cloud.get_env_from_credentials(self.credentials)
+        if not self.env:
+            raise InvalidCredentialsError("Invalid credentials passed in.")
+        self.name = cloud.retrieve_org_metadata(
+            credentials=self.credentials, env=self.env
+        )["name"]
 
     def register_device(self) -> Device:
         """
         Register a new device in this organization and return it.
         Returned Device will have an ID and provisioned key.
         """
-        resp = cloud.register_device(
-            org_id=self.org_id,
-            api_token=self.api_token,
-            base_url=self.api_base_url,
-        )
+        resp = cloud.register_device(credentials=self.credentials, env=self.env)
         # Currently, only registering a single device and taking the
         # first in the returned list
         device = resp["devices"][0]
@@ -63,11 +46,10 @@ class Organization:
         Returned Device will have an ID and provisioned key.
         """
         resp = cloud.update_device(
-            org_id=self.org_id,
-            api_token=self.api_token,
+            credentials=self.credentials,
+            env=self.env,
             name=name,
             device_id=device_id,
-            base_url=self.api_base_url,
         )
         return Device(id=resp["id"], name=resp["name"])
 
@@ -79,9 +61,7 @@ class Organization:
             list[Device]
         """
 
-        payload = cloud.list_devices(
-            org_id=self.org_id, api_token=self.api_token, base_url=self.api_base_url
-        )
+        payload = cloud.list_devices(credentials=self.credentials, env=self.env)
         raw_list = payload["devices"]
 
         # Turn each JSON object into a Device
@@ -96,11 +76,10 @@ class Organization:
         or None if none exists.
         """
         resp = cloud.retrieve_packets(
-            org_id=self.org_id,
-            api_token=self.api_token,
+            credentials=self.credentials,
+            env=self.env,
             device_id=device.id,
             days=days,
-            base_url=self.api_base_url,
         )
         packets = []
         for packet in resp["packets"]:
@@ -126,8 +105,7 @@ class Organization:
 
     def ingest_packet(self, packet: EncryptedPacket) -> None:
         cloud.ingest_packet(
-            org_id=self.org_id,
-            api_token=self.api_token,
+            credentials=self.credentials,
+            env=self.env,
             packet=packet,
-            base_url=self.api_base_url,
         )

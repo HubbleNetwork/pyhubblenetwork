@@ -13,6 +13,8 @@ from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import decrypt
+from hubblenetwork import cloud
+from hubblenetwork import InvalidCredentialsError
 
 
 def _get_env_or_fail(name: str) -> str:
@@ -122,6 +124,36 @@ def cli() -> None:
     # top-level group; subcommands are added below
 
 
+@cli.command("validate-credentials")
+@click.option(
+    "--org-id",
+    "-o",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    default=None,
+    show_default=False,
+    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+)
+@click.option(
+    "--token",
+    "-t",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    default=None,
+    show_default=False,
+    help="Token (if not using HUBBLE_API_TOKEN env var)",
+)
+def validate_credentials(org_id, token) -> None:
+    """Validate the given credentials"""
+    # subgroup for organization-related commands
+    credentials = cloud.Credentials(org_id, token)
+    env = cloud.get_env_from_credentials(credentials)
+    if env:
+        click.echo(f'Valid credentials (env="{env.name}")')
+    else:
+        click.secho(f"Invalid credentials!", fg="red", err=True)
+
+
 @cli.group()
 def ble() -> None:
     """BLE utilities."""
@@ -182,8 +214,10 @@ def ble_scan(timeout, ingest: bool = False, key: str = None) -> None:
     if ingest:
         click.echo("[INFO] Ingesting packet(s) into the backend... ", nl=False)
         org = Organization(
-            org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
-            api_token=_get_env_or_fail("HUBBLE_API_TOKEN"),
+            cloud.Credentials(
+                org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
+                api_token=_get_env_or_fail("HUBBLE_API_TOKEN"),
+            )
         )
         for pkt in pkts:
             org.ingest_packet(pkt)
@@ -212,21 +246,14 @@ pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
     show_default=False,
     help="Token (if not using HUBBLE_API_TOKEN env var)",
 )
-@click.option(
-    "--url",
-    "-u",
-    type=str,
-    envvar="HUBBLE_BASE_URL",
-    default=None,
-    show_default=False,
-    help="Base URL to override production (if not using HUBBLE_BASE_URL env var)",
-)
 @click.pass_context
-def org(ctx, org_id, token, url) -> None:
+def org(ctx, org_id, token) -> None:
     """Organization utilities."""
     # subgroup for organization-related commands
-    ctx.obj = Organization(org_id=org_id, api_token=token)
-    ctx.obj.base_url = url
+    try:
+        ctx.obj = Organization(cloud.Credentials(org_id=org_id, api_token=token))
+    except InvalidCredentialsError as e:
+        raise click.BadParameter(str(e))
 
 
 @org.command("info")

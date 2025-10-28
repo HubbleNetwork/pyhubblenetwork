@@ -11,6 +11,8 @@ from .packets import Location, EncryptedPacket, DecryptedPacket
 from .device import Device
 from .org import Organization
 from .crypto import decrypt
+from .errors import InvalidCredentialsError
+from .cloud import Credentials, Environment
 
 __all__ = [
     "ble",
@@ -21,4 +23,7 @@ __all__ = [
     "DecryptedPacket",
     "Device",
     "Organization",
+    "Credentials",
+    "Environment",
+    "InvalidCredentialsError",
 ]

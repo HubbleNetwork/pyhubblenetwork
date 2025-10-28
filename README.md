@@ -61,9 +61,9 @@ pip install -e '.[dev]'
 ### Scan locally, then ingest to backend
 
 ```python
-from hubblenetwork import ble, Organization
+from hubblenetwork import ble, Organization, Credentials
 
-org = Organization(org_id="org_123", api_token="sk_XXX")
+org = Organization(Credentials(org_id="org_123", api_token="sk_XXX"))
 pkts = ble.scan(timeout=5.0)
 if len(pkts) > 0:
     org.ingest_packet(pkts[0])
@@ -74,9 +74,9 @@ else:
 ### Manage devices and query packets
 
 ```python
-from hubblenetwork import Organization
+from hubblenetwork import Organization, Credentials
 
-org = Organization(org_id="org_123", api_token="sk_XXX")
+org = Organization(Credentials(org_id="org_123", api_token="sk_XXX"))
 
 # Create a new device
 new_dev = org.register_device()
