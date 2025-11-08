@@ -29,12 +29,12 @@ class Organization:
             credentials=self.credentials, env=self.env
         )["name"]
 
-    def register_device(self) -> Device:
+    def register_device(self, encryption: Optional[str] = None) -> Device:
         """
         Register a new device in this organization and return it.
         Returned Device will have an ID and provisioned key.
         """
-        resp = cloud.register_device(credentials=self.credentials, env=self.env)
+        resp = cloud.register_device(credentials=self.credentials, env=self.env, encryption=encryption)
         # Currently, only registering a single device and taking the
         # first in the returned list
         device = resp["devices"][0]

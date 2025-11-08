@@ -145,11 +145,12 @@ def register_device(
     *,
     credentials: Credentials,
     env: Environment,
+    encryption: str = "AES-256-CTR"
 ) -> Any:
     """Create a new device and return it."""
     data = {
         "n_devices": 1,
-        "encryption": "AES-256-CTR",
+        "encryption": "AES-256-CTR" if not encryption else encryption,
     }
     return cloud_request(
         method="POST",

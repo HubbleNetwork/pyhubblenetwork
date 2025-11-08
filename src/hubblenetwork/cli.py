@@ -274,9 +274,19 @@ def list_devices(org: Organization) -> None:
 
 
 @org.command("register-device")
+@click.option(
+    "--encryption",
+    "-e",
+    type=str,
+    default=None,
+    show_default=False,  # show default in --help
+    help="Encryption type [AES-256-CTR, AES-128-CTR]",
+)
 @pass_orgcfg
-def register_device(org: Organization) -> None:
-    click.secho(str(org.register_device()))
+def register_device(org: Organization, encryption) -> None:
+    if encryption:
+        click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
+    click.secho(str(org.register_device(encryption=encryption)))
 
 
 @org.command("set-device-name")
