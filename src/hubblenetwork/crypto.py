@@ -70,7 +70,7 @@ def decrypt(
 
         if tag == auth_tag:
             day_offset = t
-            nonce = _get_nonce(key, time_counter, seq_no)
+            nonce = _get_nonce(key, time_counter + t, seq_no)
             decrypted_payload = _aes_decrypt(daily_key, nonce, encrypted_payload)
             return DecryptedPacket(
                 timestamp=encrypted_pkt.timestamp,
