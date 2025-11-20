@@ -138,7 +138,7 @@ def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
                 env=env,
             )
             return env
-        except:
+        except Exception:
             pass
     return None
 

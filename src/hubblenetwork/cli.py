@@ -6,6 +6,7 @@ import os
 import json
 import sys
 import time
+import base64
 from datetime import datetime
 from typing import Optional
 from hubblenetwork import Organization
@@ -231,7 +232,8 @@ def ble_scan(
 
         # If we have a key, attempt to decrypt
         if key:
-            decrypted_pkt = decrypt(key, pkt)
+            decoded_key = bytearray(base64.b64decode(key))
+            decrypted_pkt = decrypt(decoded_key, pkt)
             if decrypted_pkt:
                 _print_packet_table_row(pkt)
         else:

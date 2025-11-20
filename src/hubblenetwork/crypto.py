@@ -7,9 +7,6 @@ from datetime import datetime, timezone
 
 from .packets import EncryptedPacket, DecryptedPacket
 
-# Valid values are 16 and 32, respectively for AES-128 and AES-256
-_HUBBLE_AES_KEY_SIZE = 32
-
 _HUBBLE_AES_NONCE_SIZE = 12
 _HUBBLE_AES_TAG_SIZE = 4
 
@@ -27,18 +24,18 @@ def _generate_kdf_key(key: bytes, key_size: int, label: str, context: int) -> by
     )
 
 
-def _get_nonce(key: bytes, time_counter: int, counter: int) -> bytes:
-    nonce_key = _generate_kdf_key(key, _HUBBLE_AES_KEY_SIZE, "NonceKey", time_counter)
+def _get_nonce(key: bytes, time_counter: int, counter: int, keylen: int) -> bytes:
+    nonce_key = _generate_kdf_key(key, keylen, "NonceKey", time_counter)
 
     return _generate_kdf_key(nonce_key, _HUBBLE_AES_NONCE_SIZE, "Nonce", counter)
 
 
-def _get_encryption_key(key: bytes, time_counter: int, counter: int) -> bytes:
+def _get_encryption_key(key: bytes, time_counter: int, counter: int, keylen: int) -> bytes:
     encryption_key = _generate_kdf_key(
-        key, _HUBBLE_AES_KEY_SIZE, "EncryptionKey", time_counter
+        key, keylen, "EncryptionKey", time_counter
     )
 
-    return _generate_kdf_key(encryption_key, _HUBBLE_AES_KEY_SIZE, "Key", counter)
+    return _generate_kdf_key(encryption_key, keylen, "Key", counter)
 
 
 def _get_auth_tag(key: bytes, ciphertext: bytes) -> bytes:
@@ -60,15 +57,16 @@ def decrypt(
     seq_no = int.from_bytes(ble_adv[0:2], "big") & 0x3FF
     auth_tag = ble_adv[6:10]
     encrypted_payload = ble_adv[10:]
+    keylen = len(key)
 
     time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
 
     for t in range(-days, days + 1):
-        daily_key = _get_encryption_key(key, time_counter + t, seq_no)
+        daily_key = _get_encryption_key(key, time_counter + t, seq_no, keylen=keylen)
         tag = _get_auth_tag(daily_key, encrypted_payload)
 
         if tag == auth_tag:
-            nonce = _get_nonce(key, time_counter + t, seq_no)
+            nonce = _get_nonce(key, time_counter + t, seq_no, keylen=keylen)
             decrypted_payload = _aes_decrypt(daily_key, nonce, encrypted_payload)
             return DecryptedPacket(
                 timestamp=encrypted_pkt.timestamp,
