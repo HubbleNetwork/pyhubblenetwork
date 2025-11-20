@@ -74,7 +74,7 @@ def cloud_request(
     method: str,
     path: str,
     env: Environment,
-    credentials: Optional[credentials] = None,
+    credentials: Optional[Credentials] = None,
     json: Any = None,
     timeout_s: float = 10.0,
     params: Optional[MutableMapping[str, Any]] = None,
@@ -129,7 +129,9 @@ def cloud_request(
 def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
     for env in _ENVIRONMENTS:
         try:
-            resp = cloud_request(
+            # If this call fails then we know we don't have the
+            # credentials for this environment
+            cloud_request(
                 method="GET",
                 path=_validate_key_endpoint(credentials),
                 credentials=credentials,
@@ -142,10 +144,7 @@ def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
 
 
 def register_device(
-    *,
-    credentials: Credentials,
-    env: Environment,
-    encryption: str = "AES-256-CTR"
+    *, credentials: Credentials, env: Environment, encryption: str = "AES-256-CTR"
 ) -> Any:
     """Create a new device and return it."""
     data = {

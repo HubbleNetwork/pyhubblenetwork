@@ -4,10 +4,9 @@ from __future__ import annotations
 import click
 import os
 import json
-import time
-import base64
 import sys
-from datetime import timezone, datetime
+import time
+from datetime import datetime
 from typing import Optional
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
@@ -36,28 +35,53 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
     return org_id, token
 
 
+def _print_packet_table_header() -> None:
+    click.echo(
+        "\nTIME                      RSSI   LAT         LON          PAYLOAD (B)"
+    )
+    click.echo(
+        "---------------------------------------------------------------------------"
+    )
+
+
+def _print_packet_table_row(pkt) -> None:
+    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+    click.echo(
+        f"{ts}  {pkt.rssi}    {pkt.location.lat:.6f}   {pkt.location.lon:.6f}  ",
+        nl=False,
+    )
+    if isinstance(pkt, DecryptedPacket):
+        click.echo(f'payload: "{pkt.payload}"')
+    elif isinstance(pkt, EncryptedPacket):
+        click.echo(f"{pkt.payload.hex()} ({len(pkt.payload)} bytes)")
+
+
+def _print_packet_pretty(pkt) -> None:
+    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+    loc = pkt.location
+    loc_str = (
+        f"{loc.lat:.6f},{loc.lon:.6f}"
+        if getattr(loc, "lat", None) is not None
+        else "unknown"
+    )
+    click.echo(click.style("=== BLE packet ===", bold=True))
+    click.echo(f"time:    {ts}")
+    click.echo(f"rssi:    {pkt.rssi} dBm")
+    click.echo(f"loc:     {loc_str}")
+    # Show both hex and length
+    if isinstance(pkt, DecryptedPacket):
+        click.echo(f'payload: "{pkt.payload}"')
+    elif isinstance(pkt, EncryptedPacket):
+        click.echo(f"payload: {pkt.payload.hex()} ({len(pkt.payload)} bytes)")
+
+
 def _print_packets_pretty(pkts) -> None:
     if len(pkts) == 0:
         click.echo("No packets!")
         return
     """Pretty-print an EncryptedPacket."""
     for pkt in pkts:
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-        loc = pkt.location
-        loc_str = (
-            f"{loc.lat:.6f},{loc.lon:.6f}"
-            if getattr(loc, "lat", None) is not None
-            else "unknown"
-        )
-        click.echo(click.style("=== BLE packet ===", bold=True))
-        click.echo(f"time:    {ts}")
-        click.echo(f"rssi:    {pkt.rssi} dBm")
-        click.echo(f"loc:     {loc_str}")
-        # Show both hex and length
-        if isinstance(pkt, DecryptedPacket):
-            click.echo(f'payload: "{pkt.payload}"')
-        elif isinstance(pkt, EncryptedPacket):
-            click.echo(f"payload: {pkt.payload.hex()} ({len(pkt.payload)} bytes)")
+        _print_packet_pretty(pkt)
 
 
 def _print_packets_csv(pkts) -> None:
@@ -151,7 +175,7 @@ def validate_credentials(org_id, token) -> None:
     if env:
         click.echo(f'Valid credentials (env="{env.name}")')
     else:
-        click.secho(f"Invalid credentials!", fg="red", err=True)
+        click.secho("Invalid credentials!", fg="red", err=True)
 
 
 @cli.group()
@@ -165,7 +189,6 @@ def ble() -> None:
     "--timeout",
     "-t",
     type=int,
-    default=5,
     show_default=False,
     help="Timeout when scanning",
 )
@@ -178,50 +201,44 @@ def ble() -> None:
     help="Attempt to decrypt any received packet with the given key",
 )
 @click.option("--ingest", is_flag=True)
-def ble_scan(timeout, ingest: bool = False, key: str = None) -> None:
+def ble_scan(
+    timeout: Optional(int) = None, ingest: bool = False, key: str = None
+) -> None:
     """
     Scan for UUID 0xFCA6 and print the first packet found within TIMEOUT seconds.
 
     Example:
       hubblenetwork ble scan 1
     """
-    click.secho(
-        f"[INFO] Scanning for Hubble devices (timeout={timeout}s)... ", nl=False
-    )
-    pkts = ble_mod.scan(timeout=timeout)
-    if len(pkts) == 0:
-        click.secho(f"[WARNING] No packet found within {timeout:.2f}s", fg="yellow")
-        raise SystemExit(1)
-    click.echo("[COMPLETE]")
-
-    click.echo("\n[INFO] Encrypted packets received:")
-    _print_packets(pkts)
-
-    # If we have a key, attempt to decrypt
-    if key:
-        key = bytearray(base64.b64decode(key))
-        decrypted_pkts = []
-        for pkt in pkts:
-            decrypted_pkt = decrypt(key, pkt)
-            if decrypted_pkt:
-                decrypted_pkts.append(decrypted_pkt)
-        if len(decrypted_pkts) > 0:
-            click.echo("\n[INFO] Locally decrypted packets:")
-            _print_packets(decrypted_pkts)
-        else:
-            click.secho("\n[WARNING] No locally decryptable packets found", fg="yellow")
+    click.secho("[INFO] Scanning for Hubble devices...")
+    _print_packet_table_header()
 
     if ingest:
-        click.echo("[INFO] Ingesting packet(s) into the backend... ", nl=False)
         org = Organization(
-            cloud.Credentials(
-                org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
-                api_token=_get_env_or_fail("HUBBLE_API_TOKEN"),
-            )
+            org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
+            api_token=_get_env_or_fail("HUBBLE_API_TOKEN"),
         )
-        for pkt in pkts:
+
+    start = time.monotonic()
+    deadline = None if timeout is None else start + timeout
+
+    while deadline is None or time.monotonic() < deadline:
+        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+
+        pkt = ble_mod.scan_single(timeout=this_timeout)
+        if not pkt:
+            break
+
+        # If we have a key, attempt to decrypt
+        if key:
+            decrypted_pkt = decrypt(key, pkt)
+            if decrypted_pkt:
+                _print_packet_table_row(pkt)
+        else:
+            _print_packet_table_row(pkt)
+
+        if ingest:
             org.ingest_packet(pkt)
-        click.echo("[SUCCESS]")
 
 
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
@@ -251,7 +268,7 @@ def org(ctx, org_id, token) -> None:
     """Organization utilities."""
     # subgroup for organization-related commands
     try:
-        ctx.obj = Organization(cloud.Credentials(org_id=org_id, api_token=token))
+        ctx.obj = Organization(org_id=org_id, api_token=token)
     except InvalidCredentialsError as e:
         raise click.BadParameter(str(e))
 

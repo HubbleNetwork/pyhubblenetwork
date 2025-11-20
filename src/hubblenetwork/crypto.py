@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
@@ -57,10 +58,8 @@ def decrypt(
 ) -> Optional[DecryptedPacket]:
     ble_adv = encrypted_pkt.payload
     seq_no = int.from_bytes(ble_adv[0:2], "big") & 0x3FF
-    device_id = ble_adv[2:6].hex()
     auth_tag = ble_adv[6:10]
     encrypted_payload = ble_adv[10:]
-    day_offset = 0
 
     time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
 
@@ -69,7 +68,6 @@ def decrypt(
         tag = _get_auth_tag(daily_key, encrypted_payload)
 
         if tag == auth_tag:
-            day_offset = t
             nonce = _get_nonce(key, time_counter + t, seq_no)
             decrypted_payload = _aes_decrypt(daily_key, nonce, encrypted_payload)
             return DecryptedPacket(

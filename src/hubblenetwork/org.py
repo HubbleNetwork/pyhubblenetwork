@@ -1,12 +1,11 @@
 # hubble/org.py
 from __future__ import annotations
-from dataclasses import dataclass
 from typing import Optional, List
 
 from . import cloud
-from .packets import DecryptedPacket, Location
+from .packets import DecryptedPacket, EncryptedPacket, Location
 from .device import Device
-from .errors import BackendError, InvalidCredentialsError
+from .errors import InvalidCredentialsError
 
 
 class Organization:
@@ -20,8 +19,16 @@ class Organization:
     credentials: cloud.Credentials
     env: cloud.Environment
 
-    def __init__(self, credentials: cloud.Credentials) -> str:
-        self.credentials = credentials
+    def __init__(
+        self,
+        org_id: Optional(str) = None,
+        api_token: Optional(str) = None,
+        credentials: Optional(cloud.Credentials) = None,
+    ) -> str:
+        if credentials:
+            self.credentials = credentials
+        else:
+            self.credentials = cloud.Credentials(org_id, api_token)
         self.env = cloud.get_env_from_credentials(self.credentials)
         if not self.env:
             raise InvalidCredentialsError("Invalid credentials passed in.")
@@ -34,7 +41,9 @@ class Organization:
         Register a new device in this organization and return it.
         Returned Device will have an ID and provisioned key.
         """
-        resp = cloud.register_device(credentials=self.credentials, env=self.env, encryption=encryption)
+        resp = cloud.register_device(
+            credentials=self.credentials, env=self.env, encryption=encryption
+        )
         # Currently, only registering a single device and taking the
         # first in the returned list
         device = resp["devices"][0]
@@ -87,9 +96,9 @@ class Organization:
                 DecryptedPacket(
                     timestamp=int(packet["device"]["timestamp"]),
                     device_id=packet["device"]["id"],
-                    device_name=packet["device"]["name"]
-                    if "name" in packet["device"]
-                    else "",
+                    device_name=(
+                        packet["device"]["name"] if "name" in packet["device"] else ""
+                    ),
                     location=Location(
                         lat=packet["location"]["latitude"],
                         lon=packet["location"]["longitude"],
