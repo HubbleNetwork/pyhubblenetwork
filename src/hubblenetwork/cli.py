@@ -47,14 +47,15 @@ def _print_packet_table_header() -> None:
 
 def _print_packet_table_row(pkt) -> None:
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-    click.echo(
-        f"{ts}  {pkt.rssi}    {pkt.location.lat:.6f}   {pkt.location.lon:.6f}  ",
-        nl=False,
+    # Set a null location if none was given
+    loc = pkt.location
+    loc_str = (
+        f"{pkt.location.lat:.6f}   {pkt.location.lon:.6f}"
+        if getattr(loc, "lat", None) is not None
+        else "N/A         N/A"
     )
-    if isinstance(pkt, DecryptedPacket):
-        click.echo(f'payload: "{pkt.payload}"')
-    elif isinstance(pkt, EncryptedPacket):
-        click.echo(f"{pkt.payload.hex()} ({len(pkt.payload)} bytes)")
+    click.echo(f"{ts}  {pkt.rssi}    {loc_str}  ", nl=False)
+    click.echo(f"{pkt.payload.hex()} ({len(pkt.payload)} bytes)")
 
 
 def _print_packet_pretty(pkt) -> None:
@@ -235,7 +236,7 @@ def ble_scan(
             decoded_key = bytearray(base64.b64decode(key))
             decrypted_pkt = decrypt(decoded_key, pkt)
             if decrypted_pkt:
-                _print_packet_table_row(pkt)
+                _print_packet_table_row(decrypted_pkt)
         else:
             _print_packet_table_row(pkt)
 
