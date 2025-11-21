@@ -38,23 +38,17 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
 
 def _print_packet_table_header() -> None:
     click.echo(
-        "\nTIME                      RSSI   LAT         LON          PAYLOAD (B)"
+        "\nTIME                      RSSI PAYLOAD (B)"
     )
     click.echo(
-        "---------------------------------------------------------------------------"
+        "--------------------------------------------------------------"
     )
 
 
 def _print_packet_table_row(pkt) -> None:
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-    # Set a null location if none was given
-    loc = pkt.location
-    loc_str = (
-        f"{pkt.location.lat:.6f}   {pkt.location.lon:.6f}"
-        if getattr(loc, "lat", None) is not None
-        else "N/A         N/A"
-    )
-    click.echo(f"{ts}  {pkt.rssi}    {loc_str}  ", nl=False)
+
+    click.echo(f"{ts}  {pkt.rssi}  ", nl=False)
     click.echo(f"{pkt.payload.hex()} ({len(pkt.payload)} bytes)")
 
 
@@ -237,11 +231,12 @@ def ble_scan(
             decrypted_pkt = decrypt(decoded_key, pkt)
             if decrypted_pkt:
                 _print_packet_table_row(decrypted_pkt)
+                # We only allow ingestion of packets you know the key of
+                # so we don't ingest bogus data in the backend
+                if ingest:
+                    org.ingest_packet(pkt)
         else:
             _print_packet_table_row(pkt)
-
-        if ingest:
-            org.ingest_packet(pkt)
 
 
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)

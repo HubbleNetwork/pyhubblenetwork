@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional, List
-import geocoder
 
 from bleak import BleakScanner
 
@@ -29,11 +28,8 @@ _TARGET_UUID = "0000fca6-0000-1000-8000-00805f9b34fb"
 
 
 def _get_location() -> Optional[Location]:
-    geo = geocoder.ip("me")
-    if not geo:
-        return None
-    lat, lon = geo.latlng
-    return Location(lat=lat, lon=lon)
+    # Return an unreasonable location
+    return Location(lat=90, lon=0)
 
 
 def scan(timeout: float) -> List[EncryptedPacket]:
