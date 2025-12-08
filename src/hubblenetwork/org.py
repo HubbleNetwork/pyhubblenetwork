@@ -70,13 +70,22 @@ class Organization:
             list[Device]
         """
 
-        payload = cloud.list_devices(credentials=self.credentials, env=self.env)
-        raw_list = payload["devices"]
-
         # Turn each JSON object into a Device
         devices: List[Device] = []
-        for item in raw_list:
-            devices.append(Device.from_json(item))
+
+        continuation_token = None
+        while True:
+            resp, continuation_token = cloud.list_devices(
+                credentials=self.credentials,
+                env=self.env,
+                continuation_token=continuation_token,
+            )
+            raw_list = resp["devices"]
+            for item in raw_list:
+                devices.append(Device.from_json(item))
+            if not continuation_token:
+                break
+
         return devices
 
     def retrieve_packets(self, device: Device, days: int = 7) -> List[DecryptedPacket]:
@@ -84,32 +93,40 @@ class Organization:
         Return the most recent decrypted packet for the given device,
         or None if none exists.
         """
-        resp = cloud.retrieve_packets(
-            credentials=self.credentials,
-            env=self.env,
-            device_id=device.id,
-            days=days,
-        )
+        continuation_token = None
+
         packets = []
-        for packet in resp["packets"]:
-            packets.append(
-                DecryptedPacket(
-                    timestamp=int(packet["device"]["timestamp"]),
-                    device_id=packet["device"]["id"],
-                    device_name=(
-                        packet["device"]["name"] if "name" in packet["device"] else ""
-                    ),
-                    location=Location(
-                        lat=packet["location"]["latitude"],
-                        lon=packet["location"]["longitude"],
-                    ),
-                    tags=packet["device"]["tags"],
-                    payload=packet["device"]["payload"],
-                    rssi=packet["device"]["rssi"],
-                    counter=packet["device"]["counter"],
-                    sequence=packet["device"]["sequence_number"],
-                )
+        while True:
+            resp, continuation_token = cloud.retrieve_packets(
+                credentials=self.credentials,
+                env=self.env,
+                device_id=device.id,
+                days=days,
+                continuation_token=continuation_token,
             )
+            for packet in resp["packets"]:
+                packets.append(
+                    DecryptedPacket(
+                        timestamp=int(packet["device"]["timestamp"]),
+                        device_id=packet["device"]["id"],
+                        device_name=(
+                            packet["device"]["name"]
+                            if "name" in packet["device"]
+                            else ""
+                        ),
+                        location=Location(
+                            lat=packet["location"]["latitude"],
+                            lon=packet["location"]["longitude"],
+                        ),
+                        tags=packet["device"]["tags"],
+                        payload=packet["device"]["payload"],
+                        rssi=packet["device"]["rssi"],
+                        counter=packet["device"]["counter"],
+                        sequence=packet["device"]["sequence_number"],
+                    )
+                )
+            if not continuation_token:
+                break
         return packets
 
     def ingest_packet(self, packet: EncryptedPacket) -> None:

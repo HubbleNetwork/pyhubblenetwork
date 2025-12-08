@@ -78,6 +78,7 @@ def cloud_request(
     json: Any = None,
     timeout_s: float = 10.0,
     params: Optional[MutableMapping[str, Any]] = None,
+    continuation_token: Optional[str] = None,
 ) -> Any:
     """
     Make a single HTTP request to the Hubble Cloud API and return parsed JSON.
@@ -99,7 +100,8 @@ def cloud_request(
     }
     if credentials:
         headers["Authorization"] = f"Bearer {credentials.api_token}"
-
+    if continuation_token:
+        headers["Continuation-Token"] = continuation_token
     try:
         with httpx.Client(timeout=timeout_s) as client:
             resp = client.request(
@@ -120,7 +122,12 @@ def cloud_request(
 
     # Parse JSON body
     try:
-        return resp.json()
+        continuation_token = (
+            resp.headers["Continuation-Token"]
+            if "Continuation-Token" in resp.headers
+            else None
+        )
+        return (resp.json(), continuation_token)
     except ValueError as e:
         # Server said "application/json" but body isn't JSON
         raise BackendError(f"Non-JSON response from {url}") from e
@@ -157,7 +164,7 @@ def register_device(
         path=_register_device_endpoint(credentials),
         credentials=credentials,
         json=data,
-    )
+    )[0]
 
 
 def update_device(
@@ -178,13 +185,11 @@ def update_device(
         path=_update_device_endpoint(credentials, device_id),
         credentials=credentials,
         json=data,
-    )
+    )[0]
 
 
 def list_devices(
-    *,
-    credentials: Credentials,
-    env: Environment,
+    *, credentials: Credentials, env: Environment, continuation_token=None
 ) -> list[Any]:
     """
     List devices for the org (keys typically omitted).
@@ -198,6 +203,7 @@ def list_devices(
         env=env,
         path=_list_devices_endpoint(credentials),
         credentials=credentials,
+        continuation_token=continuation_token,
     )
 
 
@@ -207,17 +213,20 @@ def retrieve_packets(
     env: Environment,
     device_id: str,
     days: int = 7,
+    continuation_token=None,
 ) -> Any:
     """Fetch decrypted packets for a device."""
     params = {"start": (int(time.time()) - (days * 24 * 60 * 60))}
     if device_id:
         params["device_id"] = device_id
+
     return cloud_request(
         method="GET",
         env=env,
         path=_retrieve_org_packets_endpoint(credentials),
         credentials=credentials,
         params=params,
+        continuation_token=continuation_token,
     )
 
 
@@ -254,7 +263,7 @@ def ingest_packet(
         path=_ingest_packets_endpoint(credentials),
         credentials=credentials,
         json=body,
-    )
+    )[0]
 
 
 def retrieve_org_metadata(
@@ -274,4 +283,4 @@ def retrieve_org_metadata(
         env=env,
         path=_retrieve_org_metadata_endpoint(credentials),
         credentials=credentials,
-    )
+    )[0]
