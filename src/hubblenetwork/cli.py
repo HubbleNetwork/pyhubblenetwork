@@ -36,20 +36,36 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
     return org_id, token
 
 
-def _print_packet_table_header() -> None:
-    click.echo(
-        "\nTIME                      RSSI PAYLOAD (B)"
-    )
-    click.echo(
-        "--------------------------------------------------------------"
-    )
+def _print_packet_table_header(show_loc=True, show_payload=True) -> None:
+    click.secho("\nTIME                      ", nl=False, bold=True)
+    click.secho("RSSI ", nl=False, bold=True)
+    if show_loc:
+        click.secho("COORDINATES           ", nl=False, bold=True)
+    if show_payload:
+        click.secho("PAYLOAD (B)", nl=False, bold=True)
+    click.echo("")
+    click.echo("--------------------------------------------------------------")
 
 
-def _print_packet_table_row(pkt) -> None:
+def _print_packet_table_row(pkt, show_loc=True, show_payload=True) -> None:
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
 
     click.echo(f"{ts}  {pkt.rssi}  ", nl=False)
-    click.echo(f"{pkt.payload.hex()} ({len(pkt.payload)} bytes)")
+    if show_loc:
+        loc = pkt.location
+        click.echo(f"{loc.lat:.6f},{loc.lon:.6f}  ", nl=False)
+    if show_payload:
+        if isinstance(pkt, DecryptedPacket):
+            click.secho(f'"{pkt.payload}"', nl=False)
+        elif isinstance(pkt, EncryptedPacket):
+            click.secho(f"{pkt.payload.hex()} ({len(pkt.payload)} bytes)", nl=False)
+    click.echo("")
+
+
+def _print_packets_tabular(pkts) -> None:
+    _print_packet_table_header()
+    for pkt in pkts:
+        _print_packet_table_row(pkt)
 
 
 def _print_packet_pretty(pkt) -> None:
@@ -115,14 +131,14 @@ def _print_packets_kepler(pkts) -> None:
 
 def _print_packets(pkts, output: str = "pretty") -> None:
     if not output:
-        _print_packets_pretty(pkts)
+        _print_packets_tabular(pkts)
         return
     func_name = f"_print_packets_{output.lower().strip()}"
     func = getattr(sys.modules[__name__], func_name, None)
     if callable(func):
         func(pkts)
     else:
-        _print_packets_pretty(pkts)
+        _print_packets_tabular(pkts)
 
 
 def _print_device(dev: Device) -> None:
@@ -207,7 +223,7 @@ def ble_scan(
       hubblenetwork ble scan 1
     """
     click.secho("[INFO] Scanning for Hubble devices...")
-    _print_packet_table_header()
+    _print_packet_table_header(show_payload=True if key else False, show_loc=False)
 
     if ingest:
         org = Organization(
@@ -230,13 +246,15 @@ def ble_scan(
             decoded_key = bytearray(base64.b64decode(key))
             decrypted_pkt = decrypt(decoded_key, pkt)
             if decrypted_pkt:
-                _print_packet_table_row(decrypted_pkt)
+                _print_packet_table_row(
+                    decrypted_pkt, show_payload=True, show_loc=False
+                )
                 # We only allow ingestion of packets you know the key of
                 # so we don't ingest bogus data in the backend
                 if ingest:
                     org.ingest_packet(pkt)
         else:
-            _print_packet_table_row(pkt)
+            _print_packet_table_row(pkt, show_payload=False, show_loc=False)
 
 
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
