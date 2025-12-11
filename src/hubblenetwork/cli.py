@@ -97,13 +97,16 @@ def _print_packets_pretty(pkts) -> None:
 
 
 def _print_packets_csv(pkts) -> None:
+    click.echo("timestamp, datetime, latitude, longitude, payload")
     for pkt in pkts:
         ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
         if isinstance(pkt, DecryptedPacket):
             payload = pkt.payload
         elif isinstance(pkt, EncryptedPacket):
             payload = pkt.payload.hex()
-        click.echo(f"{ts}, {pkt.location.lat:.6f}, {pkt.location.lon:.6f}, {payload}")
+        click.echo(
+            f'{pkt.timestamp}, {ts}, {pkt.location.lat:.6f}, {pkt.location.lon:.6f}, "{payload}"'
+        )
 
 
 def _print_packets_kepler(pkts) -> None:
@@ -333,7 +336,8 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
 @org.command("get-packets")
 @click.argument("device-id", type=str)
 @click.option(
-    "--output",
+    "--format",
+    "-f",
     type=str,
     default=None,
     show_default=False,  # show default in --help
@@ -349,11 +353,11 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
 )
 @pass_orgcfg
 def get_packets(
-    org: Organization, device_id, output: str = None, days: int = 7
+    org: Organization, device_id, format: str = None, days: int = 7
 ) -> None:
     device = Device(id=device_id)
     packets = org.retrieve_packets(device, days=days)
-    _print_packets(packets, output)
+    _print_packets(packets, format)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
