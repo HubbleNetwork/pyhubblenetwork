@@ -7,6 +7,8 @@ import json
 import sys
 import time
 import base64
+import binascii
+import logging
 from datetime import datetime
 from typing import Optional
 from hubblenetwork import Organization
@@ -15,6 +17,12 @@ from hubblenetwork import ble as ble_mod
 from hubblenetwork import decrypt
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
+
+# Set up logger for CLI (outputs to stderr)
+logger = logging.getLogger(__name__)
+_handler = logging.StreamHandler(sys.stderr)
+_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+logger.addHandler(_handler)
 
 
 def _get_env_or_fail(name: str) -> str:
@@ -197,6 +205,112 @@ def validate_credentials(org_id, token) -> None:
 def ble() -> None:
     """BLE utilities."""
     # subgroup for BLE-related commands
+
+@ble.command("detect")
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    default=10,
+    show_default=False,
+    help="Timeout when scanning",
+)
+@click.option(
+    "--key",
+    "-k",
+    required=True,
+    type=str,
+    default=None,
+    show_default=False,
+    help="Attempt to decrypt any received packet with the given key",
+)
+@click.option(
+    "--debug",
+    "-d",
+    is_flag=True,
+    default=False,
+    help="Enable debug logging to stderr",
+)
+def ble_detect(timeout: Optional[int] = None, key: str = None, debug: bool = False) -> None:
+    """
+    Scan for a single BLE packet and decrypt with key. Returns JSON output.
+
+    This mode is designed for programmatic validation of BLE packets.
+    The key parameter is required. JSON goes to stdout, errors/logs go to stderr.
+    Check the 'success' field (boolean) in JSON.
+
+    Example:
+      hubblenetwork ble detect --key "yourBase64Key=" --timeout 20 --debug
+    """
+    # Set log level based on debug flag
+    logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+
+    # Try to decode the base64 key
+    try:
+        decoded_key = bytearray(base64.b64decode(key))
+        logger.debug("Key decoded successfully")
+    except (binascii.Error, Exception) as e:
+        logger.error(f"Base64 decoding failed: {e}")
+        result = {"success": False, "error": "Base64 decoding failed for provided key"}
+        click.echo(json.dumps(result))
+        return
+
+    # Set up timeout tracking
+    start = time.monotonic()
+    deadline = None if timeout is None else start + timeout
+
+    if timeout:
+        logger.debug(f"Starting BLE scan with {timeout}s timeout")
+    else:
+        logger.debug("Starting BLE scan (no timeout)")
+
+    # Continuously scan until we find a packet we can decrypt or timeout
+    while deadline is None or time.monotonic() < deadline:
+        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+
+        # Scan for a single packet
+        try:
+            pkt = ble_mod.scan_single(timeout=this_timeout)
+        except Exception as e:
+            logger.error(f"BLE scanning error: {e}")
+            result = {"success": False, "error": f"BLE scanning error: {str(e)}"}
+            click.echo(json.dumps(result))
+            return
+
+        # Check if packet was found
+        if not pkt:
+            # Timeout reached without finding any packet
+            logger.error("Timeout: No BLE packets found")
+            result = {"success": False, "error": "No BLE packets found within timeout period"}
+            click.echo(json.dumps(result))
+            return
+
+        logger.debug("Packet received, attempting decryption...")
+
+        # Attempt to decrypt the packet
+        decrypted_pkt = decrypt(decoded_key, pkt)
+
+        if decrypted_pkt:
+            # If we can decrypt it, build success JSON
+            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp).strftime("%c")
+            logger.info("Packet decrypted successfully!")
+            result = {
+                "success": True,
+                "packet": {
+                    "datetime": datetime_str,
+                    "rssi": decrypted_pkt.rssi,
+                    "payload_bytes": len(decrypted_pkt.payload)
+                }
+            }
+            click.echo(json.dumps(result))
+            return
+
+        logger.debug("Decryption failed (doesn't match key), scanning for another packet...")
+
+    # If we exit the loop, it means we've exceeded the timeout without finding a valid packet
+    result = {"success": False, "error": "No valid packets found within timeout period"}
+    click.echo(json.dumps(result))
+    return
 
 
 @ble.command("scan")
