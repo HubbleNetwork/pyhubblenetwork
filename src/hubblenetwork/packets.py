@@ -11,6 +11,7 @@ class Location:
     lat: float
     lon: float
     alt_m: Optional[float] = None  # altitude meters, if known
+    fake: bool = False
 
 
 @dataclass(frozen=True)
