@@ -30,10 +30,10 @@ def _get_nonce(key: bytes, time_counter: int, counter: int, keylen: int) -> byte
     return _generate_kdf_key(nonce_key, _HUBBLE_AES_NONCE_SIZE, "Nonce", counter)
 
 
-def _get_encryption_key(key: bytes, time_counter: int, counter: int, keylen: int) -> bytes:
-    encryption_key = _generate_kdf_key(
-        key, keylen, "EncryptionKey", time_counter
-    )
+def _get_encryption_key(
+    key: bytes, time_counter: int, counter: int, keylen: int
+) -> bytes:
+    encryption_key = _generate_kdf_key(key, keylen, "EncryptionKey", time_counter)
 
     return _generate_kdf_key(encryption_key, keylen, "Key", counter)
 
@@ -76,7 +76,7 @@ def decrypt(
                 tags=[],
                 payload=decrypted_payload,
                 rssi=encrypted_pkt.rssi,
-                counter=None,
-                sequence=None,
+                counter=time_counter + t,
+                sequence=seq_no,
             )
     return None
