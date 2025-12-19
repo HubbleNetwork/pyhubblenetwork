@@ -29,7 +29,7 @@ _TARGET_UUID = "0000fca6-0000-1000-8000-00805f9b34fb"
 
 def _get_location() -> Optional[Location]:
     # Return an unreasonable location
-    return Location(lat=90, lon=0)
+    return Location(lat=90, lon=0, fake=True)
 
 
 async def _scan_async(ttl: float) -> List[EncryptedPacket]:
