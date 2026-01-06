@@ -15,6 +15,7 @@ from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import decrypt
+from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
 
@@ -348,9 +349,20 @@ def ble_detect(
     show_default=False,
     help="Attempt to decrypt any received packet with the given key",
 )
+@click.option(
+    "--days",
+    "-d",
+    type=int,
+    default=2,
+    show_default=True,
+    help="Number of days to check back when decrypting",
+)
 @click.option("--ingest", is_flag=True)
 def ble_scan(
-    timeout: Optional[int] = None, ingest: bool = False, key: Optional[str] = None
+    timeout: Optional[int] = None,
+    ingest: bool = False,
+    key: Optional[str] = None,
+    days: int = 2,
 ) -> None:
     """
     Scan for UUID 0xFCA6 and print the first packet found within TIMEOUT seconds.
@@ -387,7 +399,7 @@ def ble_scan(
 
         # If we have a key, attempt to decrypt
         if decoded_key:
-            decrypted_pkt = decrypt(decoded_key, pkt)
+            decrypted_pkt = decrypt(decoded_key, pkt, days=days)
             if decrypted_pkt:
                 _print_packet_table_row(
                     decrypted_pkt, show_payload=True, show_loc=False
@@ -398,6 +410,124 @@ def ble_scan(
                     org.ingest_packet(pkt)
         else:
             _print_packet_table_row(pkt, show_payload=False, show_loc=False)
+
+
+@ble.command("check-time")
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    default=None,
+    show_default=False,
+    help="Timeout when scanning (default: no timeout)",
+)
+@click.option(
+    "--key",
+    "-k",
+    required=True,
+    type=str,
+    help="Key to use for checking time counter resolution (base64 encoded)",
+)
+@click.option(
+    "--json-output",
+    "-j",
+    is_flag=True,
+    default=False,
+    help="Output results as JSON",
+)
+def ble_check_time(
+    timeout: Optional[int] = None, key: str = None, json_output: bool = False
+) -> int:
+    """
+    Scan for BLE packets and check if the device's UTC time is out of spec.
+
+    For each received packet, attempts to find the time counter delta using the
+    provided key. Reports how many days off the device time is from the expected
+    value (0 = correct, negative = behind, positive = ahead).
+
+    A device is considered out of spec if it is more than 2 days off.
+
+    Example:
+      hubblenetwork ble check-time --key "yourBase64Key=" --timeout 30
+    """
+    # Decode the key
+    try:
+        decoded_key = bytearray(base64.b64decode(key))
+    except (binascii.Error, Exception) as e:
+        if json_output:
+            click.echo(json.dumps({"error": f"Base64 decoding failed: {e}"}))
+        else:
+            click.secho(
+                f"[ERROR] Base64 decoding failed for provided key: {e}",
+                fg="red",
+                err=True,
+            )
+        return
+
+    if not json_output:
+        click.secho("[INFO] Scanning for Hubble devices to check time sync...")
+
+    start = time.monotonic()
+    deadline = None if timeout is None else start + timeout
+
+    while deadline is None or time.monotonic() < deadline:
+        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+
+        pkt = ble_mod.scan_single(timeout=this_timeout)
+        if not pkt:
+            break
+
+        # Check which time counter the packet resolves for
+        delta = find_time_counter_delta(decoded_key, pkt)
+
+        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+
+        if delta is None:
+            # Could not resolve the packet with this key
+            if not json_output:
+                click.echo(
+                    f"{ts}  RSSI: {pkt.rssi} dBm  - Could not resolve packet with provided key"
+                )
+        else:
+            # Packet resolved - report the delta
+            if delta == 0:
+                status = "Device time is correct"
+                in_spec = True
+            elif delta > 0:
+                status = (
+                    f"Device time is {delta} day{'s' if abs(delta) != 1 else ''} ahead"
+                )
+                in_spec = abs(delta) <= 2
+            else:
+                status = f"Device time is {abs(delta)} day{'s' if abs(delta) != 1 else ''} behind"
+                in_spec = abs(delta) <= 2
+
+            if json_output:
+                click.echo(
+                    json.dumps(
+                        {
+                            "resolved": True,
+                            "delta_days": delta,
+                            "in_spec": in_spec,
+                            "rssi": pkt.rssi,
+                            "timestamp": ts,
+                        }
+                    )
+                )
+            else:
+                color = "green" if in_spec else "red"
+                spec_label = "" if in_spec else " [OUT OF SPEC]"
+                click.echo(f"{ts}  RSSI: {pkt.rssi} dBm  - ", nl=False)
+                click.secho(f"{status}{spec_label}", fg=color)
+            return 0
+
+    if json_output:
+        click.echo(json.dumps({"resolved": False}))
+    else:
+        click.secho(
+            "[ERROR] No valid packets found within timeout period", fg="red", err=True
+        )
+    return -1
 
 
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
