@@ -14,6 +14,12 @@ from .errors import (
     raise_for_response,
 )
 
+# Default values for location metadata when ingesting packets
+# These are placeholders when actual accuracy/altitude data is unavailable
+DEFAULT_HORIZONTAL_ACCURACY_M = 0.0
+DEFAULT_ALTITUDE_M = 0.0
+DEFAULT_VERTICAL_ACCURACY_M = 0.0
+
 
 @dataclass(frozen=True)
 class Environment:
@@ -243,9 +249,9 @@ def ingest_packet(
                     "latitude": packet.location.lat,
                     "longitude": packet.location.lon,
                     "timestamp": packet.timestamp,
-                    "horizontal_accuracy": 42,
-                    "altitude": 42,
-                    "vertical_accuracy": 42,
+                    "horizontal_accuracy": DEFAULT_HORIZONTAL_ACCURACY_M,
+                    "altitude": DEFAULT_ALTITUDE_M,
+                    "vertical_accuracy": DEFAULT_VERTICAL_ACCURACY_M,
                 },
                 "adv": [
                     {

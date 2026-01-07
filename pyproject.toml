@@ -22,7 +22,6 @@ dependencies = [
   "bleak",
   "click",
   "pycryptodome",
-  "requests",
 ]
 
 [project.scripts]

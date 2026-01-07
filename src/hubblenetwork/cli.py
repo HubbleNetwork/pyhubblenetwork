@@ -96,10 +96,10 @@ def _print_packet_pretty(pkt) -> None:
 
 
 def _print_packets_pretty(pkts) -> None:
+    """Pretty-print a list of packets."""
     if len(pkts) == 0:
         click.echo("No packets!")
         return
-    """Pretty-print an EncryptedPacket."""
     for pkt in pkts:
         _print_packet_pretty(pkt)
 
@@ -140,13 +140,22 @@ def _print_packets_kepler(pkts) -> None:
     click.echo(json.dumps(data))
 
 
+_OUTPUT_FORMATS = {
+    "pretty": "_print_packets_pretty",
+    "csv": "_print_packets_csv",
+    "kepler": "_print_packets_kepler",
+    "tabular": "_print_packets_tabular",
+}
+
+
 def _print_packets(pkts, output: str = "pretty") -> None:
     if not output:
         _print_packets_tabular(pkts)
         return
-    func_name = f"_print_packets_{output.lower().strip()}"
-    func = getattr(sys.modules[__name__], func_name, None)
-    if callable(func):
+
+    format_key = output.lower().strip()
+    if format_key in _OUTPUT_FORMATS:
+        func = globals()[_OUTPUT_FORMATS[format_key]]
         func(pkts)
     else:
         _print_packets_tabular(pkts)
@@ -206,6 +215,7 @@ def ble() -> None:
     """BLE utilities."""
     # subgroup for BLE-related commands
 
+
 @ble.command("detect")
 @click.option(
     "--timeout",
@@ -231,7 +241,9 @@ def ble() -> None:
     default=False,
     help="Enable debug logging to stderr",
 )
-def ble_detect(timeout: Optional[int] = None, key: str = None, debug: bool = False) -> None:
+def ble_detect(
+    timeout: Optional[int] = None, key: str = None, debug: bool = False
+) -> None:
     """
     Scan for a single BLE packet and decrypt with key. Returns JSON output.
 
@@ -281,7 +293,10 @@ def ble_detect(timeout: Optional[int] = None, key: str = None, debug: bool = Fal
         if not pkt:
             # Timeout reached without finding any packet
             logger.error("Timeout: No BLE packets found")
-            result = {"success": False, "error": "No BLE packets found within timeout period"}
+            result = {
+                "success": False,
+                "error": "No BLE packets found within timeout period",
+            }
             click.echo(json.dumps(result))
             return
 
@@ -292,20 +307,24 @@ def ble_detect(timeout: Optional[int] = None, key: str = None, debug: bool = Fal
 
         if decrypted_pkt:
             # If we can decrypt it, build success JSON
-            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp).strftime("%c")
+            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp).strftime(
+                "%c"
+            )
             logger.info("Packet decrypted successfully!")
             result = {
                 "success": True,
                 "packet": {
                     "datetime": datetime_str,
                     "rssi": decrypted_pkt.rssi,
-                    "payload_bytes": len(decrypted_pkt.payload)
-                }
+                    "payload_bytes": len(decrypted_pkt.payload),
+                },
             }
             click.echo(json.dumps(result))
             return
 
-        logger.debug("Decryption failed (doesn't match key), scanning for another packet...")
+        logger.debug(
+            "Decryption failed (doesn't match key), scanning for another packet..."
+        )
 
     # If we exit the loop, it means we've exceeded the timeout without finding a valid packet
     result = {"success": False, "error": "No valid packets found within timeout period"}
@@ -331,7 +350,7 @@ def ble_detect(timeout: Optional[int] = None, key: str = None, debug: bool = Fal
 )
 @click.option("--ingest", is_flag=True)
 def ble_scan(
-    timeout: Optional(int) = None, ingest: bool = False, key: str = None
+    timeout: Optional[int] = None, ingest: bool = False, key: Optional[str] = None
 ) -> None:
     """
     Scan for UUID 0xFCA6 and print the first packet found within TIMEOUT seconds.
@@ -351,6 +370,14 @@ def ble_scan(
     start = time.monotonic()
     deadline = None if timeout is None else start + timeout
 
+    # Pre-decode the key if provided
+    decoded_key: Optional[bytearray] = None
+    if key:
+        try:
+            decoded_key = bytearray(base64.b64decode(key))
+        except (binascii.Error, Exception) as e:
+            raise click.ClickException(f"Invalid base64 key: {e}")
+
     while deadline is None or time.monotonic() < deadline:
         this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
 
@@ -359,8 +386,7 @@ def ble_scan(
             break
 
         # If we have a key, attempt to decrypt
-        if key:
-            decoded_key = bytearray(base64.b64decode(key))
+        if decoded_key:
             decrypted_pkt = decrypt(decoded_key, pkt)
             if decrypted_pkt:
                 _print_packet_table_row(
@@ -462,7 +488,7 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
     "-d",
     type=int,
     default=7,
-    show_default=False,  # show default in --help
+    show_default=True,
     help="Number of days to query back (from now)",
 )
 @pass_orgcfg
