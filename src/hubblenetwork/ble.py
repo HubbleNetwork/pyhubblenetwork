@@ -32,121 +32,164 @@ def _get_location() -> Optional[Location]:
     return Location(lat=90, lon=0)
 
 
+async def _scan_async(ttl: float) -> List[EncryptedPacket]:
+    """Async implementation of BLE scan."""
+    done = asyncio.Event()
+    packets: List[EncryptedPacket] = []
+
+    def on_detect(device, adv_data) -> None:
+        nonlocal packets
+        # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
+        service_data = getattr(adv_data, "service_data", None) or {}
+        payload = None
+
+        # Keys are 128-bit UUID strings; compare lowercased
+        for uuid_str, data in service_data.items():
+            if (uuid_str or "").lower() == _TARGET_UUID:
+                payload = bytes(data)
+                break
+
+        if payload is not None:
+            rssi = getattr(adv_data, "rssi", getattr(device, "rssi", 0)) or 0
+            packets.append(
+                EncryptedPacket(
+                    timestamp=int(datetime.now(timezone.utc).timestamp()),
+                    location=_get_location(),
+                    payload=payload,
+                    rssi=int(rssi),
+                )
+            )
+
+    # Start scanning and wait for first match or timeout
+    async with BleakScanner(detection_callback=on_detect):
+        try:
+            await asyncio.wait_for(done.wait(), timeout=ttl)
+        except asyncio.TimeoutError:
+            pass
+
+    return packets
+
+
 def scan(timeout: float) -> List[EncryptedPacket]:
     """
-    Scan for a BLE advertisements that includes service data for UUID 0xFCA6 and
-    return it as a List[EncryptedPacket] (payload=data bytes, rssi from the adv).
+    Scan for BLE advertisements that include service data for UUID 0xFCA6 and
+    return them as a List[EncryptedPacket] (payload=data bytes, rssi from the adv).
+
+    For async environments (e.g., Jupyter), use scan_async() instead.
     """
-
-    async def _scan_async(ttl: float) -> List[EncryptedPacket]:
-        done = asyncio.Event()
-        packets = []
-
-        def on_detect(device, adv_data) -> None:
-            nonlocal packets
-            # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
-            service_data = getattr(adv_data, "service_data", None) or {}
-            payload = None
-
-            # Keys are 128-bit UUID strings; compare lowercased
-            for uuid_str, data in service_data.items():
-                if (uuid_str or "").lower() == _TARGET_UUID:
-                    payload = bytes(data)
-                    break
-
-            if payload is not None:
-                rssi = getattr(adv_data, "rssi", getattr(device, "rssi", 0)) or 0
-                packets.append(
-                    EncryptedPacket(
-                        timestamp=int(datetime.now(timezone.utc).timestamp()),
-                        location=_get_location(),
-                        payload=payload,
-                        rssi=int(rssi),
-                    )
-                )
-
-        # Start scanning and wait for first match or timeout
-        async with BleakScanner(detection_callback=on_detect):
-            try:
-                await asyncio.wait_for(done.wait(), timeout=ttl)
-            except asyncio.TimeoutError:
-                pass
-
-        return packets
-
-    # Run the async scanner. If there's already a running event loop (e.g., Jupyter),
-    # you can adapt this to use `await _scan_async(timeout)` instead.
     try:
         return asyncio.run(_scan_async(timeout))
     except RuntimeError:
-        # Fallback for environments with an active loop (e.g., notebooks/async apps)
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Create a task and block until it’s done via a new Future
-            return loop.run_until_complete(_scan_async(timeout))  # type: ignore[func-returns-value]
-        return loop.run_until_complete(_scan_async(timeout))
+        # Fallback for environments with an active loop (e.g., Jupyter notebooks).
+        # Note: For Jupyter, consider installing nest_asyncio for better compatibility.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_scan_async(timeout))
+            finally:
+                loop.close()
+        # If there's a running loop, we can't use run_until_complete
+        raise RuntimeError(
+            "Cannot run synchronous BLE scan inside an existing async event loop. "
+            "Use 'await ble.scan_async()' or install 'nest_asyncio' for Jupyter support."
+        )
+
+
+async def scan_async(timeout: float) -> List[EncryptedPacket]:
+    """
+    Async version of scan() for use in async environments like Jupyter notebooks.
+
+    Usage:
+        packets = await ble.scan_async(timeout=5.0)
+    """
+    return await _scan_async(timeout)
+
+
+async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
+    """Async implementation for scanning a single BLE packet."""
+    done = asyncio.Event()
+    packet: Optional[EncryptedPacket] = None
+
+    def on_detect(device, adv_data) -> None:
+        nonlocal packet
+
+        # If we already found a packet, ignore further callbacks
+        if packet is not None:
+            return
+
+        # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
+        service_data = getattr(adv_data, "service_data", None) or {}
+        service_uuids = getattr(adv_data, "service_uuids", None) or []
+        payload = None
+
+        if _TARGET_UUID not in service_uuids:
+            return
+
+        # Keys are 128-bit UUID strings; compare lowercased
+        for uuid_str, data in service_data.items():
+            if (uuid_str or "").lower() == _TARGET_UUID:
+                payload = bytes(data)
+                break
+
+        if payload is None:
+            return
+
+        rssi = getattr(adv_data, "rssi", getattr(device, "rssi", 0)) or 0
+        packet = EncryptedPacket(
+            timestamp=int(datetime.now(timezone.utc).timestamp()),
+            location=_get_location(),
+            payload=payload,
+            rssi=int(rssi),
+        )
+        done.set()
+
+    # Start scanning and wait for first match or timeout
+    async with BleakScanner(detection_callback=on_detect):
+        try:
+            await asyncio.wait_for(done.wait(), timeout=ttl)
+        except asyncio.TimeoutError:
+            pass
+
+    return packet
 
 
 def scan_single(timeout: float) -> Optional[EncryptedPacket]:
     """
     Scan for a BLE advertisement that includes service data for UUID 0xFCA6 and
     return it.
+
+    For async environments (e.g., Jupyter), use scan_single_async() instead.
     """
-
-    async def _scan_async(ttl: float) -> List[EncryptedPacket]:
-        done = asyncio.Event()
-        packet: Optional[EncryptedPacket] = None
-
-        def on_detect(device, adv_data) -> None:
-            nonlocal packet
-
-            # If we already found a packet, ignore further callbacks
-            if packet is not None:
-                return
-
-            # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
-            service_data = getattr(adv_data, "service_data", None) or {}
-            service_uuids = getattr(adv_data, "service_uuids", None) or []
-            payload = None
-
-            if _TARGET_UUID not in service_uuids:
-                return
-
-            # Keys are 128-bit UUID strings; compare lowercased
-            for uuid_str, data in service_data.items():
-                if (uuid_str or "").lower() == _TARGET_UUID:
-                    payload = bytes(data)
-                    break
-
-            if payload is None:
-                return
-
-            rssi = getattr(adv_data, "rssi", getattr(device, "rssi", 0)) or 0
-            packet = EncryptedPacket(
-                timestamp=int(datetime.now(timezone.utc).timestamp()),
-                location=_get_location(),
-                payload=payload,
-                rssi=int(rssi),
-            )
-            done.set()
-
-        # Start scanning and wait for first match or timeout
-        async with BleakScanner(detection_callback=on_detect):
-            try:
-                await asyncio.wait_for(done.wait(), timeout=ttl)
-            except asyncio.TimeoutError:
-                pass
-
-        return packet
-
-    # Run the async scanner. If there's already a running event loop (e.g., Jupyter),
-    # you can adapt this to use `await _scan_async(timeout)` instead.
     try:
-        return asyncio.run(_scan_async(timeout))
+        return asyncio.run(_scan_single_async(timeout))
     except RuntimeError:
-        # Fallback for environments with an active loop (e.g., notebooks/async apps)
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Create a task and block until it’s done via a new Future
-            return loop.run_until_complete(_scan_async(timeout))  # type: ignore[func-returns-value]
-        return loop.run_until_complete(_scan_async(timeout))
+        # Fallback for environments with an active loop (e.g., Jupyter notebooks).
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_scan_single_async(timeout))
+            finally:
+                loop.close()
+        # If there's a running loop, we can't use run_until_complete
+        raise RuntimeError(
+            "Cannot run synchronous BLE scan inside an existing async event loop. "
+            "Use 'await ble.scan_single_async()' or install 'nest_asyncio' for Jupyter support."
+        )
+
+
+async def scan_single_async(timeout: float) -> Optional[EncryptedPacket]:
+    """
+    Async version of scan_single() for use in async environments like Jupyter notebooks.
+
+    Usage:
+        packet = await ble.scan_single_async(timeout=5.0)
+    """
+    return await _scan_single_async(timeout)

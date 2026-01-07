@@ -1,7 +1,7 @@
 # hubble/device.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 
 @dataclass
@@ -14,7 +14,7 @@ class Device:
     id: str
     key: Optional[bytes] = None
     name: Optional[str] = None
-    tags: Optional[List[Dict]] = None
+    tags: Optional[Dict[str, str]] = None
     created_ts: Optional[int] = None
     active: Optional[bool] = False
 

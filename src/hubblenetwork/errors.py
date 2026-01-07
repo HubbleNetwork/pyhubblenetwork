@@ -73,10 +73,18 @@ class FlashError(RuntimeError):
 
 __all__ = [
     "HubbleError",
+    "BackendError",
     "RequestError",
     "InternalServerError",
+    "NetworkError",
+    "APITimeout",
+    "InvalidCredentialsError",
+    "ValidationError",
     "ScanError",
     "DecryptionError",
+    "InvalidDeviceError",
+    "ElfFetchError",
+    "FlashError",
     "raise_for_response",
     "map_http_status",
 ]

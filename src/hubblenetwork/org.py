@@ -1,5 +1,6 @@
 # hubble/org.py
 from __future__ import annotations
+import base64
 from typing import Optional, List
 
 from . import cloud
@@ -19,12 +20,17 @@ class Organization:
     credentials: cloud.Credentials
     env: cloud.Environment
 
+    @property
+    def org_id(self) -> str:
+        """Return the organization ID from credentials."""
+        return self.credentials.org_id
+
     def __init__(
         self,
-        org_id: Optional(str) = None,
-        api_token: Optional(str) = None,
-        credentials: Optional(cloud.Credentials) = None,
-    ) -> str:
+        org_id: Optional[str] = None,
+        api_token: Optional[str] = None,
+        credentials: Optional[cloud.Credentials] = None,
+    ) -> None:
         if credentials:
             self.credentials = credentials
         else:
@@ -47,12 +53,13 @@ class Organization:
         # Currently, only registering a single device and taking the
         # first in the returned list
         device = resp["devices"][0]
-        return Device(id=device["device_id"], key=device["key"])
+        key_bytes = base64.b64decode(device["key"]) if device.get("key") else None
+        return Device(id=device["device_id"], key=key_bytes)
 
     def set_device_name(self, device_id: str, name: str) -> Device:
         """
-        Register a new device in this organization and return it.
-        Returned Device will have an ID and provisioned key.
+        Update the name of an existing device.
+        Returns the updated Device object.
         """
         resp = cloud.update_device(
             credentials=self.credentials,
