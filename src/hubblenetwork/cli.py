@@ -10,7 +10,8 @@ import base64
 import binascii
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
+from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
 from hubblenetwork import ble as ble_mod
@@ -45,52 +46,126 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
     return org_id, token
 
 
-def _print_packet_table_header(pkt) -> None:
-    if getattr(_print_packet_table_header, "_has_run", False):
+class _StreamingTablePrinter:
+    """Helper class to print table rows as they arrive, printing header once."""
+
+    # Fixed column widths for consistent alignment
+    _COL_WIDTHS = {
+        "TIMESTAMP": 12,
+        "TIME": 26,
+        "RSSI": 6,
+        "COUNTER": 8,
+        "SEQ": 6,
+        "COORDINATES": 22,
+        "PAYLOAD": 20,
+    }
+
+    def __init__(self):
+        self._header_printed = False
+        self._headers: List[str] = []
+        self._column_config: dict = {}
+
+    def _determine_columns(self, pkt) -> tuple[List[str], dict]:
+        """Determine column headers and configuration based on packet type."""
+        is_decrypted = isinstance(pkt, DecryptedPacket)
+        has_real_location = not pkt.location.fake
+
+        headers = ["TIMESTAMP", "TIME", "RSSI"]
+        if is_decrypted:
+            headers.extend(["COUNTER", "SEQ"])
+        if has_real_location:
+            headers.append("COORDINATES")
+        if is_decrypted:
+            headers.append("PAYLOAD")
+
+        return headers, {
+            "is_decrypted": is_decrypted,
+            "has_real_location": has_real_location,
+        }
+
+    def _format_row(self, values: List) -> str:
+        """Format a row with fixed column widths."""
+        parts = []
+        for i, val in enumerate(values):
+            width = self._COL_WIDTHS.get(self._headers[i], 10)
+            parts.append(f"{str(val):<{width}}")
+        return "| " + " | ".join(parts) + " |"
+
+    def _make_separator(self) -> str:
+        """Create a separator line based on current headers."""
+        parts = []
+        for header in self._headers:
+            width = self._COL_WIDTHS.get(header, 10)
+            parts.append("-" * width)
+        return "+-" + "-+-".join(parts) + "-+"
+
+    def print_row(self, pkt) -> None:
+        """Print a single packet row, printing header first if needed."""
+        if not self._header_printed:
+            self._headers, self._column_config = self._determine_columns(pkt)
+            # Print header with separator
+            click.echo("")
+            click.echo(self._make_separator())
+            click.secho(self._format_row(self._headers), bold=True)
+            click.echo(self._make_separator())
+            self._header_printed = True
+
+        # Build row data matching the column structure
+        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+        row = [pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"]
+
+        if self._column_config["is_decrypted"]:
+            row.extend([pkt.counter, pkt.sequence])
+
+        if self._column_config["has_real_location"]:
+            loc = pkt.location
+            row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
+
+        if self._column_config["is_decrypted"]:
+            row.append(f'"{pkt.payload}"')
+
+        # Print the data row
+        click.echo(self._format_row(row))
+        click.echo(self._make_separator())
+
+
+def _print_packets_tabular(pkts: List) -> None:
+    """Print packets in a formatted table using tabulate."""
+    if not pkts:
+        click.echo("No packets!")
         return
-    _print_packet_table_header._has_run = True
-    dashes = ""
 
-    click.secho(
-        "\n| TIMESTAMP  | TIME                     | RSSI |", nl=False, bold=True
-    )
-    dashes += "------------------------------------------------"
-    if isinstance(pkt, DecryptedPacket):
-        click.secho(" COUNTER | SEQ  ", nl=False, bold=True)
-        dashes += "-----------------"
-    if not pkt.location.fake:
-        click.secho("| COORDINATES           ", nl=False, bold=True)
-        dashes += "-----------------------"
-    if isinstance(pkt, DecryptedPacket):
-        click.secho("| PAYLOAD |", nl=False, bold=True)
-        dashes += "-----------"
-    click.echo("")
-    click.echo(dashes)
+    # For batch printing, use the full table format
+    first_pkt = pkts[0]
+    is_decrypted = isinstance(first_pkt, DecryptedPacket)
+    has_real_location = not first_pkt.location.fake
 
+    headers = ["TIMESTAMP", "TIME", "RSSI"]
+    if is_decrypted:
+        headers.extend(["COUNTER", "SEQ"])
+    if has_real_location:
+        headers.append("COORDINATES")
+    if is_decrypted:
+        headers.append("PAYLOAD")
 
-def _print_packet_table_row(pkt) -> None:
-    _print_packet_table_header(pkt)
-    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-
-    click.echo(f"| {pkt.timestamp} | {ts} |", nl=False)
-    if pkt.rssi is not None:
-        click.echo(f" {pkt.rssi:4} | ", nl=False)
-    else:
-        click.echo(f" None | ", nl=False)
-    if isinstance(pkt, DecryptedPacket):
-        click.secho(f"{pkt.counter}   | {pkt.sequence:4d} | ", nl=False)
-    if not pkt.location.fake:
-        loc = pkt.location
-        click.echo(f"{loc.lat:.6f},{loc.lon:.6f} | ", nl=False)
-    if isinstance(pkt, DecryptedPacket):
-        click.secho(f'"{pkt.payload}" |', nl=False)
-
-    click.echo("")
-
-
-def _print_packets_tabular(pkts) -> None:
+    rows = []
     for pkt in pkts:
-        _print_packet_table_row(pkt)
+        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+        row = [pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"]
+
+        if is_decrypted:
+            row.extend([pkt.counter, pkt.sequence])
+
+        if has_real_location:
+            loc = pkt.location
+            row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
+
+        if is_decrypted:
+            row.append(f'"{pkt.payload}"')
+
+        rows.append(row)
+
+    click.echo("\n" + tabulate(rows, headers=headers, tablefmt="grid"))
 
 
 def _print_packet_pretty(pkt) -> None:
@@ -404,6 +479,9 @@ def ble_scan(
         except (binascii.Error, Exception) as e:
             raise click.ClickException(f"Invalid base64 key: {e}")
 
+    # Use streaming table printer to display packets as they arrive
+    table_printer = _StreamingTablePrinter()
+
     while deadline is None or time.monotonic() < deadline:
         this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
 
@@ -415,13 +493,13 @@ def ble_scan(
         if decoded_key:
             decrypted_pkt = decrypt(decoded_key, pkt, days=days)
             if decrypted_pkt:
-                _print_packet_table_row(decrypted_pkt)
+                table_printer.print_row(decrypted_pkt)
                 # We only allow ingestion of packets you know the key of
                 # so we don't ingest bogus data in the backend
                 if ingest:
                     org.ingest_packet(pkt)
         else:
-            _print_packet_table_row(pkt)
+            table_printer.print_row(pkt)
 
 
 @ble.command("check-time")

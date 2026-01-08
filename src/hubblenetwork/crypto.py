@@ -98,7 +98,7 @@ def decrypt(
                 payload=decrypted_payload,
                 rssi=encrypted_pkt.rssi,
                 counter=time_counter + t,
-                sequence=seq_no,
+                sequence=parsed.seq_no,
             )
     return None
 
