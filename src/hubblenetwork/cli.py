@@ -456,12 +456,13 @@ def ble_scan(
     days: int = 2,
 ) -> None:
     """
-    Scan for UUID 0xFCA6 and print the first packet found within TIMEOUT seconds.
+    Scan for UUID 0xFCA6 and print packets as they are found.
 
     Example:
-      hubblenetwork ble scan 1
+      hubblenetwork ble scan --timeout 30
+      hubblenetwork ble scan --key "base64key=" --timeout 60
     """
-    click.secho("[INFO] Scanning for Hubble devices...")
+    click.secho("[INFO] Scanning for Hubble devices... (Press Ctrl+C to stop)")
     if ingest:
         org = Organization(
             org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
@@ -481,25 +482,32 @@ def ble_scan(
 
     # Use streaming table printer to display packets as they arrive
     table_printer = _StreamingTablePrinter()
+    packet_count = 0
 
-    while deadline is None or time.monotonic() < deadline:
-        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+    try:
+        while deadline is None or time.monotonic() < deadline:
+            this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
 
-        pkt = ble_mod.scan_single(timeout=this_timeout)
-        if not pkt:
-            break
+            pkt = ble_mod.scan_single(timeout=this_timeout)
+            if not pkt:
+                break
 
-        # If we have a key, attempt to decrypt
-        if decoded_key:
-            decrypted_pkt = decrypt(decoded_key, pkt, days=days)
-            if decrypted_pkt:
-                table_printer.print_row(decrypted_pkt)
-                # We only allow ingestion of packets you know the key of
-                # so we don't ingest bogus data in the backend
-                if ingest:
-                    org.ingest_packet(pkt)
-        else:
-            table_printer.print_row(pkt)
+            # If we have a key, attempt to decrypt
+            if decoded_key:
+                decrypted_pkt = decrypt(decoded_key, pkt, days=days)
+                if decrypted_pkt:
+                    table_printer.print_row(decrypted_pkt)
+                    packet_count += 1
+                    # We only allow ingestion of packets you know the key of
+                    # so we don't ingest bogus data in the backend
+                    if ingest:
+                        org.ingest_packet(pkt)
+            else:
+                table_printer.print_row(pkt)
+                packet_count += 1
+    except KeyboardInterrupt:
+        click.echo("")  # New line after ^C
+        click.secho(f"[INFO] Scanning stopped. {packet_count} packet(s) received.", fg="yellow")
 
 
 @ble.command("check-time")
