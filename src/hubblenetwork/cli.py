@@ -328,7 +328,18 @@ def _print_device(dev: Device) -> None:
         click.echo("")
 
 
+def _get_version() -> str:
+    """Return package version, with fallback for development installs."""
+    try:
+        from importlib.metadata import version
+
+        return version("pyhubblenetwork")
+    except Exception:
+        return "dev"
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(version=_get_version(), prog_name="hubblenetwork")
 def cli() -> None:
     """Hubble SDK CLI."""
     # top-level group; subcommands are added below
@@ -376,8 +387,8 @@ def ble() -> None:
     "-t",
     type=int,
     default=10,
-    show_default=False,
-    help="Timeout when scanning",
+    show_default=True,
+    help="Timeout in seconds",
 )
 @click.option(
     "--key",
@@ -386,30 +397,49 @@ def ble() -> None:
     type=str,
     default=None,
     show_default=False,
-    help="Attempt to decrypt any received packet with the given key",
+    help="Key to decrypt packets (base64 encoded, required)",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["json", "tabular"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
 )
 @click.option(
     "--debug",
-    "-d",
     is_flag=True,
     default=False,
     help="Enable debug logging to stderr",
 )
 def ble_detect(
-    timeout: Optional[int] = None, key: str = None, debug: bool = False
+    timeout: Optional[int] = None,
+    key: str = None,
+    output_format: str = "tabular",
+    debug: bool = False,
 ) -> None:
     """
-    Scan for a single BLE packet and decrypt with key. Returns JSON output.
+    Scan for a single BLE packet and decrypt with key.
 
     This mode is designed for programmatic validation of BLE packets.
-    The key parameter is required. JSON goes to stdout, errors/logs go to stderr.
-    Check the 'success' field (boolean) in JSON.
+    The key parameter is required. Check the 'success' field in JSON output.
 
     Example:
-      hubblenetwork ble detect --key "yourBase64Key=" --timeout 20 --debug
+      hubblenetwork ble detect --key "yourBase64Key=" --timeout 20
+      hubblenetwork ble detect -k "key=" -o tabular
     """
+    use_json = output_format.lower() == "json"
+
     # Set log level based on debug flag
     logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+
+    def _output_error(msg: str) -> None:
+        if use_json:
+            click.echo(json.dumps({"success": False, "error": msg}))
+        else:
+            click.secho(f"[ERROR] {msg}", fg="red", err=True)
 
     # Try to decode the base64 key
     try:
@@ -417,8 +447,7 @@ def ble_detect(
         logger.debug("Key decoded successfully")
     except (binascii.Error, Exception) as e:
         logger.error(f"Base64 decoding failed: {e}")
-        result = {"success": False, "error": "Base64 decoding failed for provided key"}
-        click.echo(json.dumps(result))
+        _output_error("Base64 decoding failed for provided key")
         return
 
     # Set up timeout tracking
@@ -439,19 +468,14 @@ def ble_detect(
             pkt = ble_mod.scan_single(timeout=this_timeout)
         except Exception as e:
             logger.error(f"BLE scanning error: {e}")
-            result = {"success": False, "error": f"BLE scanning error: {str(e)}"}
-            click.echo(json.dumps(result))
+            _output_error(f"BLE scanning error: {str(e)}")
             return
 
         # Check if packet was found
         if not pkt:
             # Timeout reached without finding any packet
             logger.error("Timeout: No BLE packets found")
-            result = {
-                "success": False,
-                "error": "No BLE packets found within timeout period",
-            }
-            click.echo(json.dumps(result))
+            _output_error("No BLE packets found within timeout period")
             return
 
         logger.debug("Packet received, attempting decryption...")
@@ -460,20 +484,27 @@ def ble_detect(
         decrypted_pkt = decrypt(decoded_key, pkt)
 
         if decrypted_pkt:
-            # If we can decrypt it, build success JSON
+            # If we can decrypt it, output success
             datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp).strftime(
                 "%c"
             )
             logger.info("Packet decrypted successfully!")
-            result = {
-                "success": True,
-                "packet": {
-                    "datetime": datetime_str,
-                    "rssi": decrypted_pkt.rssi,
-                    "payload_bytes": len(decrypted_pkt.payload),
-                },
-            }
-            click.echo(json.dumps(result))
+
+            if use_json:
+                result = {
+                    "success": True,
+                    "packet": {
+                        "datetime": datetime_str,
+                        "rssi": decrypted_pkt.rssi,
+                        "payload_bytes": len(decrypted_pkt.payload),
+                    },
+                }
+                click.echo(json.dumps(result))
+            else:
+                click.secho("[SUCCESS] ", fg="green", nl=False)
+                click.echo(
+                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, {len(decrypted_pkt.payload)} bytes"
+                )
             return
 
         logger.debug(
@@ -481,9 +512,7 @@ def ble_detect(
         )
 
     # If we exit the loop, it means we've exceeded the timeout without finding a valid packet
-    result = {"success": False, "error": "No valid packets found within timeout period"}
-    click.echo(json.dumps(result))
-    return
+    _output_error("No valid packets found within timeout period")
 
 
 @ble.command("scan")
@@ -492,7 +521,15 @@ def ble_detect(
     "-t",
     type=int,
     show_default=False,
-    help="Timeout when scanning",
+    help="Timeout in seconds (default: no timeout)",
+)
+@click.option(
+    "--count",
+    "-n",
+    type=int,
+    default=None,
+    show_default=False,
+    help="Stop after receiving N packets",
 )
 @click.option(
     "--key",
@@ -510,7 +547,7 @@ def ble_detect(
     show_default=True,
     help="Number of days to check back when decrypting",
 )
-@click.option("--ingest", is_flag=True)
+@click.option("--ingest", is_flag=True, help="Ingest packets to backend (requires key)")
 @click.option(
     "--format",
     "-o",
@@ -522,6 +559,7 @@ def ble_detect(
 )
 def ble_scan(
     timeout: Optional[int] = None,
+    count: Optional[int] = None,
     ingest: bool = False,
     key: Optional[str] = None,
     days: int = 2,
@@ -534,6 +572,7 @@ def ble_scan(
       hubblenetwork ble scan --timeout 30
       hubblenetwork ble scan --key "base64key=" --timeout 60
       hubblenetwork ble scan -o json --timeout 10
+      hubblenetwork ble scan -n 5              # Stop after 5 packets
     """
     # Get the appropriate streaming printer
     printer_class = _STREAMING_PRINTERS.get(
@@ -566,6 +605,10 @@ def ble_scan(
 
     try:
         while deadline is None or time.monotonic() < deadline:
+            # Check if we've hit the count limit
+            if count is not None and printer.packet_count >= count:
+                break
+
             this_timeout = (
                 None if deadline is None else max(deadline - time.monotonic(), 0)
             )
@@ -606,14 +649,14 @@ def ble_scan(
     type=int,
     default=None,
     show_default=False,
-    help="Timeout when scanning (default: no timeout)",
+    help="Timeout in seconds (default: no timeout)",
 )
 @click.option(
     "--key",
     "-k",
     required=True,
     type=str,
-    help="Key to use for checking time counter resolution (base64 encoded)",
+    help="Key for checking time counter (base64 encoded)",
 )
 @click.option(
     "--json-output",
@@ -796,9 +839,7 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
     "--format",
     "-o",
     "output_format",
-    type=click.Choice(
-        ["tabular", "csv", "json"], case_sensitive=False
-    ),
+    type=click.Choice(["tabular", "csv", "json"], case_sensitive=False),
     default="tabular",
     show_default=True,
     help="Output format for packets",
@@ -836,7 +877,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     """
     try:
         # standalone_mode=False prevents Click from calling sys.exit itself.
-        cli.main(args=argv, prog_name="hubble", standalone_mode=False)
+        cli.main(args=argv, prog_name="hubblenetwork", standalone_mode=False)
     except SystemExit as e:
         return int(e.code)
     except Exception as e:  # safety net to avoid tracebacks in user CLI
