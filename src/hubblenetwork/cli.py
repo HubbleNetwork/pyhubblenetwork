@@ -46,8 +46,72 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
     return org_id, token
 
 
-class _StreamingTablePrinter:
-    """Helper class to print table rows as they arrive, printing header once."""
+def _packet_to_dict(pkt) -> dict:
+    """Convert a packet to a dictionary for JSON serialization."""
+    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+    data = {
+        "timestamp": pkt.timestamp,
+        "datetime": ts,
+        "rssi": pkt.rssi,
+    }
+
+    if isinstance(pkt, DecryptedPacket):
+        data["counter"] = pkt.counter
+        data["sequence"] = pkt.sequence
+        # Decode payload to string if possible, otherwise use hex
+        try:
+            data["payload"] = (
+                pkt.payload.decode("utf-8")
+                if isinstance(pkt.payload, bytes)
+                else str(pkt.payload)
+            )
+        except UnicodeDecodeError:
+            data["payload_hex"] = (
+                pkt.payload.hex()
+                if isinstance(pkt.payload, bytes)
+                else str(pkt.payload)
+            )
+    else:
+        # EncryptedPacket - show payload as hex
+        data["payload_hex"] = (
+            pkt.payload.hex() if isinstance(pkt.payload, bytes) else str(pkt.payload)
+        )
+
+    if not pkt.location.fake:
+        data["location"] = {
+            "lat": pkt.location.lat,
+            "lon": pkt.location.lon,
+        }
+
+    return data
+
+
+class _StreamingPrinterBase:
+    """Base class for streaming packet printers."""
+
+    def __init__(self):
+        self._packet_count = 0
+
+    def print_row(self, pkt) -> None:
+        """Print a single packet. Override in subclasses."""
+        raise NotImplementedError
+
+    def finalize(self) -> None:
+        """Called when scanning is complete. Override in subclasses if needed."""
+        pass
+
+    @property
+    def packet_count(self) -> int:
+        return self._packet_count
+
+    @property
+    def suppress_info_messages(self) -> bool:
+        """Return True to suppress info messages (e.g., for JSON output)."""
+        return False
+
+
+class _StreamingTablePrinter(_StreamingPrinterBase):
+    """Print table rows as they arrive, printing header once."""
 
     # Fixed column widths for consistent alignment
     _COL_WIDTHS = {
@@ -61,6 +125,7 @@ class _StreamingTablePrinter:
     }
 
     def __init__(self):
+        super().__init__()
         self._header_printed = False
         self._headers: List[str] = []
         self._column_config: dict = {}
@@ -127,6 +192,49 @@ class _StreamingTablePrinter:
         # Print the data row
         click.echo(self._format_row(row))
         click.echo(self._make_separator())
+        self._packet_count += 1
+
+
+class _StreamingJsonPrinter(_StreamingPrinterBase):
+    """Print packets as a streaming JSON array."""
+
+    def __init__(self):
+        super().__init__()
+        self._array_started = False
+
+    @property
+    def suppress_info_messages(self) -> bool:
+        return True
+
+    def print_row(self, pkt) -> None:
+        """Print a single packet as JSON."""
+        pkt_dict = _packet_to_dict(pkt)
+        if not self._array_started:
+            click.echo("[")
+            self._array_started = True
+            # First packet - no leading comma
+            click.echo("  " + json.dumps(pkt_dict), nl=False)
+        else:
+            # Subsequent packets - leading comma
+            click.echo(",")
+            click.echo("  " + json.dumps(pkt_dict), nl=False)
+        self._packet_count += 1
+
+    def finalize(self) -> None:
+        """Close the JSON array."""
+        if self._array_started:
+            click.echo("")  # Newline after last packet
+            click.echo("]")
+        else:
+            # No packets received, output empty array
+            click.echo("[]")
+
+
+# Mapping of format names to streaming printer classes
+_STREAMING_PRINTERS = {
+    "tabular": _StreamingTablePrinter,
+    "json": _StreamingJsonPrinter,
+}
 
 
 def _print_packets_tabular(pkts: List) -> None:
@@ -168,34 +276,6 @@ def _print_packets_tabular(pkts: List) -> None:
     click.echo("\n" + tabulate(rows, headers=headers, tablefmt="grid"))
 
 
-def _print_packet_pretty(pkt) -> None:
-    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-    loc = pkt.location
-    loc_str = (
-        f"{loc.lat:.6f},{loc.lon:.6f}"
-        if getattr(loc, "lat", None) is not None
-        else "unknown"
-    )
-    click.echo(click.style("=== BLE packet ===", bold=True))
-    click.echo(f"time:    {ts}")
-    click.echo(f"rssi:    {pkt.rssi} dBm")
-    click.echo(f"loc:     {loc_str}")
-    # Show both hex and length
-    if isinstance(pkt, DecryptedPacket):
-        click.echo(f'payload: "{pkt.payload}"')
-    elif isinstance(pkt, EncryptedPacket):
-        click.echo(f"payload: {pkt.payload.hex()} ({len(pkt.payload)} bytes)")
-
-
-def _print_packets_pretty(pkts) -> None:
-    """Pretty-print a list of packets."""
-    if len(pkts) == 0:
-        click.echo("No packets!")
-        return
-    for pkt in pkts:
-        _print_packet_pretty(pkt)
-
-
 def _print_packets_csv(pkts) -> None:
     click.echo("timestamp, datetime, latitude, longitude, payload")
     for pkt in pkts:
@@ -209,38 +289,20 @@ def _print_packets_csv(pkts) -> None:
         )
 
 
-def _print_packets_kepler(pkts) -> None:
-    """
-    https://kepler.gl/demo
-
-    Can ingest this JSON to visualize a travel path for a device.
-    """
-    data = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {"vendor": "A"},
-                "geometry": {"type": "LineString", "coordinates": []},
-            }
-        ],
-    }
-
-    for pkt in pkts:
-        row = [pkt.location.lon, pkt.location.lat, 0, pkt.timestamp]
-        data["features"][0]["geometry"]["coordinates"].append(row)
-    click.echo(json.dumps(data))
+def _print_packets_json(pkts) -> None:
+    """Print packets as a JSON array."""
+    json_packets = [_packet_to_dict(pkt) for pkt in pkts]
+    click.echo(json.dumps(json_packets, indent=2))
 
 
 _OUTPUT_FORMATS = {
-    "pretty": "_print_packets_pretty",
     "csv": "_print_packets_csv",
-    "kepler": "_print_packets_kepler",
     "tabular": "_print_packets_tabular",
+    "json": "_print_packets_json",
 }
 
 
-def _print_packets(pkts, output: str = "pretty") -> None:
+def _print_packets(pkts, output: str = "tabular") -> None:
     if not output:
         _print_packets_tabular(pkts)
         return
@@ -449,11 +511,21 @@ def ble_detect(
     help="Number of days to check back when decrypting",
 )
 @click.option("--ingest", is_flag=True)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format for packets",
+)
 def ble_scan(
     timeout: Optional[int] = None,
     ingest: bool = False,
     key: Optional[str] = None,
     days: int = 2,
+    output_format: str = "tabular",
 ) -> None:
     """
     Scan for UUID 0xFCA6 and print packets as they are found.
@@ -461,8 +533,17 @@ def ble_scan(
     Example:
       hubblenetwork ble scan --timeout 30
       hubblenetwork ble scan --key "base64key=" --timeout 60
+      hubblenetwork ble scan -o json --timeout 10
     """
-    click.secho("[INFO] Scanning for Hubble devices... (Press Ctrl+C to stop)")
+    # Get the appropriate streaming printer
+    printer_class = _STREAMING_PRINTERS.get(
+        output_format.lower(), _StreamingTablePrinter
+    )
+    printer = printer_class()
+
+    if not printer.suppress_info_messages:
+        click.secho("[INFO] Scanning for Hubble devices... (Press Ctrl+C to stop)")
+
     if ingest:
         org = Organization(
             org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
@@ -478,15 +559,16 @@ def ble_scan(
         try:
             decoded_key = bytearray(base64.b64decode(key))
         except (binascii.Error, Exception) as e:
+            if printer.suppress_info_messages:
+                click.echo(json.dumps({"error": f"Invalid base64 key: {e}"}))
+                return
             raise click.ClickException(f"Invalid base64 key: {e}")
-
-    # Use streaming table printer to display packets as they arrive
-    table_printer = _StreamingTablePrinter()
-    packet_count = 0
 
     try:
         while deadline is None or time.monotonic() < deadline:
-            this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+            this_timeout = (
+                None if deadline is None else max(deadline - time.monotonic(), 0)
+            )
 
             pkt = ble_mod.scan_single(timeout=this_timeout)
             if not pkt:
@@ -496,18 +578,25 @@ def ble_scan(
             if decoded_key:
                 decrypted_pkt = decrypt(decoded_key, pkt, days=days)
                 if decrypted_pkt:
-                    table_printer.print_row(decrypted_pkt)
-                    packet_count += 1
+                    printer.print_row(decrypted_pkt)
                     # We only allow ingestion of packets you know the key of
                     # so we don't ingest bogus data in the backend
                     if ingest:
                         org.ingest_packet(pkt)
             else:
-                table_printer.print_row(pkt)
-                packet_count += 1
+                printer.print_row(pkt)
     except KeyboardInterrupt:
-        click.echo("")  # New line after ^C
-        click.secho(f"[INFO] Scanning stopped. {packet_count} packet(s) received.", fg="yellow")
+        pass  # Just exit the loop, cleanup happens below
+    finally:
+        # Allow printer to finalize (e.g., close JSON array)
+        printer.finalize()
+
+        if not printer.suppress_info_messages:
+            click.echo("")  # New line after ^C or completion
+            click.secho(
+                f"[INFO] Scanning stopped. {printer.packet_count} packet(s) received.",
+                fg="yellow",
+            )
 
 
 @ble.command("check-time")
@@ -705,11 +794,14 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
 @click.argument("device-id", type=str)
 @click.option(
     "--format",
-    "-f",
-    type=str,
-    default=None,
-    show_default=False,  # show default in --help
-    help="Output format (None, pretty, csv)",
+    "-o",
+    "output_format",
+    type=click.Choice(
+        ["tabular", "csv", "json"], case_sensitive=False
+    ),
+    default="tabular",
+    show_default=True,
+    help="Output format for packets",
 )
 @click.option(
     "--days",
@@ -721,11 +813,19 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
 )
 @pass_orgcfg
 def get_packets(
-    org: Organization, device_id, format: str = None, days: int = 7
+    org: Organization, device_id: str, output_format: str = "tabular", days: int = 7
 ) -> None:
+    """
+    Retrieve and display packets for a device.
+
+    Example:
+      hubblenetwork org get-packets DEVICE_ID
+      hubblenetwork org get-packets DEVICE_ID -o json
+      hubblenetwork org get-packets DEVICE_ID --format csv --days 30
+    """
     device = Device(id=device_id)
     packets = org.retrieve_packets(device, days=days)
-    _print_packets(packets, format)
+    _print_packets(packets, output_format)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
