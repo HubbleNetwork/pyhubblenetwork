@@ -25,5 +25,5 @@ __all__ = [
     "Organization",
     "Credentials",
     "Environment",
-    "InvalidCredentialsError",
+    "InvalidCredentialsError"
 ]
