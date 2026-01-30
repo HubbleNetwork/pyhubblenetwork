@@ -862,6 +862,125 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
     click.echo(f"\nFound {device_count} device(s)")
 
 
+def _select_ready_device(
+    devices: List[ready_mod.HubbleReadyDevice],
+) -> Optional[ready_mod.HubbleReadyDevice]:
+    """Present interactive device selection using questionary."""
+    import questionary
+
+    if not devices:
+        return None
+
+    choices = [
+        questionary.Choice(
+            title=f"{d.name or 'Unknown'} ({d.address}) [{d.rssi} dBm]",
+            value=d,
+        )
+        for d in devices
+    ]
+
+    return questionary.select("Select a device:", choices=choices).ask()
+
+
+@ready.command("info")
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Scan timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_info(timeout: float = 10.0, output_format: str = "tabular") -> None:
+    """
+    Connect to a Hubble Ready device and show characteristics.
+
+    Scans for devices, lets you select one interactively, then connects
+    and displays all Hubble Provisioning Service characteristics with
+    parsed values.
+
+    Example:
+      hubblenetwork ready info
+      hubblenetwork ready info --timeout 15
+      hubblenetwork ready info --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.secho("Scanning for Hubble Ready devices...")
+
+    devices = ready_mod.scan_ready_devices(timeout=timeout)
+
+    if not devices:
+        if use_json:
+            click.echo(json.dumps({"error": "No Hubble Ready devices found"}))
+        else:
+            click.echo("\nNo Hubble Ready devices found.")
+        return
+
+    if not use_json:
+        click.echo(f"\nFound {len(devices)} device(s):\n")
+
+    # Interactive device selection
+    selected = _select_ready_device(devices)
+    if selected is None:
+        if not use_json:
+            click.echo("No device selected.")
+        return
+
+    if not use_json:
+        click.echo(f"\nConnecting to {selected.address}...")
+
+    try:
+        characteristics = ready_mod.connect_and_read_characteristics(selected.address)
+    except Exception as e:
+        if use_json:
+            click.echo(json.dumps({"error": f"Connection failed: {e}"}))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        return
+
+    if use_json:
+        json_output = {
+            "device": {
+                "name": selected.name,
+                "address": selected.address,
+                "rssi": selected.rssi,
+            },
+            "characteristics": [
+                {
+                    "name": c.name,
+                    "uuid": c.uuid,
+                    "raw_hex": c.raw_value.hex() if c.raw_value else None,
+                    "value": c.parsed_value,
+                }
+                for c in characteristics
+            ],
+        }
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Build table for display
+    headers = ["CHARACTERISTIC", "UUID", "VALUE"]
+    rows = []
+    for char in characteristics:
+        # Handle multi-line values
+        value = char.parsed_value or "(empty)"
+        rows.append([char.name, char.uuid, value])
+
+    click.echo("")
+    click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
+
+
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
 
 
