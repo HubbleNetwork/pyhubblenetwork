@@ -15,6 +15,7 @@ from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
 from hubblenetwork import ble as ble_mod
+from hubblenetwork import ready as ready_mod
 from hubblenetwork import decrypt
 from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork import cloud
@@ -758,6 +759,107 @@ def ble_check_time(
             "[ERROR] No valid packets found within timeout period", fg="red", err=True
         )
     return -1
+
+
+@cli.group()
+def ready() -> None:
+    """Hubble Ready device provisioning utilities."""
+
+
+@ready.command("scan")
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Scan timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
+    """
+    Scan for Hubble Ready devices advertising 0xFCA7.
+
+    Discovers devices that are ready for provisioning and displays them
+    in a table with their name, address, and signal strength.
+
+    Example:
+      hubblenetwork ready scan
+      hubblenetwork ready scan --timeout 20
+      hubblenetwork ready scan --format json
+    """
+    use_json = output_format.lower() == "json"
+    devices_found: List[ready_mod.HubbleReadyDevice] = []
+    device_count = 0
+    header_printed = False
+
+    # Column widths for consistent formatting
+    col_widths = {"num": 3, "name": 20, "address": 17, "rssi": 6}
+
+    def make_separator() -> str:
+        return (
+            f"+{'-' * (col_widths['num'] + 2)}"
+            f"+{'-' * (col_widths['name'] + 2)}"
+            f"+{'-' * (col_widths['address'] + 2)}"
+            f"+{'-' * (col_widths['rssi'] + 2)}+"
+        )
+
+    def format_row(num: str, name: str, address: str, rssi: str) -> str:
+        return (
+            f"| {num:<{col_widths['num']}} "
+            f"| {name:<{col_widths['name']}} "
+            f"| {address:<{col_widths['address']}} "
+            f"| {rssi:<{col_widths['rssi']}} |"
+        )
+
+    def on_device(dev: ready_mod.HubbleReadyDevice) -> None:
+        nonlocal device_count, header_printed
+        device_count += 1
+        devices_found.append(dev)
+
+        if use_json:
+            return
+
+        if not header_printed:
+            click.echo("")
+            click.echo(make_separator())
+            click.secho(format_row("#", "NAME", "ADDRESS", "RSSI"), bold=True)
+            click.echo(make_separator())
+            header_printed = True
+
+        name = (dev.name or "(unknown)")[:col_widths["name"]]
+        click.echo(format_row(str(device_count), name, dev.address, str(dev.rssi)))
+        click.echo(make_separator())
+
+    if not use_json:
+        click.secho("Scanning for Hubble Ready devices... (Press Ctrl+C to stop)")
+
+    try:
+        ready_mod.scan_ready_devices_streaming(timeout=timeout, on_device=on_device)
+    except KeyboardInterrupt:
+        pass
+
+    if use_json:
+        json_output = [
+            {"name": d.name, "address": d.address, "rssi": d.rssi}
+            for d in devices_found
+        ]
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    if not devices_found:
+        click.echo("\nNo Hubble Ready devices found.")
+        return
+
+    click.echo(f"\nFound {device_count} device(s)")
 
 
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)

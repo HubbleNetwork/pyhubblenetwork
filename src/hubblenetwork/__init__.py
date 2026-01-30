@@ -6,6 +6,7 @@ Import from here; internal module layout may change without notice.
 
 from . import ble
 from . import cloud
+from . import ready
 
 from .packets import Location, EncryptedPacket, DecryptedPacket
 from .device import Device
@@ -17,6 +18,7 @@ from .cloud import Credentials, Environment
 __all__ = [
     "ble",
     "cloud",
+    "ready",
     "decrypt",
     "Location",
     "EncryptedPacket",
