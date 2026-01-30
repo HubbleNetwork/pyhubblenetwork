@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Dict, Any
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 from bleak import BleakScanner, BleakClient
+
+# Type hint import for Organization (avoid circular import at runtime)
+if TYPE_CHECKING:
+    from .org import Organization
 
 # 16-bit UUID 0xFCA7 in 128-bit Bluetooth Base UUID form
 HUBBLE_READY_SERVICE_UUID = "0000fca7-0000-1000-8000-00805f9b34fb"
@@ -254,8 +258,7 @@ class StatusCharacteristic:
 class DeviceKeyInfo:
     """Parsed Device Key characteristic (0x0003) read data."""
 
-    supports_aes_256_ctr: bool
-    supports_aes_128_ctr: bool
+    encryption_mode: str  # "AES-256-CTR" or "AES-128-CTR"
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "DeviceKeyInfo":
@@ -263,19 +266,23 @@ class DeviceKeyInfo:
         if len(data) < 1:
             raise ValueError("Device Key data too short")
 
-        flags = data[0]
-        return cls(
-            supports_aes_256_ctr=bool(flags & 0x01),
-            supports_aes_128_ctr=bool(flags & 0x02),
-        )
+        mode_byte = data[0]
+        if mode_byte == 0x01:
+            encryption_mode = "AES-256-CTR"
+        elif mode_byte == 0x02:
+            encryption_mode = "AES-128-CTR"
+        else:
+            raise ValueError(f"Unknown encryption mode: 0x{mode_byte:02x}")
+
+        return cls(encryption_mode=encryption_mode)
+
+    @property
+    def key_size(self) -> int:
+        """Return the key size in bytes for this encryption mode."""
+        return 32 if self.encryption_mode == "AES-256-CTR" else 16
 
     def to_display_string(self) -> str:
-        modes = []
-        if self.supports_aes_256_ctr:
-            modes.append("AES-256-CTR")
-        if self.supports_aes_128_ctr:
-            modes.append("AES-128-CTR")
-        return ", ".join(modes) if modes else "None"
+        return self.encryption_mode
 
 
 @dataclass(frozen=True)
@@ -405,6 +412,283 @@ def connect_and_read_characteristics(
             try:
                 return loop.run_until_complete(
                     _connect_and_read_characteristics_async(address, timeout)
+                )
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
+# Device Information Service UUID (standard Bluetooth SIG)
+DIS_SERVICE_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
+DIS_SERIAL_NUMBER_UUID = "00002a25-0000-1000-8000-00805f9b34fb"
+
+
+@dataclass
+class DeviceConfiguration:
+    """Configuration to write to Device Configuration characteristic."""
+
+    eid_type: int = 0x00  # 0x00 = UTC-based, 0x01 = Counter-based
+    rotation_period: int = 0  # 0 = use device default
+    eid_pool_size: int = 0  # Counter-mode only
+
+    def to_bytes(self) -> bytes:
+        """Serialize to 12-byte configuration data."""
+        data = bytearray(12)
+        data[0] = self.eid_type
+        data[1:5] = self.rotation_period.to_bytes(4, byteorder="little")
+        data[5:7] = self.eid_pool_size.to_bytes(2, byteorder="little")
+        # bytes 7-11 are reserved (zeros)
+        return bytes(data)
+
+
+@dataclass
+class ProvisioningResult:
+    """Result of a provisioning operation."""
+
+    success: bool
+    device_id: str
+    device_name: str
+    device_key_base64: str
+    encryption_type: str
+    error_message: Optional[str] = None
+
+
+async def _provision_device_async(
+    address: str,
+    org: "Organization",  # Forward reference to avoid circular import
+    device_name: Optional[str] = None,
+    scanned_device_name: Optional[str] = None,
+    eid_type: str = "utc",
+    timeout: float = 30.0,
+    log_callback: Optional[callable] = None,
+) -> ProvisioningResult:
+    """
+    Async implementation of full device provisioning flow.
+
+    Steps:
+    1. Connect to device
+    2. Read Status - verify Open Mode
+    3. Read Device Key - get supported encryption modes
+    4. Read DIS Serial Number (for name fallback if needed)
+    5. Register device with backend API
+    6. Write Device Key
+    7. Write Device Configuration
+    8. Write Epoch Time
+    9. Verify provisioning via Status read
+    """
+    import base64
+    import time
+
+    def log(msg: str) -> None:
+        if log_callback:
+            log_callback(msg)
+
+    # Map EID type string to byte value
+    eid_type_bytes = {
+        "utc": 0x00,
+        "counter": 0x01,
+    }
+    if eid_type not in eid_type_bytes:
+        return ProvisioningResult(
+            success=False,
+            device_id="",
+            device_name="",
+            device_key_base64="",
+            encryption_type="",
+            error_message=f"Unsupported EID type: {eid_type}. Only 'utc' is currently supported.",
+        )
+
+    async with BleakClient(address, timeout=timeout) as client:
+        log(f"Connected to {address}")
+
+        # Step 1: Read Status
+        log("Reading Status characteristic...")
+        status_data = bytes(await client.read_gatt_char(CHAR_STATUS_UUID))
+        status = StatusCharacteristic.from_bytes(status_data)
+        log(f"  Version: {status.version_string}, {status.mode_string}")
+
+        if status.is_locked:
+            return ProvisioningResult(
+                success=False,
+                device_id="",
+                device_name="",
+                device_key_base64="",
+                encryption_type="",
+                error_message="Device is in Locked Mode. Open Mode required for provisioning.",
+            )
+
+        # Step 2: Determine device name
+        # Priority: provided device_name > DIS serial number > scanned_device_name > generated name
+        final_name = device_name
+        if not final_name:
+            # Try to read DIS Serial Number
+            serial_number: Optional[str] = None
+            try:
+                log("Reading Device Information Service...")
+                serial_data = bytes(await client.read_gatt_char(DIS_SERIAL_NUMBER_UUID))
+                serial_number = serial_data.decode("utf-8").strip("\x00")
+                log(f"  Serial Number: {serial_number}")
+            except Exception:
+                log("  Serial Number: Not available")
+
+            if serial_number:
+                final_name = serial_number
+            elif scanned_device_name:
+                final_name = scanned_device_name
+            else:
+                final_name = f"Device-{address[-5:].replace(':', '')}"
+
+        # Step 3: Read Device Key (get device's supported encryption mode)
+        log("Reading Device Key characteristic...")
+        key_info_data = bytes(await client.read_gatt_char(CHAR_DEVICE_KEY_UUID))
+        key_info = DeviceKeyInfo.from_bytes(key_info_data)
+        encryption = key_info.encryption_mode
+        log(f"  Device encryption mode: {encryption} ({key_info.key_size} bytes)")
+
+        # Step 4: Register device with backend
+        log("Registering device with Hubble backend...")
+        registered_device = org.register_device(encryption=encryption)
+        device_id = registered_device.id
+        device_key = registered_device.key  # bytes
+        device_key_base64 = base64.b64encode(device_key).decode("utf-8")
+        log(f"  Device ID: {device_id}")
+
+        # Verify backend returned correct key size
+        if len(device_key) < key_info.key_size:
+            return ProvisioningResult(
+                success=False,
+                device_id=device_id,
+                device_name="",
+                device_key_base64="",
+                encryption_type=encryption,
+                error_message=f"Backend returned {len(device_key)}-byte key, "
+                             f"but device requires {key_info.key_size} bytes for {encryption}",
+            )
+
+        # Set device name
+        log(f"  Setting name: {final_name}")
+        org.set_device_name(device_id, final_name)
+
+        # Step 5: Write Device Key (raw bytes only, no type prefix)
+        key_size = key_info.key_size
+        log(f"Writing device key ({key_size} bytes, {key_info.encryption_mode})...")
+
+        # Write raw key bytes only (no encryption type prefix in new spec)
+        key_write_data = device_key[:key_size]
+        await client.write_gatt_char(CHAR_DEVICE_KEY_UUID, key_write_data)
+
+        # Step 6: Write Device Configuration
+        log(f"Writing device configuration (EID type: {eid_type})...")
+        config = DeviceConfiguration(eid_type=eid_type_bytes[eid_type])
+        await client.write_gatt_char(CHAR_DEVICE_CONFIG_UUID, config.to_bytes())
+
+        # Step 7: Write Epoch Time
+        current_time = int(time.time())
+        log(f"Writing epoch time ({current_time})...")
+        epoch_data = current_time.to_bytes(8, byteorder="little")
+        await client.write_gatt_char(CHAR_EPOCH_TIME_UUID, epoch_data)
+
+        # Step 8: Verify provisioning
+        log("Verifying provisioning...")
+        verify_data = bytes(await client.read_gatt_char(CHAR_STATUS_UUID))
+        verify_status = StatusCharacteristic.from_bytes(verify_data)
+
+        if not verify_status.key_written:
+            return ProvisioningResult(
+                success=False,
+                device_id=device_id,
+                device_name=final_name,
+                device_key_base64=device_key_base64,
+                encryption_type=encryption,
+                error_message="Key write verification failed",
+            )
+
+        if not verify_status.config_written:
+            return ProvisioningResult(
+                success=False,
+                device_id=device_id,
+                device_name=final_name,
+                device_key_base64=device_key_base64,
+                encryption_type=encryption,
+                error_message="Config write verification failed",
+            )
+
+        if not verify_status.epoch_time_written:
+            return ProvisioningResult(
+                success=False,
+                device_id=device_id,
+                device_name=final_name,
+                device_key_base64=device_key_base64,
+                encryption_type=encryption,
+                error_message="Epoch time write verification failed",
+            )
+
+        log("Device provisioned successfully!")
+
+    return ProvisioningResult(
+        success=True,
+        device_id=device_id,
+        device_name=final_name,
+        device_key_base64=device_key_base64,
+        encryption_type=encryption,
+    )
+
+
+def provision_device(
+    address: str,
+    org: "Organization",
+    device_name: Optional[str] = None,
+    scanned_device_name: Optional[str] = None,
+    eid_type: str = "utc",
+    timeout: float = 30.0,
+    log_callback: Optional[callable] = None,
+) -> ProvisioningResult:
+    """
+    Provision a Hubble Ready device.
+
+    This connects to the device, registers it with the Hubble backend, writes
+    the encryption key and configuration, and verifies the provisioning.
+
+    The encryption mode (AES-256-CTR or AES-128-CTR) is automatically detected
+    from the device during provisioning.
+
+    Args:
+        address: BLE address of the device
+        org: Organization object with valid credentials
+        device_name: Optional name for the device (if not provided, falls back to other sources)
+        scanned_device_name: Optional name from BLE scan advertisement
+        eid_type: EID type ("utc" only currently supported)
+        timeout: Connection timeout in seconds
+        log_callback: Optional callback for progress messages
+
+    Returns:
+        ProvisioningResult with device ID, key, and status
+
+    Name resolution priority:
+        1. device_name (if provided)
+        2. DIS Serial Number (read during provisioning)
+        3. scanned_device_name (from BLE scan)
+        4. Generated name based on address
+    """
+    try:
+        return asyncio.run(
+            _provision_device_async(
+                address, org, device_name, scanned_device_name, eid_type, timeout, log_callback
+            )
+        )
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    _provision_device_async(
+                        address, org, device_name, scanned_device_name, eid_type, timeout, log_callback
+                    )
                 )
             finally:
                 loop.close()

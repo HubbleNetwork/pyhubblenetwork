@@ -981,6 +981,139 @@ def ready_info(timeout: float = 10.0, output_format: str = "tabular") -> None:
     click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
 
 
+@ready.command("provision")
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Scan timeout in seconds",
+)
+@click.option(
+    "--eid-type",
+    type=click.Choice(["utc"], case_sensitive=False),
+    default="utc",
+    show_default=True,
+    help="EID type (only 'utc' supported currently)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show detailed progress messages",
+)
+@click.option(
+    "--org-id",
+    "-o",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    default=None,
+    show_default=False,
+    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+)
+@click.option(
+    "--token",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    default=None,
+    show_default=False,
+    help="API token (if not using HUBBLE_API_TOKEN env var)",
+)
+def ready_provision(
+    timeout: float = 10.0,
+    eid_type: str = "utc",
+    verbose: bool = False,
+    org_id: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
+    """
+    Provision a Hubble Ready device.
+
+    Scans for devices, lets you select one interactively, then provisions
+    it by registering with the Hubble backend and writing the encryption
+    key and configuration.
+
+    The encryption mode (AES-256-CTR or AES-128-CTR) is automatically
+    detected from the device during provisioning.
+
+    Requires HUBBLE_ORG_ID and HUBBLE_API_TOKEN environment variables
+    or --org-id and --token options.
+
+    Example:
+      hubblenetwork ready provision
+      hubblenetwork ready provision -v
+    """
+    import questionary
+
+    # Get credentials
+    org_id_val, token_val = _get_org_and_token(org_id, token)
+
+    try:
+        org = Organization(org_id=org_id_val, api_token=token_val)
+    except InvalidCredentialsError as e:
+        raise click.ClickException(f"Invalid credentials: {e}")
+
+    click.secho("Scanning for Hubble Ready devices...")
+    devices = ready_mod.scan_ready_devices(timeout=timeout)
+
+    if not devices:
+        click.echo("\nNo Hubble Ready devices found.")
+        return
+
+    click.echo(f"\nFound {len(devices)} device(s):\n")
+
+    # Interactive device selection
+    selected = _select_ready_device(devices)
+    if selected is None:
+        click.echo("No device selected.")
+        return
+
+    # Log callback for verbose mode
+    def log_step(msg: str) -> None:
+        if verbose:
+            click.secho(f"[STEP] {msg}")
+
+    # Prompt for device name (use scanned name as default)
+    default_name = selected.name or f"Device-{selected.address[-5:].replace(':', '')}"
+    device_name = questionary.text(
+        "Device name:",
+        default=default_name,
+    ).ask()
+
+    if device_name is None:
+        click.echo("Cancelled.")
+        return
+
+    click.echo("")
+
+    # Perform provisioning
+    click.echo(f"\nConnecting to {selected.address}...")
+    try:
+        result = ready_mod.provision_device(
+            address=selected.address,
+            org=org,
+            device_name=device_name,
+            scanned_device_name=selected.name,
+            eid_type=eid_type.lower(),
+            timeout=30.0,
+            log_callback=log_step,
+        )
+    except Exception as e:
+        click.secho(f"\n[ERROR] Provisioning failed: {e}", fg="red", err=True)
+        return
+
+    if result.success:
+        click.secho("\n[SUCCESS] Device provisioned!", fg="green")
+        click.echo(f"  Device ID: {result.device_id}")
+        click.echo(f"  Name: {result.device_name}")
+        click.echo(f"  Encryption: {result.encryption_type}")
+        click.echo(f"  Key: {result.device_key_base64}")
+    else:
+        click.secho(f"\n[ERROR] Provisioning failed: {result.error_message}", fg="red", err=True)
+
+
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
 
 
