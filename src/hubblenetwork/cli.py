@@ -784,7 +784,14 @@ def ready() -> None:
     show_default=True,
     help="Output format",
 )
-def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    default=None,
+    help="Filter results to specific device MAC address",
+)
+def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: Optional[str] = None) -> None:
     """
     Scan for Hubble Ready devices advertising 0xFCA7.
 
@@ -795,6 +802,7 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
       hubblenetwork ready scan
       hubblenetwork ready scan --timeout 20
       hubblenetwork ready scan --format json
+      hubblenetwork ready scan --address AA:BB:CC:DD:EE:FF
     """
     use_json = output_format.lower() == "json"
     devices_found: List[ready_mod.HubbleReadyDevice] = []
@@ -822,6 +830,11 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
 
     def on_device(dev: ready_mod.HubbleReadyDevice) -> None:
         nonlocal device_count, header_printed
+
+        # Filter by address if specified (case-insensitive)
+        if address is not None and dev.address.lower() != address.lower():
+            return
+
         device_count += 1
         devices_found.append(dev)
 
@@ -884,6 +897,13 @@ def _select_ready_device(
 
 @ready.command("info")
 @click.option(
+    "--address",
+    "-a",
+    type=str,
+    default=None,
+    help="Device MAC address (skip scan and connect directly)",
+)
+@click.option(
     "--timeout",
     "-t",
     type=float,
@@ -900,7 +920,9 @@ def _select_ready_device(
     show_default=True,
     help="Output format",
 )
-def ready_info(timeout: float = 10.0, output_format: str = "tabular") -> None:
+def ready_info(
+    address: Optional[str] = None, timeout: float = 10.0, output_format: str = "tabular"
+) -> None:
     """
     Connect to a Hubble Ready device and show characteristics.
 
@@ -908,13 +930,63 @@ def ready_info(timeout: float = 10.0, output_format: str = "tabular") -> None:
     and displays all Hubble Provisioning Service characteristics with
     parsed values.
 
+    If --address is provided, skips scanning and connects directly.
+
     Example:
       hubblenetwork ready info
       hubblenetwork ready info --timeout 15
       hubblenetwork ready info --format json
+      hubblenetwork ready info --address AA:BB:CC:DD:EE:FF --format json
     """
     use_json = output_format.lower() == "json"
 
+    # If address provided, connect directly
+    if address:
+        if not use_json:
+            click.echo(f"Connecting to {address}...")
+
+        try:
+            characteristics = ready_mod.connect_and_read_characteristics(
+                address, timeout=timeout
+            )
+        except Exception as e:
+            if use_json:
+                click.echo(json.dumps({"error": f"Connection failed: {e}"}))
+            else:
+                click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+            sys.exit(2)
+
+        if use_json:
+            json_output = {
+                "device": {
+                    "address": address,
+                },
+                "characteristics": [
+                    {
+                        "name": c.name,
+                        "uuid": c.uuid,
+                        "raw_hex": c.raw_value.hex() if c.raw_value else None,
+                        "value": c.parsed_value,
+                    }
+                    for c in characteristics
+                ],
+            }
+            click.echo(json.dumps(json_output, indent=2))
+            return
+
+        # Build table for display
+        headers = ["CHARACTERISTIC", "UUID", "VALUE"]
+        rows = []
+        for char in characteristics:
+            # Handle multi-line values
+            value = char.parsed_value or "(empty)"
+            rows.append([char.name, char.uuid, value])
+
+        click.echo("")
+        click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
+        return
+
+    # Original scan + selection flow
     if not use_json:
         click.secho("Scanning for Hubble Ready devices...")
 
