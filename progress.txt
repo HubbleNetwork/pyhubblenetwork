@@ -83,3 +83,22 @@ This file tracks Ralph's autonomous execution of the PRD.
   - All public symbols must be added to __all__ for proper package exports
   - Pattern: Error classes should provide both human-readable messages and machine-parseable data
 ---
+
+## 2026-02-02 - US-005
+- Implemented helper functions _format_ready_json_success() and _format_ready_json_error() in cli.py
+- Added standardized JSON output structure with success, command, device, result/error, duration_ms fields
+- Updated ready scan command to use new JSON format with duration tracking
+- Updated ready info command to use new JSON format for both direct connection and scan+selection flows
+- BleError exceptions now format correctly with ATT error codes in JSON output
+- Duration tracking implemented using time.monotonic() for accurate timing
+- Files changed: src/hubblenetwork/cli.py (lines 90-166, 877-1217)
+- **Learnings for future iterations:**
+  - The JSON output format spec requires: success (bool), command (str), device (dict), result/error (dict), duration_ms (int)
+  - For scan commands that return multiple devices, the device field can be omitted or the devices go in the result object
+  - For commands with a specific device (info, provision, read/write), device includes address (required) and name (optional)
+  - Error objects should include: code (exception class name), message (str), and optionally name/att_error_code for BleError
+  - Duration tracking should use time.monotonic() at function start, then calculate elapsed time at success/error
+  - The _format_ready_json_success() and _format_ready_json_error() helpers standardize JSON output across all commands
+  - Helper functions accept device_address and optional device_name to build the device object
+  - BleError.to_dict() provides structured ATT error information that should be integrated into error output
+---
