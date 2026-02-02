@@ -1199,6 +1199,360 @@ def ready_info(
     click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
 
 
+@ready.command("read-status")
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    required=True,
+    help="Device MAC address",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_read_status(
+    address: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Read the Status characteristic from a Hubble Ready device.
+
+    Connects to the device and reads the Status characteristic (0x0001),
+    which contains version information and provisioning flags.
+
+    Example:
+      hubblenetwork ready read-status --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready read-status -a AA:BB:CC:DD:EE:FF --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        status = ready_mod.read_status(address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready read-status",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    if use_json:
+        result = {
+            "version": {
+                "major": status.version_major,
+                "minor": status.version_minor,
+                "patch": status.version_patch,
+                "string": status.version_string,
+            },
+            "mode": status.mode_string,
+            "is_locked": status.is_locked,
+            "flags": {
+                "key_written": status.key_written,
+                "config_written": status.config_written,
+                "epoch_time_written": status.epoch_time_written,
+            },
+        }
+        json_output = _format_ready_json_success(
+            command="ready read-status",
+            device_address=address,
+            result=result,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Status Characteristic", bold=True)
+    click.echo("")
+    click.echo(f"  Version:       {status.version_string}")
+    click.echo(f"  Mode:          {status.mode_string}")
+    click.echo("")
+    click.secho("  Provisioning Flags:", bold=True)
+    click.echo(f"    Key:         {'Yes' if status.key_written else 'No'}")
+    click.echo(f"    Config:      {'Yes' if status.config_written else 'No'}")
+    click.echo(f"    Time:        {'Yes' if status.epoch_time_written else 'No'}")
+
+
+@ready.command("read-key-info")
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    required=True,
+    help="Device MAC address",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_read_key_info(
+    address: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Read the Device Key characteristic from a Hubble Ready device.
+
+    Connects to the device and reads the Device Key characteristic (0x0003),
+    which contains encryption mode information.
+
+    Example:
+      hubblenetwork ready read-key-info --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready read-key-info -a AA:BB:CC:DD:EE:FF --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        key_info = ready_mod.read_key_info(address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready read-key-info",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    if use_json:
+        result = {
+            "encryption_mode": key_info.encryption_mode,
+            "encryption_mode_code": key_info.encryption_mode_code,
+            "key_size_bytes": key_info.key_size,
+        }
+        json_output = _format_ready_json_success(
+            command="ready read-key-info",
+            device_address=address,
+            result=result,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Device Key Characteristic", bold=True)
+    click.echo("")
+    click.echo(f"  Encryption Mode:  {key_info.encryption_mode}")
+    click.echo(f"  Key Size:         {key_info.key_size} bytes")
+
+
+@ready.command("read-config")
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    required=True,
+    help="Device MAC address",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_read_config(
+    address: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Read the Device Configuration characteristic from a Hubble Ready device.
+
+    Connects to the device and reads the Device Configuration characteristic (0x0004),
+    which contains EID type, rotation period, and pool size settings.
+
+    Example:
+      hubblenetwork ready read-config --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready read-config -a AA:BB:CC:DD:EE:FF --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        config = ready_mod.read_config(address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready read-config",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    if use_json:
+        result = {
+            "eid_type": config.eid_type,
+            "eid_type_code": config.eid_type_code,
+            "rotation_period_seconds": config.rotation_period,
+            "pool_size": config.pool_size,
+            "raw_bytes": config.raw_bytes,
+        }
+        json_output = _format_ready_json_success(
+            command="ready read-config",
+            device_address=address,
+            result=result,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Device Configuration Characteristic", bold=True)
+    click.echo("")
+    click.echo(f"  {config.to_display_string()}")
+
+
+@ready.command("read-time")
+@click.option(
+    "--address",
+    "-a",
+    required=True,
+    help="BLE address of the device (e.g., AA:BB:CC:DD:EE:FF)",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_read_time(
+    address: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Read the Epoch Time characteristic from a Hubble Ready device.
+
+    Connects to the device and reads the Epoch Time characteristic (0x0005),
+    which contains the device's current Unix timestamp.
+
+    Example:
+      hubblenetwork ready read-time --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready read-time -a AA:BB:CC:DD:EE:FF --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        timestamp = ready_mod.read_time(address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready read-time",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    if use_json:
+        timestamp_iso = datetime.fromtimestamp(timestamp).isoformat()
+        result = {
+            "timestamp": timestamp,
+            "timestamp_iso": timestamp_iso,
+        }
+        json_output = _format_ready_json_success(
+            command="ready read-time",
+            device_address=address,
+            result=result,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Epoch Time Characteristic", bold=True)
+    click.echo("")
+    timestamp_iso = datetime.fromtimestamp(timestamp).isoformat()
+    timestamp_human = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S %Z")
+    click.echo(f"  Unix Timestamp: {timestamp}")
+    click.echo(f"  ISO 8601:       {timestamp_iso}")
+    click.echo(f"  Human:          {timestamp_human}")
+
+
 @ready.command("provision")
 @click.option(
     "--timeout",

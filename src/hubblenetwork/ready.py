@@ -254,11 +254,50 @@ class StatusCharacteristic:
         return f"{parts[0]}, {parts[1]}\n{', '.join(flags)}"
 
 
+async def _read_status_async(address: str, timeout: float = 30.0) -> StatusCharacteristic:
+    """Async implementation of read_status."""
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(CHAR_STATUS_UUID)
+        return StatusCharacteristic.from_bytes(bytes(data))
+
+
+def read_status(address: str, timeout: float = 30.0) -> StatusCharacteristic:
+    """
+    Read the Status characteristic from a Hubble Ready device.
+
+    Args:
+        address: BLE address of the device
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        StatusCharacteristic with version and provisioning flags
+
+    Raises:
+        BleakError: If connection fails or read operation fails
+    """
+    try:
+        return asyncio.run(_read_status_async(address, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_read_status_async(address, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
 @dataclass(frozen=True)
 class DeviceKeyInfo:
     """Parsed Device Key characteristic (0x0003) read data."""
 
     encryption_mode: str  # "AES-256-CTR" or "AES-128-CTR"
+    encryption_mode_code: int  # 0x01 for AES-256-CTR, 0x02 for AES-128-CTR
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "DeviceKeyInfo":
@@ -274,7 +313,7 @@ class DeviceKeyInfo:
         else:
             raise ValueError(f"Unknown encryption mode: 0x{mode_byte:02x}")
 
-        return cls(encryption_mode=encryption_mode)
+        return cls(encryption_mode=encryption_mode, encryption_mode_code=mode_byte)
 
     @property
     def key_size(self) -> int:
@@ -283,6 +322,167 @@ class DeviceKeyInfo:
 
     def to_display_string(self) -> str:
         return self.encryption_mode
+
+
+async def _read_key_info_async(address: str, timeout: float = 30.0) -> DeviceKeyInfo:
+    """Async implementation of read_key_info."""
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(CHAR_DEVICE_KEY_UUID)
+        return DeviceKeyInfo.from_bytes(bytes(data))
+
+
+def read_key_info(address: str, timeout: float = 30.0) -> DeviceKeyInfo:
+    """
+    Read the Device Key characteristic from a Hubble Ready device.
+
+    Args:
+        address: BLE address of the device
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        DeviceKeyInfo with encryption mode and key size
+
+    Raises:
+        BleakError: If connection fails or read operation fails
+    """
+    try:
+        return asyncio.run(_read_key_info_async(address, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_read_key_info_async(address, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
+async def _read_config_async(address: str, timeout: float = 30.0) -> DeviceConfig:
+    """Async implementation of read_config."""
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(CHAR_DEVICE_CONFIG_UUID)
+        return DeviceConfig.from_bytes(bytes(data))
+
+
+def read_config(address: str, timeout: float = 30.0) -> DeviceConfig:
+    """
+    Read the Device Configuration characteristic from a Hubble Ready device.
+
+    Args:
+        address: BLE address of the device
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        DeviceConfig with eid_type, rotation_period, and pool_size
+
+    Raises:
+        BleakError: If connection fails or read operation fails
+    """
+    try:
+        return asyncio.run(_read_config_async(address, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_read_config_async(address, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
+async def _read_time_async(address: str, timeout: float = 30.0) -> int:
+    """Async implementation of read_time."""
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(CHAR_EPOCH_TIME_UUID)
+        return int.from_bytes(bytes(data), byteorder="little")
+
+
+def read_time(address: str, timeout: float = 30.0) -> int:
+    """
+    Read the Epoch Time characteristic from a Hubble Ready device.
+
+    Args:
+        address: BLE address of the device
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        Unix timestamp as integer
+
+    Raises:
+        BleakError: If connection fails or read operation fails
+    """
+    try:
+        return asyncio.run(_read_time_async(address, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_read_time_async(address, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
+@dataclass(frozen=True)
+class DeviceConfig:
+    """Parsed Device Configuration characteristic (0x0004) data."""
+
+    eid_type: str  # "utc" or "counter"
+    eid_type_code: int  # 0x00 for UTC, 0x01 for Counter
+    rotation_period: int  # Rotation period in seconds (should be 0)
+    pool_size: int  # Pool size for counter mode (0 for UTC mode)
+    raw_bytes: str  # Hex representation of raw bytes
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "DeviceConfig":
+        """Parse Device Configuration characteristic from raw bytes."""
+        if len(data) < 12:
+            raise ValueError(f"Device Configuration data too short: {len(data)} bytes, need 12")
+
+        eid_type_code = data[0]
+        if eid_type_code == 0x00:
+            eid_type = "utc"
+        elif eid_type_code == 0x01:
+            eid_type = "counter"
+        else:
+            raise ValueError(f"Unknown EID type: 0x{eid_type_code:02x}")
+
+        rotation_period = int.from_bytes(data[1:5], byteorder="little")
+        pool_size = int.from_bytes(data[5:7], byteorder="little")
+        raw_bytes = data.hex()
+
+        return cls(
+            eid_type=eid_type,
+            eid_type_code=eid_type_code,
+            rotation_period=rotation_period,
+            pool_size=pool_size,
+            raw_bytes=raw_bytes,
+        )
+
+    def to_display_string(self) -> str:
+        """Return human-readable configuration string."""
+        eid_str = "UTC-based EID" if self.eid_type == "utc" else "Counter-based EID"
+        parts = [eid_str]
+        if self.rotation_period > 0:
+            parts.append(f"Rotation: {self.rotation_period}s")
+        if self.eid_type == "counter":
+            parts.append(f"Pool size: {self.pool_size}")
+        return ", ".join(parts)
 
 
 @dataclass
