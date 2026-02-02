@@ -87,6 +87,89 @@ def _packet_to_dict(pkt) -> dict:
     return data
 
 
+def _format_ready_json_success(
+    command: str,
+    device_address: str,
+    result: dict,
+    duration_ms: int,
+    device_name: Optional[str] = None,
+) -> dict:
+    """
+    Format a successful ready command result as JSON.
+
+    Standard structure:
+    {
+        "success": true,
+        "command": "ready scan",
+        "device": {"address": "AA:BB:CC:DD:EE:FF", "name": "Device Name"},
+        "result": {...},
+        "duration_ms": 1234
+    }
+    """
+    device_obj = {"address": device_address}
+    if device_name is not None:
+        device_obj["name"] = device_name
+
+    return {
+        "success": True,
+        "command": command,
+        "device": device_obj,
+        "result": result,
+        "duration_ms": duration_ms,
+    }
+
+
+def _format_ready_json_error(
+    command: str,
+    device_address: str,
+    error: Exception,
+    duration_ms: int,
+    device_name: Optional[str] = None,
+) -> dict:
+    """
+    Format a failed ready command result as JSON.
+
+    Standard structure:
+    {
+        "success": false,
+        "command": "ready info",
+        "device": {"address": "AA:BB:CC:DD:EE:FF"},
+        "error": {
+            "code": "BleError",
+            "name": "Invalid Attribute Value Length",
+            "message": "Connection failed: ..."
+        },
+        "duration_ms": 1234
+    }
+
+    For BleError exceptions with ATT error codes, includes code and name fields.
+    """
+    from hubblenetwork.errors import BleError
+
+    device_obj = {"address": device_address}
+    if device_name is not None:
+        device_obj["name"] = device_name
+
+    error_obj = {
+        "code": type(error).__name__,
+        "message": str(error),
+    }
+
+    # If it's a BleError with ATT error code, include structured error info
+    if isinstance(error, BleError) and error.att_error_code is not None:
+        ble_dict = error.to_dict()
+        error_obj["name"] = ble_dict.get("att_error_name", "")
+        error_obj["att_error_code"] = ble_dict.get("att_error_code")
+
+    return {
+        "success": False,
+        "command": command,
+        "device": device_obj,
+        "error": error_obj,
+        "duration_ms": duration_ms,
+    }
+
+
 class _StreamingPrinterBase:
     """Base class for streaming packet printers."""
 
@@ -808,6 +891,7 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: O
     devices_found: List[ready_mod.HubbleReadyDevice] = []
     device_count = 0
     header_printed = False
+    start_time = time.monotonic()
 
     # Column widths for consistent formatting
     col_widths = {"num": 3, "name": 20, "address": 17, "rssi": 6}
@@ -855,18 +939,48 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: O
     if not use_json:
         click.secho("Scanning for Hubble Ready devices... (Press Ctrl+C to stop)")
 
+    error_occurred = None
     try:
         ready_mod.scan_ready_devices_streaming(timeout=timeout, on_device=on_device)
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        error_occurred = e
+
+    duration_ms = int((time.monotonic() - start_time) * 1000)
 
     if use_json:
-        json_output = [
-            {"name": d.name, "address": d.address, "rssi": d.rssi}
-            for d in devices_found
-        ]
+        if error_occurred:
+            # For scan errors, we don't have a specific device
+            json_output = _format_ready_json_error(
+                command="ready scan",
+                device_address="",
+                error=error_occurred,
+                duration_ms=duration_ms,
+            )
+        else:
+            # Success case - return list of devices in result
+            devices_list = [
+                {"name": d.name, "address": d.address, "rssi": d.rssi}
+                for d in devices_found
+            ]
+            json_output = {
+                "success": True,
+                "command": "ready scan",
+                "result": {
+                    "devices": devices_list,
+                    "count": len(devices_list),
+                },
+                "duration_ms": duration_ms,
+            }
         click.echo(json.dumps(json_output, indent=2))
+        if error_occurred:
+            sys.exit(2)
         return
+
+    if error_occurred:
+        click.secho(f"\n[ERROR] Scan failed: {error_occurred}", fg="red", err=True)
+        sys.exit(2)
 
     if not devices_found:
         click.echo("\nNo Hubble Ready devices found.")
@@ -945,32 +1059,42 @@ def ready_info(
         if not use_json:
             click.echo(f"Connecting to {address}...")
 
+        start_time = time.monotonic()
         try:
             characteristics = ready_mod.connect_and_read_characteristics(
                 address, timeout=timeout
             )
+            duration_ms = int((time.monotonic() - start_time) * 1000)
         except Exception as e:
+            duration_ms = int((time.monotonic() - start_time) * 1000)
             if use_json:
-                click.echo(json.dumps({"error": f"Connection failed: {e}"}))
+                json_output = _format_ready_json_error(
+                    command="ready info",
+                    device_address=address,
+                    error=e,
+                    duration_ms=duration_ms,
+                )
+                click.echo(json.dumps(json_output, indent=2))
             else:
                 click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
             sys.exit(2)
 
         if use_json:
-            json_output = {
-                "device": {
-                    "address": address,
-                },
-                "characteristics": [
-                    {
-                        "name": c.name,
-                        "uuid": c.uuid,
-                        "raw_hex": c.raw_value.hex() if c.raw_value else None,
-                        "value": c.parsed_value,
-                    }
-                    for c in characteristics
-                ],
-            }
+            characteristics_list = [
+                {
+                    "name": c.name,
+                    "uuid": c.uuid,
+                    "raw_hex": c.raw_value.hex() if c.raw_value else None,
+                    "value": c.parsed_value,
+                }
+                for c in characteristics
+            ]
+            json_output = _format_ready_json_success(
+                command="ready info",
+                device_address=address,
+                result={"characteristics": characteristics_list},
+                duration_ms=duration_ms,
+            )
             click.echo(json.dumps(json_output, indent=2))
             return
 
@@ -990,11 +1114,23 @@ def ready_info(
     if not use_json:
         click.secho("Scanning for Hubble Ready devices...")
 
+    start_time = time.monotonic()
     devices = ready_mod.scan_ready_devices(timeout=timeout)
 
     if not devices:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
-            click.echo(json.dumps({"error": "No Hubble Ready devices found"}))
+            # No devices found - not an error, but no success either
+            json_output = {
+                "success": False,
+                "command": "ready info",
+                "error": {
+                    "code": "NoDevicesFound",
+                    "message": "No Hubble Ready devices found",
+                },
+                "duration_ms": duration_ms,
+            }
+            click.echo(json.dumps(json_output, indent=2))
         else:
             click.echo("\nNo Hubble Ready devices found.")
         return
@@ -1005,6 +1141,7 @@ def ready_info(
     # Interactive device selection
     selected = _select_ready_device(devices)
     if selected is None:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
         if not use_json:
             click.echo("No device selected.")
         return
@@ -1014,30 +1151,39 @@ def ready_info(
 
     try:
         characteristics = ready_mod.connect_and_read_characteristics(selected.address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
     except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
-            click.echo(json.dumps({"error": f"Connection failed: {e}"}))
+            json_output = _format_ready_json_error(
+                command="ready info",
+                device_address=selected.address,
+                error=e,
+                duration_ms=duration_ms,
+                device_name=selected.name,
+            )
+            click.echo(json.dumps(json_output, indent=2))
         else:
             click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
         sys.exit(2)
 
     if use_json:
-        json_output = {
-            "device": {
-                "name": selected.name,
-                "address": selected.address,
-                "rssi": selected.rssi,
-            },
-            "characteristics": [
-                {
-                    "name": c.name,
-                    "uuid": c.uuid,
-                    "raw_hex": c.raw_value.hex() if c.raw_value else None,
-                    "value": c.parsed_value,
-                }
-                for c in characteristics
-            ],
-        }
+        characteristics_list = [
+            {
+                "name": c.name,
+                "uuid": c.uuid,
+                "raw_hex": c.raw_value.hex() if c.raw_value else None,
+                "value": c.parsed_value,
+            }
+            for c in characteristics
+        ]
+        json_output = _format_ready_json_success(
+            command="ready info",
+            device_address=selected.address,
+            result={"characteristics": characteristics_list},
+            duration_ms=duration_ms,
+            device_name=selected.name,
+        )
         click.echo(json.dumps(json_output, indent=2))
         return
 
