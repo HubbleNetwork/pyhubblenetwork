@@ -18,7 +18,7 @@
         "Lint passes: `ruff check src/hubblenetwork/cli.py`"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -36,7 +36,7 @@
         "Lint passes: `ruff check src/hubblenetwork/cli.py`"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -52,7 +52,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -70,7 +70,7 @@
         "Lint passes: `ruff check src/hubblenetwork/errors.py`"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -89,7 +89,7 @@
         "Lint passes: `ruff check src/hubblenetwork/cli.py`"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -108,7 +108,7 @@
         "Dataclasses are importable: `from hubblenetwork.ready import WriteResult, TestResult, ValidationResult`"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -128,7 +128,7 @@
         "Lint passes: `ruff check src/hubblenetwork/`"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -148,7 +148,7 @@
         "Lint passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -167,7 +167,7 @@
         "Lint passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
