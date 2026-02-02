@@ -784,7 +784,14 @@ def ready() -> None:
     show_default=True,
     help="Output format",
 )
-def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    default=None,
+    help="Filter results to specific device MAC address",
+)
+def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: Optional[str] = None) -> None:
     """
     Scan for Hubble Ready devices advertising 0xFCA7.
 
@@ -795,6 +802,7 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
       hubblenetwork ready scan
       hubblenetwork ready scan --timeout 20
       hubblenetwork ready scan --format json
+      hubblenetwork ready scan --address AA:BB:CC:DD:EE:FF
     """
     use_json = output_format.lower() == "json"
     devices_found: List[ready_mod.HubbleReadyDevice] = []
@@ -822,6 +830,11 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular") -> None:
 
     def on_device(dev: ready_mod.HubbleReadyDevice) -> None:
         nonlocal device_count, header_printed
+
+        # Filter by address if specified (case-insensitive)
+        if address is not None and dev.address.lower() != address.lower():
+            return
+
         device_count += 1
         devices_found.append(dev)
 
