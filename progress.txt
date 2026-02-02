@@ -123,3 +123,23 @@ This file tracks Ralph's autonomous execution of the PRD.
   - The tests field in ValidationResult is List[TestResult], maintaining type safety
   - Pre-existing mypy errors exist in ready.py on lines 437, 551, 572, 641, 645, 652, 665, 732 - ignore these
 ---
+## 2026-02-02 - US-007
+- Implemented read_status() and _read_status_async() functions in ready.py
+- Added ready read-status CLI command in cli.py
+- Function connects to device and reads Status characteristic (0x0001)
+- Returns StatusCharacteristic dataclass with version and provisioning flags
+- CLI command requires --address parameter, supports --timeout and --format options
+- JSON output includes version object (major, minor, patch, string), mode, is_locked, and flags object
+- Tabular output displays version, mode, and provisioning flags in human-readable format
+- Error handling uses sys.exit(2) for connection failures, consistent with other ready commands
+- Duration tracking implemented using time.monotonic()
+- Files changed: src/hubblenetwork/ready.py (lines 256-300), src/hubblenetwork/cli.py (after ready info command)
+- **Learnings for future iterations:**
+  - The pattern for read commands is: async function in ready.py, sync wrapper, then CLI command
+  - StatusCharacteristic already existed and was used by provision flow - we just expose it via read command
+  - Use _format_ready_json_success() and _format_ready_json_error() helpers for consistent JSON output
+  - The timeout parameter default for connection operations is 30.0 seconds (vs 10.0 for scanning)
+  - CLI command structure: options first (--address required, --timeout, --format), then function body
+  - Tabular output should use click.secho with bold=True for section headers
+  - Pre-existing mypy errors in ready.py are on lines 475, 589, 610, 679, 683, 690, 703, 770 - no new errors introduced
+---
