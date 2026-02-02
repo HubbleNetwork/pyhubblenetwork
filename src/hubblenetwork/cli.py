@@ -1013,13 +1013,13 @@ def ready_info(
         click.echo(f"\nConnecting to {selected.address}...")
 
     try:
-        characteristics = ready_mod.connect_and_read_characteristics(selected.address)
+        characteristics = ready_mod.connect_and_read_characteristics(selected.address, timeout=timeout)
     except Exception as e:
         if use_json:
             click.echo(json.dumps({"error": f"Connection failed: {e}"}))
         else:
             click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
-        return
+        sys.exit(2)
 
     if use_json:
         json_output = {
@@ -1169,12 +1169,12 @@ def ready_provision(
             device_name=device_name,
             scanned_device_name=selected.name,
             eid_type=eid_type.lower(),
-            timeout=30.0,
+            timeout=timeout,
             log_callback=log_step,
         )
     except Exception as e:
         click.secho(f"\n[ERROR] Provisioning failed: {e}", fg="red", err=True)
-        return
+        sys.exit(2)
 
     if result.success:
         click.secho("\n[SUCCESS] Device provisioned!", fg="green")
@@ -1184,6 +1184,7 @@ def ready_provision(
         click.echo(f"  Key: {result.device_key_base64}")
     else:
         click.secho(f"\n[ERROR] Provisioning failed: {result.error_message}", fg="red", err=True)
+        sys.exit(2)
 
 
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
