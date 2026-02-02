@@ -164,3 +164,20 @@ This file tracks Ralph's autonomous execution of the PRD.
   - No new mypy errors introduced - pre-existing errors in ready.py remain on the same lines
 ---
 
+## 2026-02-02 - US-009
+- Implemented DeviceConfig dataclass in ready.py with from_bytes() parser
+- Added read_config() and _read_config_async() functions in ready.py
+- Added ready read-config CLI command in cli.py
+- Parses 12-byte Device Configuration characteristic with eid_type (utc/counter), rotation_period, and pool_size
+- JSON output includes eid_type, eid_type_code, rotation_period_seconds, pool_size, raw_bytes
+- Tabular output displays human-readable configuration via to_display_string() method
+- Files changed: src/hubblenetwork/ready.py (lines 365-417), src/hubblenetwork/cli.py (after read-key-info command)
+- **Learnings for future iterations:**
+  - The DeviceConfig dataclass follows the frozen=True pattern for read-only data (like StatusCharacteristic and DeviceKeyInfo)
+  - Configuration parsing uses struct-like byte parsing: eid_type (1 byte), rotation_period (4 bytes LE), pool_size (2 bytes LE), with 5 reserved bytes
+  - EID type codes: 0x00 for UTC-based, 0x01 for Counter-based
+  - The to_display_string() method builds human-readable output conditionally (rotation_period, pool_size only shown when relevant)
+  - Read commands follow consistent pattern: async function in ready.py, sync wrapper, CLI command with --address, --timeout, --format
+  - All read commands use the same JSON format helpers (_format_ready_json_success, _format_ready_json_error)
+  - Ruff lint passes, mypy has pre-existing errors but no new errors introduced
+---
