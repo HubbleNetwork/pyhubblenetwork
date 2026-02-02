@@ -285,6 +285,92 @@ class DeviceKeyInfo:
         return self.encryption_mode
 
 
+@dataclass
+class WriteResult:
+    """Result of a GATT characteristic write operation."""
+
+    success: bool
+    characteristic_name: str
+    error_code: Optional[int] = None
+    error_message: Optional[str] = None
+    duration_ms: int = 0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "success": self.success,
+            "characteristic_name": self.characteristic_name,
+            "duration_ms": self.duration_ms,
+        }
+        if self.error_code is not None:
+            result["error_code"] = self.error_code
+        if self.error_message is not None:
+            result["error_message"] = self.error_message
+        return result
+
+
+@dataclass
+class TestResult:
+    """Result of an individual validation test."""
+
+    name: str
+    status: str  # "passed", "failed", "skipped"
+    duration_ms: int = 0
+    details: Optional[str] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "name": self.name,
+            "status": self.status,
+            "duration_ms": self.duration_ms,
+        }
+        if self.details is not None:
+            result["details"] = self.details
+        if self.error is not None:
+            result["error"] = self.error
+        return result
+
+
+@dataclass
+class ValidationResult:
+    """Result of a validation test suite run."""
+
+    device_address: str
+    device_name: Optional[str]
+    tests: List[TestResult]
+
+    @property
+    def summary(self) -> dict:
+        """Calculate test statistics."""
+        passed = sum(1 for t in self.tests if t.status == "passed")
+        failed = sum(1 for t in self.tests if t.status == "failed")
+        skipped = sum(1 for t in self.tests if t.status == "skipped")
+        total = len(self.tests)
+        return {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+        }
+
+    @property
+    def success(self) -> bool:
+        """Return True if all tests passed."""
+        return all(t.status == "passed" for t in self.tests)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "device_address": self.device_address,
+            "device_name": self.device_name,
+            "tests": [t.to_dict() for t in self.tests],
+            "summary": self.summary,
+            "success": self.success,
+        }
+
+
 @dataclass(frozen=True)
 class CharacteristicInfo:
     """Information about a read characteristic."""
