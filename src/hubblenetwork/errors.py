@@ -58,6 +58,76 @@ class DecryptionError(HubbleError):
     """Local decryption failed (bad key, corrupt packet, etc.)."""
 
 
+class BleError(HubbleError):
+    """BLE operation failed (connection, GATT read/write, etc.)."""
+
+    def __init__(self, message: str, att_error_code: Optional[int] = None):
+        super().__init__(message)
+        self.att_error_code = att_error_code
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to JSON-serializable dictionary."""
+        result: dict[str, Any] = {
+            "message": str(self),
+        }
+        if self.att_error_code is not None:
+            result["att_error_code"] = self.att_error_code
+            result["att_error_name"] = ATT_ERROR_NAMES.get(
+                self.att_error_code,
+                f"Unknown ATT Error (0x{self.att_error_code:02X})"
+            )
+        return result
+
+
+# ATT Error Code Constants (from Bluetooth Core Specification)
+ATT_INVALID_ATTRIBUTE_LENGTH = 0x0D  # Invalid Attribute Value Length
+ATT_INSUFFICIENT_ENCRYPTION = 0x0F   # Insufficient Encryption
+ATT_INVALID_POOL_SIZE = 0x84         # Application Error: Invalid Pool Size
+ATT_INVALID_ROTATION_PERIOD = 0x85   # Application Error: Invalid Rotation Period
+ATT_INVALID_EID_TYPE = 0x86          # Application Error: Invalid EID Type
+ATT_INVALID_EID_PARAMETER = 0x87     # Application Error: Invalid EID Parameter
+
+# Human-readable names for ATT error codes
+ATT_ERROR_NAMES = {
+    0x0D: "Invalid Attribute Value Length",
+    0x0F: "Insufficient Encryption",
+    0x84: "Invalid Pool Size",
+    0x85: "Invalid Rotation Period",
+    0x86: "Invalid EID Type",
+    0x87: "Invalid EID Parameter",
+}
+
+
+def extract_att_error_code(error_message: str) -> Optional[int]:
+    """
+    Extract ATT error code from a BleakError message.
+
+    BleakError messages often contain ATT error codes in formats like:
+    - "ATT error 0x0d"
+    - "ATT error code 0x0D"
+    - "Error 0x0D"
+
+    Returns:
+        The error code as an integer, or None if not found.
+    """
+    import re
+
+    # Try to match common patterns for ATT error codes
+    patterns = [
+        r'ATT error code 0x([0-9a-fA-F]{2})',
+        r'ATT error 0x([0-9a-fA-F]{2})',
+        r'error code 0x([0-9a-fA-F]{2})',
+        r'Error 0x([0-9a-fA-F]{2})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, error_message, re.IGNORECASE)
+        if match:
+            return int(match.group(1), 16)
+
+    return None
+
+
 # Demo errors
 class InvalidDeviceError(HubbleError):
     """Invalid device for a given task"""
@@ -82,9 +152,18 @@ __all__ = [
     "ValidationError",
     "ScanError",
     "DecryptionError",
+    "BleError",
     "InvalidDeviceError",
     "ElfFetchError",
     "FlashError",
+    "ATT_INVALID_ATTRIBUTE_LENGTH",
+    "ATT_INSUFFICIENT_ENCRYPTION",
+    "ATT_INVALID_POOL_SIZE",
+    "ATT_INVALID_ROTATION_PERIOD",
+    "ATT_INVALID_EID_TYPE",
+    "ATT_INVALID_EID_PARAMETER",
+    "ATT_ERROR_NAMES",
+    "extract_att_error_code",
     "raise_for_response",
     "map_http_status",
 ]
