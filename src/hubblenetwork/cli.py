@@ -1553,6 +1553,454 @@ def ready_read_time(
     click.echo(f"  Human:          {timestamp_human}")
 
 
+@ready.command("write-key")
+@click.option(
+    "--address",
+    "-a",
+    required=True,
+    help="BLE address of the device (e.g., AA:BB:CC:DD:EE:FF)",
+)
+@click.option(
+    "--key",
+    "-k",
+    required=True,
+    help="Base64-encoded encryption key (16 bytes for AES-128-CTR, 32 bytes for AES-256-CTR)",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_write_key(
+    address: str, key: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Write an encryption key to the Device Key characteristic.
+
+    This command reads the device's encryption mode first to validate that
+    the key length matches the expected size (16 bytes for AES-128-CTR,
+    32 bytes for AES-256-CTR).
+
+    Example:
+      hubblenetwork ready write-key --address AA:BB:CC:DD:EE:FF --key <base64-key>
+      hubblenetwork ready write-key -a AA:BB:CC:DD:EE:FF -k <base64-key> --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    # Decode the base64 key
+    try:
+        key_bytes = base64.b64decode(key)
+    except Exception as e:
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready write-key",
+                device_address=address,
+                error=Exception(f"Invalid base64 key: {e}"),
+                duration_ms=0,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"[ERROR] Invalid base64 key: {e}", fg="red", err=True)
+        sys.exit(1)
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        result = ready_mod.write_key(address, key_bytes, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready write-key",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    # Check if write was successful
+    if not result.success:
+        duration_ms = result.duration_ms
+        if use_json:
+            result_dict = result.to_dict()
+            result_dict["key_size_bytes"] = len(key_bytes)
+            json_output = {
+                "success": False,
+                "command": "ready write-key",
+                "device": {"address": address},
+                "error": {
+                    "code": "WriteError",
+                    "message": result.error_message or "Write operation failed",
+                    "att_error_code": result.error_code,
+                },
+                "result": result_dict,
+                "duration_ms": duration_ms,
+            }
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Write failed: {result.error_message}", fg="red", err=True)
+        sys.exit(1)
+
+    # Success case
+    if use_json:
+        result_dict = {
+            "key_written": True,
+            "key_size_bytes": len(key_bytes),
+        }
+        json_output = _format_ready_json_success(
+            command="ready write-key",
+            device_address=address,
+            result=result_dict,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Device Key Write Successful", bold=True)
+    click.echo("")
+    click.echo(f"  Key size: {len(key_bytes)} bytes")
+    click.echo(f"  Duration: {duration_ms} ms")
+
+
+@ready.command("write-config")
+@click.option(
+    "--address",
+    "-a",
+    required=True,
+    help="BLE address of the device (e.g., AA:BB:CC:DD:EE:FF)",
+)
+@click.option(
+    "--eid-type",
+    required=True,
+    type=click.Choice(["utc", "counter"], case_sensitive=False),
+    help="EID type: 'utc' for UTC-based or 'counter' for counter-based",
+)
+@click.option(
+    "--pool-size",
+    type=int,
+    help="Pool size for counter mode (1-65535, required for counter mode)",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["json", "table"], case_sensitive=False),
+    default="table",
+    show_default=True,
+    help="Output format",
+)
+def ready_write_config(address: str, eid_type: str, pool_size: Optional[int], timeout: float, output_format: str):
+    """Write device configuration (EID type, pool size) to a Hubble Ready device.
+
+    This command validates configuration parameters locally and writes them to the
+    Device Configuration characteristic.
+
+    Examples:
+      hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type utc
+      hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type counter --pool-size 100
+    """
+    import time
+    import sys
+    from .ready import write_config
+    from .errors import BleError
+
+    start_time = time.monotonic()
+
+    # Validate that pool_size is provided for counter mode
+    if eid_type.lower() == "counter":
+        if pool_size is None:
+            if output_format == "json":
+                error_obj = {
+                    "success": False,
+                    "command": "write-config",
+                    "device": {"address": address},
+                    "error": {
+                        "code": "ValidationError",
+                        "message": "--pool-size is required for counter mode",
+                    },
+                    "duration_ms": 0,
+                }
+                click.echo(json.dumps(error_obj, indent=2))
+            else:
+                click.echo("Error: --pool-size is required for counter mode", err=True)
+            sys.exit(1)
+    else:
+        # UTC mode - pool_size will be ignored
+        pool_size = 0
+
+    try:
+        result = write_config(address, eid_type, pool_size, rotation_period=0, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        if result.success:
+            # Success
+            if output_format == "json":
+                success_result = {
+                    "config_written": True,
+                    "eid_type": eid_type.lower(),
+                    "rotation_period": 0,
+                }
+                if eid_type.lower() == "counter":
+                    success_result["pool_size"] = pool_size
+
+                success_obj = _format_ready_json_success(
+                    command="write-config",
+                    device_address=address,
+                    result=success_result,
+                    duration_ms=duration_ms,
+                )
+                click.echo(json.dumps(success_obj, indent=2))
+            else:
+                click.secho("✓ Configuration written successfully", fg="green", bold=True)
+                click.echo("")
+                click.echo(f"  EID type: {eid_type.lower()}")
+                click.echo("  Rotation period: 0 seconds")
+                if eid_type.lower() == "counter":
+                    click.echo(f"  Pool size: {pool_size}")
+                click.echo("")
+                click.echo(f"  Duration: {duration_ms} ms")
+            sys.exit(0)
+        else:
+            # Write validation failure
+            if output_format == "json":
+                result_dict = result.to_dict()
+                result_dict["config_written"] = False
+                error_dict = {
+                    "code": "WriteError",
+                    "message": result.error_message or "Configuration write failed",
+                }
+                if result.error_code is not None:
+                    error_dict["att_error_code"] = result.error_code
+                    from .errors import ATT_ERROR_NAMES
+                    error_dict["att_error_name"] = ATT_ERROR_NAMES.get(
+                        result.error_code,
+                        f"Unknown ATT Error (0x{result.error_code:02X})"
+                    )
+                error_obj = {
+                    "success": False,
+                    "command": "write-config",
+                    "device": {"address": address},
+                    "error": error_dict,
+                    "result": result_dict,
+                    "duration_ms": duration_ms,
+                }
+                click.echo(json.dumps(error_obj, indent=2))
+            else:
+                click.secho("✗ Configuration write failed", fg="red", bold=True, err=True)
+                if result.error_message:
+                    click.echo(f"  {result.error_message}", err=True)
+                if result.error_code is not None:
+                    from .errors import ATT_ERROR_NAMES
+                    error_name = ATT_ERROR_NAMES.get(
+                        result.error_code,
+                        f"Unknown ATT Error (0x{result.error_code:02X})"
+                    )
+                    click.echo(f"  ATT Error: 0x{result.error_code:02X} ({error_name})", err=True)
+            sys.exit(1)
+
+    except BleError as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if output_format == "json":
+            error_obj = _format_ready_json_error(
+                command="write-config",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(error_obj, indent=2))
+        else:
+            click.secho(f"✗ BLE Error: {e}", fg="red", bold=True, err=True)
+        sys.exit(2)
+
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if output_format == "json":
+            error_obj = _format_ready_json_error(
+                command="write-config",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(error_obj, indent=2))
+        else:
+            click.secho(f"✗ Error: {e}", fg="red", bold=True, err=True)
+        sys.exit(2)
+
+
+@ready.command("write-time")
+@click.option(
+    "--address",
+    "-a",
+    required=True,
+    help="BLE address of the device (e.g., AA:BB:CC:DD:EE:FF)",
+)
+@click.option(
+    "--timestamp",
+    type=int,
+    help="Unix timestamp (seconds since epoch). If not provided, uses current time.",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["json", "table"], case_sensitive=False),
+    default="table",
+    show_default=True,
+    help="Output format",
+)
+def ready_write_time(address: str, timestamp: Optional[int], timeout: float, output_format: str):
+    """Write epoch time to a Hubble Ready device.
+
+    This command writes a Unix timestamp to the Epoch Time characteristic.
+    If no timestamp is provided, the current time is used.
+
+    Examples:
+      hubblenetwork ready write-time --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready write-time --address AA:BB:CC:DD:EE:FF --timestamp 1735603200
+    """
+    import time
+    import sys
+    from datetime import datetime, timezone
+    from .ready import write_time
+    from .errors import BleError
+
+    start_time = time.monotonic()
+
+    # Use current time if not provided
+    actual_timestamp = timestamp if timestamp is not None else int(time.time())
+
+    try:
+        result = write_time(address, actual_timestamp, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        if result.success:
+            # Success
+            if output_format == "json":
+                success_result = {
+                    "time_written": True,
+                    "timestamp": actual_timestamp,
+                    "timestamp_iso": datetime.fromtimestamp(actual_timestamp, tz=timezone.utc).isoformat(),
+                }
+
+                success_obj = _format_ready_json_success(
+                    command="write-time",
+                    device_address=address,
+                    result=success_result,
+                    duration_ms=duration_ms,
+                )
+                click.echo(json.dumps(success_obj, indent=2))
+            else:
+                click.secho("✓ Time written successfully", fg="green", bold=True)
+                click.echo("")
+                click.echo(f"  Timestamp: {actual_timestamp}")
+                click.echo(f"  ISO 8601: {datetime.fromtimestamp(actual_timestamp, tz=timezone.utc).isoformat()}")
+                click.echo(f"  Human readable: {datetime.fromtimestamp(actual_timestamp, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                click.echo("")
+                click.echo(f"  Duration: {duration_ms} ms")
+            sys.exit(0)
+        else:
+            # Write failure
+            if output_format == "json":
+                result_dict = result.to_dict()
+                result_dict["time_written"] = False
+                error_dict = {
+                    "code": "WriteError",
+                    "message": result.error_message or "Time write failed",
+                }
+                if result.error_code is not None:
+                    error_dict["att_error_code"] = result.error_code
+                    from .errors import ATT_ERROR_NAMES
+                    error_dict["att_error_name"] = ATT_ERROR_NAMES.get(
+                        result.error_code,
+                        f"Unknown ATT Error (0x{result.error_code:02X})"
+                    )
+                error_obj = {
+                    "success": False,
+                    "command": "write-time",
+                    "device": {"address": address},
+                    "error": error_dict,
+                    "result": result_dict,
+                    "duration_ms": duration_ms,
+                }
+                click.echo(json.dumps(error_obj, indent=2))
+            else:
+                click.secho("✗ Time write failed", fg="red", bold=True, err=True)
+                if result.error_message:
+                    click.echo(f"  {result.error_message}", err=True)
+                if result.error_code is not None:
+                    from .errors import ATT_ERROR_NAMES
+                    error_name = ATT_ERROR_NAMES.get(
+                        result.error_code,
+                        f"Unknown ATT Error (0x{result.error_code:02X})"
+                    )
+                    click.echo(f"  ATT Error: 0x{result.error_code:02X} ({error_name})", err=True)
+            sys.exit(1)
+
+    except BleError as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if output_format == "json":
+            error_obj = _format_ready_json_error(
+                command="write-time",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(error_obj, indent=2))
+        else:
+            click.secho(f"✗ BLE Error: {e}", fg="red", bold=True, err=True)
+        sys.exit(2)
+
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if output_format == "json":
+            error_obj = _format_ready_json_error(
+                command="write-time",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(error_obj, indent=2))
+        else:
+            click.secho(f"✗ Error: {e}", fg="red", bold=True, err=True)
+        sys.exit(2)
+
+
 @ready.command("provision")
 @click.option(
     "--timeout",
