@@ -143,3 +143,24 @@ This file tracks Ralph's autonomous execution of the PRD.
   - Tabular output should use click.secho with bold=True for section headers
   - Pre-existing mypy errors in ready.py are on lines 475, 589, 610, 679, 683, 690, 703, 770 - no new errors introduced
 ---
+## 2026-02-02 - US-008
+- Implemented read_key_info() and _read_key_info_async() functions in ready.py
+- Added encryption_mode_code field to DeviceKeyInfo dataclass
+- Updated DeviceKeyInfo.from_bytes() to return the encryption_mode_code
+- Added ready read-key-info CLI command in cli.py
+- CLI command requires --address parameter, supports --timeout and --format options
+- JSON output includes encryption_mode, encryption_mode_code, key_size_bytes
+- Tabular output displays encryption mode and key size in human-readable format
+- Error handling uses sys.exit(2) for connection failures, consistent with other ready commands
+- Duration tracking implemented using time.monotonic()
+- Files changed: src/hubblenetwork/ready.py (lines 297-361), src/hubblenetwork/cli.py (after ready read-status command)
+- **Learnings for future iterations:**
+  - The DeviceKeyInfo dataclass already existed and was used by the provision flow - we just exposed it via read command
+  - The from_bytes() method needed to be updated to return the encryption_mode_code field for JSON output
+  - The read command pattern is consistent: async function in ready.py, sync wrapper, then CLI command
+  - Both JSON and tabular output formats must be implemented for all ready commands
+  - Encryption mode codes: 0x01 for AES-256-CTR (32-byte key), 0x02 for AES-128-CTR (16-byte key)
+  - The key_size property in DeviceKeyInfo automatically calculates the correct key size based on encryption mode
+  - No new mypy errors introduced - pre-existing errors in ready.py remain on the same lines
+---
+
