@@ -65,3 +65,21 @@ This file tracks Ralph's autonomous execution of the PRD.
   - The ready module functions (scan_ready_devices, connect_and_read_characteristics, provision_device) all accept timeout parameters
 ---
 
+
+## 2026-02-02 - US-004
+- Implemented BleError exception class with att_error_code attribute
+- Added 6 ATT error code constants (0x0D, 0x0F, 0x84-0x87) with descriptive comments
+- Created ATT_ERROR_NAMES dictionary mapping error codes to human-readable names
+- Implemented extract_att_error_code() function to parse BleakError messages using regex patterns
+- Added to_dict() method to BleError for JSON serialization with att_error_code and att_error_name
+- Updated __all__ exports to include all new public symbols
+- Files changed: src/hubblenetwork/errors.py
+- **Learnings for future iterations:**
+  - The errors.py module follows a clear hierarchy: base HubbleError -> specialized errors
+  - BLE-related errors should include both message and optional structured data (att_error_code)
+  - ATT error codes use hex values (0x0D, 0x0F, 0x84-0x87) - standard from Bluetooth Core Spec
+  - The to_dict() method pattern enables consistent JSON serialization across error types
+  - extract_att_error_code() uses regex to parse various BleakError message formats
+  - All public symbols must be added to __all__ for proper package exports
+  - Pattern: Error classes should provide both human-readable messages and machine-parseable data
+---
