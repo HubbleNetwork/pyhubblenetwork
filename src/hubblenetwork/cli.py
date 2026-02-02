@@ -1382,6 +1382,91 @@ def ready_read_key_info(
     click.echo(f"  Key Size:         {key_info.key_size} bytes")
 
 
+@ready.command("read-config")
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    required=True,
+    help="Device MAC address",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_read_config(
+    address: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Read the Device Configuration characteristic from a Hubble Ready device.
+
+    Connects to the device and reads the Device Configuration characteristic (0x0004),
+    which contains EID type, rotation period, and pool size settings.
+
+    Example:
+      hubblenetwork ready read-config --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready read-config -a AA:BB:CC:DD:EE:FF --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        config = ready_mod.read_config(address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready read-config",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    if use_json:
+        result = {
+            "eid_type": config.eid_type,
+            "eid_type_code": config.eid_type_code,
+            "rotation_period_seconds": config.rotation_period,
+            "pool_size": config.pool_size,
+            "raw_bytes": config.raw_bytes,
+        }
+        json_output = _format_ready_json_success(
+            command="ready read-config",
+            device_address=address,
+            result=result,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Device Configuration Characteristic", bold=True)
+    click.echo("")
+    click.echo(f"  {config.to_display_string()}")
+
+
 @ready.command("provision")
 @click.option(
     "--timeout",
