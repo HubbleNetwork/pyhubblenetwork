@@ -438,6 +438,286 @@ def read_time(address: str, timeout: float = 30.0) -> int:
         )
 
 
+async def _write_key_async(address: str, key: bytes, timeout: float = 30.0) -> WriteResult:
+    """Async implementation of write_key."""
+    import time
+    from .errors import BleError, extract_att_error_code
+    from bleak.exc import BleakError as BleBleakError
+
+    start_time = time.monotonic()
+
+    try:
+        # First, read the encryption mode to validate key length
+        async with BleakClient(address, timeout=timeout) as client:
+            # Read Device Key characteristic to get encryption mode
+            key_data = await client.read_gatt_char(CHAR_DEVICE_KEY_UUID)
+            key_info = DeviceKeyInfo.from_bytes(bytes(key_data))
+
+            # Validate key length
+            expected_length = key_info.key_size
+            if len(key) != expected_length:
+                duration_ms = int((time.monotonic() - start_time) * 1000)
+                return WriteResult(
+                    success=False,
+                    characteristic_name="Device Key",
+                    error_code=0x0D,  # ATT_INVALID_ATTRIBUTE_VALUE_LENGTH
+                    error_message=f"Invalid key length: got {len(key)} bytes, expected {expected_length} bytes for {key_info.encryption_mode}",
+                    duration_ms=duration_ms,
+                )
+
+            # Write the key
+            await client.write_gatt_char(CHAR_DEVICE_KEY_UUID, key)
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        return WriteResult(
+            success=True,
+            characteristic_name="Device Key",
+            duration_ms=duration_ms,
+        )
+
+    except BleBleakError as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        att_error_code = extract_att_error_code(str(e))
+        raise BleError(str(e), att_error_code=att_error_code) from e
+
+
+def write_key(address: str, key: bytes, timeout: float = 30.0) -> WriteResult:
+    """
+    Write an encryption key to the Device Key characteristic.
+
+    This function automatically reads the encryption mode first to validate
+    that the key length matches the device's expected key size.
+
+    Args:
+        address: BLE address of the device
+        key: Encryption key bytes (16 bytes for AES-128-CTR, 32 bytes for AES-256-CTR)
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        WriteResult with success status and optional error information
+
+    Raises:
+        BleError: If connection fails or GATT operation fails
+    """
+    try:
+        return asyncio.run(_write_key_async(address, key, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_write_key_async(address, key, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
+async def _write_config_async(
+    address: str,
+    eid_type: str,
+    pool_size: int,
+    rotation_period: int = 0,
+    timeout: float = 30.0
+) -> WriteResult:
+    """Async implementation of write_config."""
+    import time
+    from .errors import (
+        BleError,
+        extract_att_error_code,
+        ATT_INVALID_EID_TYPE,
+        ATT_INVALID_POOL_SIZE,
+        ATT_INVALID_ROTATION_PERIOD,
+    )
+    from bleak.exc import BleakError as BleBleakError
+
+    start_time = time.monotonic()
+
+    # Validate parameters locally
+    eid_type_lower = eid_type.lower()
+    if eid_type_lower not in ["utc", "counter"]:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        return WriteResult(
+            success=False,
+            characteristic_name="Device Configuration",
+            error_code=ATT_INVALID_EID_TYPE,
+            error_message=f"Invalid EID type: {eid_type}. Must be 'utc' or 'counter'",
+            duration_ms=duration_ms,
+        )
+
+    # Validate pool size for counter mode
+    if eid_type_lower == "counter":
+        if pool_size < 1 or pool_size > 65535:
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            return WriteResult(
+                success=False,
+                characteristic_name="Device Configuration",
+                error_code=ATT_INVALID_POOL_SIZE,
+                error_message=f"Invalid pool size: {pool_size}. Must be between 1 and 65535 for counter mode",
+                duration_ms=duration_ms,
+            )
+    else:
+        # UTC mode should have pool_size = 0
+        pool_size = 0
+
+    # Validate rotation period (should be 0)
+    if rotation_period != 0:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        return WriteResult(
+            success=False,
+            characteristic_name="Device Configuration",
+            error_code=ATT_INVALID_ROTATION_PERIOD,
+            error_message=f"Invalid rotation period: {rotation_period}. Must be 0",
+            duration_ms=duration_ms,
+        )
+
+    try:
+        # Build the 12-byte configuration
+        eid_type_code = 0x00 if eid_type_lower == "utc" else 0x01
+        config_bytes = bytearray(12)
+        config_bytes[0] = eid_type_code
+        config_bytes[1:5] = rotation_period.to_bytes(4, byteorder="little")
+        config_bytes[5:7] = pool_size.to_bytes(2, byteorder="little")
+        # Bytes 7-11 are reserved (already zeros)
+
+        # Write the configuration
+        async with BleakClient(address, timeout=timeout) as client:
+            await client.write_gatt_char(CHAR_DEVICE_CONFIG_UUID, bytes(config_bytes))
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        return WriteResult(
+            success=True,
+            characteristic_name="Device Configuration",
+            duration_ms=duration_ms,
+        )
+
+    except BleBleakError as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        att_error_code = extract_att_error_code(str(e))
+        raise BleError(str(e), att_error_code=att_error_code) from e
+
+
+def write_config(
+    address: str,
+    eid_type: str,
+    pool_size: int,
+    rotation_period: int = 0,
+    timeout: float = 30.0
+) -> WriteResult:
+    """
+    Write device configuration (EID type, pool size, rotation period) to a Hubble Ready device.
+
+    This function validates the configuration parameters locally before writing.
+
+    Args:
+        address: BLE address of the device
+        eid_type: EID type ("utc" or "counter")
+        pool_size: Pool size for counter mode (1-65535). Ignored for UTC mode.
+        rotation_period: Rotation period in seconds (must be 0, default: 0)
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        WriteResult with success status and optional error information
+
+    Raises:
+        BleError: If connection fails or GATT operation fails
+    """
+    try:
+        return asyncio.run(_write_config_async(address, eid_type, pool_size, rotation_period, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_write_config_async(address, eid_type, pool_size, rotation_period, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
+async def _write_time_async(
+    address: str,
+    timestamp: Optional[int] = None,
+    timeout: float = 30.0
+) -> WriteResult:
+    """Async implementation of write_time."""
+    import time
+    from .errors import BleError, extract_att_error_code
+    from bleak.exc import BleakError as BleBleakError
+
+    start_time = time.monotonic()
+
+    # Use current time if not provided
+    if timestamp is None:
+        timestamp = int(time.time())
+
+    try:
+        async with BleakClient(address, timeout=timeout) as client:
+            # Convert timestamp to 8-byte little-endian format
+            time_bytes = timestamp.to_bytes(8, byteorder="little")
+
+            # Write the time
+            await client.write_gatt_char(CHAR_EPOCH_TIME_UUID, time_bytes)
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        return WriteResult(
+            success=True,
+            characteristic_name="Epoch Time",
+            duration_ms=duration_ms,
+        )
+
+    except BleBleakError as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        att_error_code = extract_att_error_code(str(e))
+        raise BleError(str(e), att_error_code=att_error_code) from e
+
+
+def write_time(
+    address: str,
+    timestamp: Optional[int] = None,
+    timeout: float = 30.0
+) -> WriteResult:
+    """
+    Write epoch time to the Epoch Time characteristic.
+
+    This function writes a Unix timestamp to the device. If no timestamp is provided,
+    the current time is used.
+
+    Args:
+        address: BLE address of the device
+        timestamp: Unix timestamp (seconds since epoch). If None, uses current time.
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        WriteResult with success status and optional error information
+
+    Raises:
+        BleError: If connection fails or GATT operation fails
+    """
+    try:
+        return asyncio.run(_write_time_async(address, timestamp, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_write_time_async(address, timestamp, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
 @dataclass(frozen=True)
 class DeviceConfig:
     """Parsed Device Configuration characteristic (0x0004) data."""
