@@ -254,6 +254,44 @@ class StatusCharacteristic:
         return f"{parts[0]}, {parts[1]}\n{', '.join(flags)}"
 
 
+async def _read_status_async(address: str, timeout: float = 30.0) -> StatusCharacteristic:
+    """Async implementation of read_status."""
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(CHAR_STATUS_UUID)
+        return StatusCharacteristic.from_bytes(bytes(data))
+
+
+def read_status(address: str, timeout: float = 30.0) -> StatusCharacteristic:
+    """
+    Read the Status characteristic from a Hubble Ready device.
+
+    Args:
+        address: BLE address of the device
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        StatusCharacteristic with version and provisioning flags
+
+    Raises:
+        BleakError: If connection fails or read operation fails
+    """
+    try:
+        return asyncio.run(_read_status_async(address, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_read_status_async(address, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
+
+
 @dataclass(frozen=True)
 class DeviceKeyInfo:
     """Parsed Device Key characteristic (0x0003) read data."""
