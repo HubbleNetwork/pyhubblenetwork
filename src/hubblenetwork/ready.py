@@ -297,6 +297,7 @@ class DeviceKeyInfo:
     """Parsed Device Key characteristic (0x0003) read data."""
 
     encryption_mode: str  # "AES-256-CTR" or "AES-128-CTR"
+    encryption_mode_code: int  # 0x01 for AES-256-CTR, 0x02 for AES-128-CTR
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "DeviceKeyInfo":
@@ -312,7 +313,7 @@ class DeviceKeyInfo:
         else:
             raise ValueError(f"Unknown encryption mode: 0x{mode_byte:02x}")
 
-        return cls(encryption_mode=encryption_mode)
+        return cls(encryption_mode=encryption_mode, encryption_mode_code=mode_byte)
 
     @property
     def key_size(self) -> int:
@@ -321,6 +322,44 @@ class DeviceKeyInfo:
 
     def to_display_string(self) -> str:
         return self.encryption_mode
+
+
+async def _read_key_info_async(address: str, timeout: float = 30.0) -> DeviceKeyInfo:
+    """Async implementation of read_key_info."""
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(CHAR_DEVICE_KEY_UUID)
+        return DeviceKeyInfo.from_bytes(bytes(data))
+
+
+def read_key_info(address: str, timeout: float = 30.0) -> DeviceKeyInfo:
+    """
+    Read the Device Key characteristic from a Hubble Ready device.
+
+    Args:
+        address: BLE address of the device
+        timeout: Connection timeout in seconds (default: 30.0)
+
+    Returns:
+        DeviceKeyInfo with encryption mode and key size
+
+    Raises:
+        BleakError: If connection fails or read operation fails
+    """
+    try:
+        return asyncio.run(_read_key_info_async(address, timeout))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_read_key_info_async(address, timeout))
+            finally:
+                loop.close()
+        raise RuntimeError(
+            "Cannot run synchronous BLE operation inside an existing async event loop."
+        )
 
 
 @dataclass

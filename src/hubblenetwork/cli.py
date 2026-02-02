@@ -1298,6 +1298,90 @@ def ready_read_status(
     click.echo(f"    Time:        {'Yes' if status.epoch_time_written else 'No'}")
 
 
+@ready.command("read-key-info")
+@click.option(
+    "--address",
+    "-a",
+    type=str,
+    required=True,
+    help="Device MAC address",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Connection timeout in seconds",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format",
+)
+def ready_read_key_info(
+    address: str, timeout: float = 30.0, output_format: str = "tabular"
+) -> None:
+    """
+    Read the Device Key characteristic from a Hubble Ready device.
+
+    Connects to the device and reads the Device Key characteristic (0x0003),
+    which contains encryption mode information.
+
+    Example:
+      hubblenetwork ready read-key-info --address AA:BB:CC:DD:EE:FF
+      hubblenetwork ready read-key-info -a AA:BB:CC:DD:EE:FF --format json
+    """
+    use_json = output_format.lower() == "json"
+
+    if not use_json:
+        click.echo(f"Connecting to {address}...")
+
+    start_time = time.monotonic()
+    try:
+        key_info = ready_mod.read_key_info(address, timeout=timeout)
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        if use_json:
+            json_output = _format_ready_json_error(
+                command="ready read-key-info",
+                device_address=address,
+                error=e,
+                duration_ms=duration_ms,
+            )
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            click.secho(f"\n[ERROR] Connection failed: {e}", fg="red", err=True)
+        sys.exit(2)
+
+    if use_json:
+        result = {
+            "encryption_mode": key_info.encryption_mode,
+            "encryption_mode_code": key_info.encryption_mode_code,
+            "key_size_bytes": key_info.key_size,
+        }
+        json_output = _format_ready_json_success(
+            command="ready read-key-info",
+            device_address=address,
+            result=result,
+            duration_ms=duration_ms,
+        )
+        click.echo(json.dumps(json_output, indent=2))
+        return
+
+    # Tabular output
+    click.echo("")
+    click.secho("Device Key Characteristic", bold=True)
+    click.echo("")
+    click.echo(f"  Encryption Mode:  {key_info.encryption_mode}")
+    click.echo(f"  Key Size:         {key_info.key_size} bytes")
+
+
 @ready.command("provision")
 @click.option(
     "--timeout",
