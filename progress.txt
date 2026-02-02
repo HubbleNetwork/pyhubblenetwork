@@ -1,0 +1,67 @@
+=== Ralph Progress Log ===
+Project: pyhubblenetwork - Hubble Ready CLI Testing Framework
+Branch: ralph/hubble-ready-testing-framework
+Started: 2026-02-02
+
+This file tracks Ralph's autonomous execution of the PRD.
+
+## Codebase Patterns
+- Pre-existing mypy errors exist in cli.py - ignore them when running type checks
+- Use sys.exit(2) for BLE connection/operation errors (exit code 2 convention)
+- Always implement both JSON and tabular output formats for ready commands
+- Direct connection flows should skip scanning and connect using device address directly
+- The ready module functions accept timeout parameters that should be passed through from CLI
+- CLI options use short form (-a, -t, -o) consistently across commands
+- Always verify new CLI options appear in --help output
+
+---
+
+## 2026-02-02 - US-001
+- Implemented --address parameter for ready scan command in cli.py
+- Added optional --address/-a flag to filter scan results by MAC address
+- Implemented case-insensitive address matching in on_device callback
+- Updated command docstring with example usage
+- Files changed: src/hubblenetwork/cli.py
+- **Learnings for future iterations:**
+  - The ready scan command uses a streaming callback pattern (on_device) to handle discovered devices
+  - Device filtering should happen in the callback to avoid displaying devices that don't match criteria
+  - The codebase already imports Optional from typing, so type annotations are consistent
+  - Pre-existing mypy errors exist in cli.py but are unrelated to new changes
+  - Tests are primarily integration tests that require BLE hardware; unit tests can be done via Click's CliRunner
+  - Always check --help output to verify new CLI options appear correctly
+---
+
+## 2026-02-02 - US-002
+- Implemented --address parameter for ready info command in cli.py
+- Added optional --address/-a flag to enable direct connection without scanning
+- Modified ready_info() function to skip scan and connect directly when address provided
+- Connection failures return exit code 2 as specified
+- Maintained backward compatibility with scan+selection flow when --address omitted
+- Both JSON and tabular output formats work correctly with --address parameter
+- Files changed: src/hubblenetwork/cli.py (lines 898-987)
+- **Learnings for future iterations:**
+  - The ready info command structure has two flows: direct connection (new) and scan+selection (existing)
+  - Direct connection flow should short-circuit early with sys.exit(2) on error to ensure proper exit codes
+  - JSON output for direct connection should only include address in device object (no name/rssi since no scan occurred)
+  - Tabular output reuses the same characteristic display code for both flows
+  - The connect_and_read_characteristics() function accepts a timeout parameter that should be passed through
+  - When adding direct connection to commands, ensure both output formats (JSON and tabular) are handled
+---
+
+## 2026-02-02 - US-003
+- Documented and verified --timeout parameter consistency across all ready commands
+- Fixed exit code consistency: all BLE errors now return exit code 2
+- Updated ready info scan flow to use sys.exit(2) on connection failure (was just returning)
+- Updated ready provision to use sys.exit(2) on both exception and result.success==False
+- Changed provision command to pass timeout parameter from CLI (was hardcoded to 30.0)
+- Files changed: src/hubblenetwork/cli.py (lines 1016, 1172, 1177, 1187)
+- **Learnings for future iterations:**
+  - All ready commands (scan, info, provision) support --timeout parameter with defaults: 10.0s for scanning, 30.0s for connections
+  - Exit code 2 is the standard for BLE operation errors - must be used consistently across all commands
+  - The provision command was hardcoding timeout=30.0 instead of using the CLI parameter
+  - JSON error output automatically includes timeout information from BleakError exception messages
+  - When fixing error handling, check both exception paths AND result.success paths for consistency
+  - Bleak's BleakClient accepts timeout parameter which controls connection timeout
+  - The ready module functions (scan_ready_devices, connect_and_read_characteristics, provision_device) all accept timeout parameters
+---
+

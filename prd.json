@@ -1,0 +1,239 @@
+{
+  "project": "pyhubblenetwork",
+  "branchName": "ralph/hubble-ready-testing-framework",
+  "description": "Hubble Ready CLI Testing Framework - Enable automated firmware testing with non-interactive commands, granular GATT operations, and validation suites",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Add --address parameter to ready scan",
+      "description": "As an AI agent, I want to filter scan results to a specific device address so that I can verify a specific device is advertising without interactive selection. Add --address parameter to existing ready scan command in cli.py (line 769). Filter devices list to exact MAC address match (case-insensitive). Return empty array if no match. Maintain backward compatibility when --address omitted.",
+      "acceptanceCriteria": [
+        "Command executes: hubblenetwork ready scan --address AA:BB:CC:DD:EE:FF --format json",
+        "Returns empty array if device not found (exit code 0)",
+        "Returns single-element array if device found",
+        "Case-insensitive address matching works",
+        "Existing behavior unchanged when --address omitted",
+        "Tabular output shows only filtered device when --address provided",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Add --address parameter to ready info",
+      "description": "As a firmware developer, I want to connect directly to a device by address so that I can quickly inspect characteristics without interactive selection. Modify ready info command in cli.py (line 885) to accept --address parameter. When provided, skip scan and connect directly. On connection failure, return JSON error with exit code 2.",
+      "acceptanceCriteria": [
+        "Command executes: hubblenetwork ready info --address AA:BB:CC:DD:EE:FF --format json",
+        "Connects directly without scanning when --address provided",
+        "Returns error with exit code 2 if connection fails",
+        "Existing scan+selection behavior unchanged when --address omitted",
+        "JSON output includes all characteristics on success",
+        "Tabular output works with --address parameter",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Document --timeout parameter consistency",
+      "description": "As a QA engineer, I want to control connection timeouts for all ready commands so that I can optimize test suite execution time. Document that all existing ready commands (scan, info, provision) support --timeout parameter with default values. Ensure timeout errors return exit code 2 consistently. This story is documentation-only since existing commands already have timeout support.",
+      "acceptanceCriteria": [
+        "Verify all existing ready commands support --timeout parameter",
+        "Confirm default timeout values in code comments",
+        "Verify timeout errors return exit code 2 consistently",
+        "JSON error output includes timeout information",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Add ATT error codes and BleError exception to errors.py",
+      "description": "As an AI agent, I want ATT error code constants and mappings defined so that I can properly handle and report GATT operation failures. Add BleError exception class with att_error_code attribute. Define 6 ATT error code constants (0x0D, 0x0F, 0x84-0x87). Add ATT_ERROR_NAMES dictionary for human-readable names. Implement extract_att_error_code() function to parse BleakError messages. Add BleError.to_dict() method for JSON serialization.",
+      "acceptanceCriteria": [
+        "BleError exception class defined with att_error_code attribute",
+        "All 6 ATT error code constants defined",
+        "ATT_ERROR_NAMES dictionary maps all codes to names",
+        "extract_att_error_code() function parses BleakError messages",
+        "All new exports added to __all__",
+        "BleError.to_dict() returns JSON-serializable format",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Update JSON output structure to specification format",
+      "description": "As an AI agent, I want all ready commands to output JSON in a consistent structure so that I can reliably parse test results. Create helper functions _format_ready_json_success() and _format_ready_json_error() in cli.py. Standard structure includes: success (bool), command (str), device (dict with address and name), result/error (dict), duration_ms (int). Update existing ready scan and ready info commands to use new format.",
+      "acceptanceCriteria": [
+        "Helper functions _format_ready_json_success and _format_ready_json_error implemented",
+        "All top-level fields present: success, command, device, result/error, duration_ms",
+        "Error objects include code, name, message fields",
+        "BleError exceptions format correctly with ATT error codes",
+        "Device object includes address (required) and name (optional)",
+        "Duration tracking implemented using time.monotonic()",
+        "JSON is valid and parseable",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Add WriteResult, TestResult, ValidationResult dataclasses",
+      "description": "As a firmware developer, I want typed dataclasses for write results and test results so that the codebase maintains type safety. Add three dataclasses to ready.py after line 286: WriteResult (for write operations), TestResult (for individual tests), ValidationResult (for test suites). Each dataclass must have to_dict() method for JSON serialization. ValidationResult needs summary property and success property.",
+      "acceptanceCriteria": [
+        "WriteResult dataclass defined with success, characteristic_name, error_code, error_message, duration_ms fields",
+        "TestResult dataclass defined with name, status, duration_ms, details, error fields",
+        "ValidationResult dataclass defined with device_address, device_name, tests fields",
+        "All dataclasses have to_dict() methods",
+        "ValidationResult.summary property calculates test statistics",
+        "ValidationResult.success property returns boolean",
+        "Dataclasses are importable from hubblenetwork.ready",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Implement ready read-status command",
+      "description": "As a firmware developer, I want to read just the Status characteristic so that I can verify version and provisioning flags during development. Implement read_status() function in ready.py with async variant _read_status_async(). Add ready read-status CLI command in cli.py. Returns StatusCharacteristic with version and flags (key_written, config_written, epoch_time_written). Supports --address (required), --timeout, --format options.",
+      "acceptanceCriteria": [
+        "read_status() function in ready.py connects and reads Status characteristic",
+        "Function returns StatusCharacteristic dataclass",
+        "CLI command ready read-status requires --address parameter",
+        "JSON output matches spec format with version and flags objects",
+        "Tabular output displays version, mode, and flags",
+        "BleError raised and formatted correctly on connection failure",
+        "Exit code 0 on success, 2 on error",
+        "Duration tracking works correctly",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Implement ready read-key-info command",
+      "description": "As a firmware developer, I want to read the Device Key characteristic to determine encryption mode so that I can verify the device advertises the correct AES mode. Implement read_key_info() function in ready.py with async variant. Add ready read-key-info CLI command. Returns DeviceKeyInfo with encryption_mode (AES-256-CTR or AES-128-CTR) and key_size. Supports --address (required), --timeout, --format options.",
+      "acceptanceCriteria": [
+        "read_key_info() function reads Device Key characteristic",
+        "Function returns DeviceKeyInfo dataclass",
+        "CLI command requires --address parameter",
+        "JSON output includes encryption_mode, encryption_mode_code, key_size_bytes",
+        "Tabular output displays encryption mode and key size",
+        "Correctly identifies AES-256-CTR (0x01) and AES-128-CTR (0x02)",
+        "BleError raised on connection failure",
+        "Exit code 0 on success, 2 on error",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Implement ready read-config command",
+      "description": "As a firmware developer, I want to read the Device Configuration characteristic so that I can verify EID type and pool size settings. Add DeviceConfig dataclass to ready.py with from_bytes() parser and to_display_string() method. Implement read_config() function with async variant. Add ready read-config CLI command. Parses eid_type (utc/counter), rotation_period, pool_size from 12-byte characteristic. Supports --address (required), --timeout, --format options.",
+      "acceptanceCriteria": [
+        "DeviceConfig dataclass defined with eid_type, rotation_period, pool_size, raw_bytes",
+        "read_config() function reads Device Configuration characteristic",
+        "CLI command requires --address parameter",
+        "JSON output includes eid_type, eid_type_code, rotation_period_seconds, pool_size, raw_bytes",
+        "Correctly parses UTC mode (0x00) and Counter mode (0x01)",
+        "Tabular output displays configuration in human-readable format",
+        "Exit code 0 on success, 2 on error",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Implement ready read-time command",
+      "description": "As a firmware developer, I want to read the Epoch Time characteristic so that I can verify time synchronization. Implement read_time() function in ready.py that returns Unix timestamp as integer. Add ready read-time CLI command. Parses 8-byte little-endian timestamp. JSON output includes timestamp, iso8601 string, and skew (difference from current time). Supports --address (required), --timeout, --format options.",
+      "acceptanceCriteria": [
+        "read_time() function reads Epoch Time characteristic",
+        "Function returns Unix timestamp as integer",
+        "CLI command requires --address parameter",
+        "JSON output includes timestamp, iso8601, skew_seconds",
+        "Tabular output displays timestamp, ISO date, and skew",
+        "Skew calculation shows positive (device ahead) or negative (device behind)",
+        "Exit code 0 on success, 2 on error",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Implement ready write-key command",
+      "description": "As a firmware developer, I want to write encryption keys to the Device Key characteristic so that I can test key provisioning in isolation. Implement write_key() function in ready.py that accepts 32-byte (AES-256) or 16-byte (AES-128) keys as hex strings. Add ready write-key CLI command with --key-hex parameter. Validates key length and format. Returns WriteResult. Supports --address (required), --key-hex (required), --timeout, --format options. Captures ATT error codes on write failure.",
+      "acceptanceCriteria": [
+        "write_key() function writes Device Key characteristic",
+        "Function validates key is 32 or 16 bytes hex string",
+        "CLI command requires --address and --key-hex parameters",
+        "JSON output includes WriteResult with success status",
+        "ATT error codes captured and reported (0x0D for invalid length)",
+        "Exit code 0 on success, 1 on validation failure, 2 on error",
+        "Tabular output displays success or error message",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Implement ready write-config command",
+      "description": "As a firmware developer, I want to write configuration to the Device Configuration characteristic so that I can test config provisioning. Implement write_config() function in ready.py that accepts eid-type (utc/counter), rotation-period (must be 0), and pool-size (for counter mode). Add ready write-config CLI command. Validates: rotation_period == 0, pool_size > 0 for counter mode, pool_size == 0 for UTC mode. Returns WriteResult. Captures ATT error codes (0x84-0x87) on validation failures.",
+      "acceptanceCriteria": [
+        "write_config() function writes Device Configuration characteristic",
+        "Function validates rotation_period is 0",
+        "Function validates pool_size constraints based on eid_type",
+        "CLI command requires --address and --eid-type parameters",
+        "CLI validates pool-size parameter based on eid-type",
+        "ATT error codes captured for invalid values (0x84, 0x85, 0x86, 0x87)",
+        "Exit code 0 on success, 1 on validation failure, 2 on error",
+        "JSON output includes WriteResult",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "title": "Implement ready write-time command",
+      "description": "As a firmware developer, I want to write epoch time to the Epoch Time characteristic so that I can test time provisioning. Implement write_time() function in ready.py that writes current Unix timestamp or accepts custom timestamp. Add ready write-time CLI command with optional --timestamp parameter (defaults to current time). Validates timestamp is reasonable (2020-2050 range). Returns WriteResult. Supports --address (required), --timestamp (optional), --timeout, --format options.",
+      "acceptanceCriteria": [
+        "write_time() function writes Epoch Time characteristic",
+        "Function uses current time if no timestamp provided",
+        "Function validates timestamp is in reasonable range (2020-2050)",
+        "CLI command requires --address parameter",
+        "CLI accepts optional --timestamp parameter",
+        "Exit code 0 on success, 1 on validation failure, 2 on error",
+        "JSON output includes WriteResult with timestamp written",
+        "Tabular output displays success message with timestamp",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
