@@ -184,5 +184,5 @@ ruff check src
 ## Releases & versioning
 
 * Follows **SemVer** (MAJOR.MINOR.PATCH).
-* Tagged releases (e.g., `v0.1.0`) publish wheels/sdists to PyPI.
+* Tagged releases (e.g., `v0.2.0`) publish wheels/sdists to PyPI.
 * Release process: (add short steps for how to cut a release—tagging, CI release job, PyPI publish credentials).

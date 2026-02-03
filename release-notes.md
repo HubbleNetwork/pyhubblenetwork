@@ -1,12 +1,10 @@
 # Release Notes
 
-## [0.1.0] - 2026-02-01
+## [0.2.0] - 2026-02-02
 
 ### Added
-- feat(ready): add ready provision command for full device provisioning
-- feat(ready): add ready info command for characteristic inspection
-- feat(ready): add ready scan command for Hubble Ready devices
-- feat(tests): add integration tests for cloud.py
-
-### Documentation
-- docs: add CLAUDE.md for AI assistant context
+- feat(skill): add hubble-ready-test Claude Code skill
+- feat(ready): implement write commands
+- feat(ready): implement read commands
+- feat(ready): add result dataclasses for testing
+- feat(cli): update ready command JSON output structure
