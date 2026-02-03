@@ -1,0 +1,27 @@
+{
+  "name": "pyhubblenetwork",
+  "owner": {
+    "name": "HubbleNetwork",
+    "email": "support@hubble.network"
+  },
+  "metadata": {
+    "description": "Hubble Network IoT device tools and testing frameworks",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "pyhubblenetwork",
+      "source": "./plugins/pyhubblenetwork",
+      "description": "Python SDK and CLI for communicating with Hubble Network IoT devices over Bluetooth Low Energy (BLE)",
+      "version": "1.0.0",
+      "author": {
+        "name": "HubbleNetwork",
+        "email": "support@hubble.network"
+      },
+      "homepage": "https://github.com/HubbleNetwork/pyhubblenetwork",
+      "repository": "https://github.com/HubbleNetwork/pyhubblenetwork",
+      "license": "MIT",
+      "keywords": ["iot", "bluetooth", "ble", "hubble", "testing", "provisioning"]
+    }
+  ]
+}

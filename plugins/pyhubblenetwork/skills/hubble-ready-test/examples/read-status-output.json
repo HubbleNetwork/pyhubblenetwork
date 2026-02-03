@@ -1,0 +1,7 @@
+{
+  "address": "AA:BB:CC:DD:EE:FF",
+  "firmware_version": "1.2.3",
+  "key_written": false,
+  "config_written": false,
+  "time_written": false
+}

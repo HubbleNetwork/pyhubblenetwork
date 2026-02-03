@@ -1,0 +1,15 @@
+{
+  "devices": [
+    {
+      "address": "AA:BB:CC:DD:EE:FF",
+      "name": "Hubble Ready Device",
+      "rssi": -65
+    },
+    {
+      "address": "11:22:33:44:55:66",
+      "name": "Hubble Ready Device",
+      "rssi": -72
+    }
+  ],
+  "scan_duration": 10.2
+}

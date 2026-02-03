@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "error": {
+    "type": "BleConnectionError",
+    "message": "Failed to connect to device",
+    "details": "Connection timeout after 10 seconds",
+    "address": "AA:BB:CC:DD:EE:FF"
+  }
+}

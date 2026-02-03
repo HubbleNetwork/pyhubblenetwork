@@ -1,0 +1,12 @@
+{
+  "success": false,
+  "error": {
+    "type": "BleError",
+    "message": "Write failed",
+    "details": "Invalid attribute value length",
+    "att_error_code": 13,
+    "att_error_name": "Invalid Attribute Value Length",
+    "address": "AA:BB:CC:DD:EE:FF",
+    "characteristic": "encryption_key"
+  }
+}

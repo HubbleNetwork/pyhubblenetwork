@@ -1,0 +1,32 @@
+{
+  "success": true,
+  "device": {
+    "address": "AA:BB:CC:DD:EE:FF",
+    "device_id": "dev_abc123xyz789",
+    "name": "Hubble Ready Device"
+  },
+  "steps": {
+    "scan": {
+      "success": true,
+      "duration": 5.2
+    },
+    "register": {
+      "success": true,
+      "duration": 0.8,
+      "device_id": "dev_abc123xyz789"
+    },
+    "write_key": {
+      "success": true,
+      "duration": 2.1
+    },
+    "write_config": {
+      "success": true,
+      "duration": 1.9
+    },
+    "write_time": {
+      "success": true,
+      "duration": 1.8
+    }
+  },
+  "total_duration": 11.8
+}
