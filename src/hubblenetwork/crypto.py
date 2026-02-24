@@ -75,19 +75,29 @@ def _check_tag_matches(
 
 
 def decrypt(
-    key: bytes, encrypted_pkt: EncryptedPacket, days: int = 2
+    key: bytes,
+    encrypted_pkt: EncryptedPacket,
+    days: int = 2,
+    eid_pool_size: Optional[int] = None,
 ) -> Optional[DecryptedPacket]:
+    if eid_pool_size is not None and days != 2:
+        raise ValueError("Cannot specify both eid_pool_size and days")
+
     parsed = ParsedPacket(encrypted_pkt)
     keylen = len(key)
 
-    time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
+    if eid_pool_size is not None:
+        candidates = range(eid_pool_size)
+    else:
+        time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
+        candidates = (time_counter + t for t in range(-days, days + 1))
 
-    for t in range(-days, days + 1):
-        if _check_tag_matches(key, time_counter + t, parsed):
+    for candidate in candidates:
+        if _check_tag_matches(key, candidate, parsed):
             daily_key = _get_encryption_key(
-                key, time_counter + t, parsed.seq_no, keylen=keylen
+                key, candidate, parsed.seq_no, keylen=keylen
             )
-            nonce = _get_nonce(key, time_counter + t, parsed.seq_no, keylen=keylen)
+            nonce = _get_nonce(key, candidate, parsed.seq_no, keylen=keylen)
             decrypted_payload = _aes_decrypt(daily_key, nonce, parsed.encrypted_payload)
             return DecryptedPacket(
                 timestamp=encrypted_pkt.timestamp,
@@ -97,7 +107,7 @@ def decrypt(
                 tags={},
                 payload=decrypted_payload,
                 rssi=encrypted_pkt.rssi,
-                counter=time_counter + t,
+                counter=candidate,
                 sequence=parsed.seq_no,
             )
     return None

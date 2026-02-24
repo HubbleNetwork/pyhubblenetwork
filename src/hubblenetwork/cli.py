@@ -484,6 +484,20 @@ def ble() -> None:
     help="Key to decrypt packets (base64 encoded, required)",
 )
 @click.option(
+    "--days",
+    "-d",
+    type=int,
+    default=2,
+    show_default=True,
+    help="Number of days to check back when decrypting",
+)
+@click.option(
+    "--eid-pool-size",
+    type=int,
+    default=None,
+    help="Use counter-based EID with given pool size (0..N-1) instead of UTC-based",
+)
+@click.option(
     "--format",
     "-o",
     "output_format",
@@ -498,9 +512,13 @@ def ble() -> None:
     default=False,
     help="Enable debug logging to stderr",
 )
+@click.pass_context
 def ble_detect(
+    ctx,
     timeout: Optional[int] = None,
     key: str = None,
+    days: int = 2,
+    eid_pool_size: Optional[int] = None,
     output_format: str = "tabular",
     debug: bool = False,
 ) -> None:
@@ -515,6 +533,14 @@ def ble_detect(
       hubblenetwork ble detect -k "key=" -o tabular
     """
     use_json = output_format.lower() == "json"
+
+    # Validate --eid-pool-size and --days mutual exclusivity
+    if eid_pool_size is not None:
+        days_source = ctx.get_parameter_source("days")
+        if days_source == click.core.ParameterSource.COMMANDLINE:
+            raise click.UsageError(
+                "--eid-pool-size and --days are mutually exclusive"
+            )
 
     # Set log level based on debug flag
     logger.setLevel(logging.DEBUG if debug else logging.WARNING)
@@ -565,7 +591,9 @@ def ble_detect(
         logger.debug("Packet received, attempting decryption...")
 
         # Attempt to decrypt the packet
-        decrypted_pkt = decrypt(decoded_key, pkt)
+        decrypted_pkt = decrypt(
+            decoded_key, pkt, days=days, eid_pool_size=eid_pool_size
+        )
 
         if decrypted_pkt:
             # If we can decrypt it, output success
@@ -581,13 +609,14 @@ def ble_detect(
                         "datetime": datetime_str,
                         "rssi": decrypted_pkt.rssi,
                         "payload_bytes": len(decrypted_pkt.payload),
+                        "counter": decrypted_pkt.counter,
                     },
                 }
                 click.echo(json.dumps(result))
             else:
                 click.secho("[SUCCESS] ", fg="green", nl=False)
                 click.echo(
-                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, {len(decrypted_pkt.payload)} bytes"
+                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, {len(decrypted_pkt.payload)} bytes, counter: {decrypted_pkt.counter}"
                 )
             return
 
@@ -631,6 +660,12 @@ def ble_detect(
     show_default=True,
     help="Number of days to check back when decrypting",
 )
+@click.option(
+    "--eid-pool-size",
+    type=int,
+    default=None,
+    help="Use counter-based EID with given pool size (0..N-1) instead of UTC-based",
+)
 @click.option("--ingest", is_flag=True, help="Ingest packets to backend (requires key)")
 @click.option(
     "--format",
@@ -641,12 +676,15 @@ def ble_detect(
     show_default=True,
     help="Output format for packets",
 )
+@click.pass_context
 def ble_scan(
+    ctx,
     timeout: Optional[int] = None,
     count: Optional[int] = None,
     ingest: bool = False,
     key: Optional[str] = None,
     days: int = 2,
+    eid_pool_size: Optional[int] = None,
     output_format: str = "tabular",
 ) -> None:
     """
@@ -658,6 +696,16 @@ def ble_scan(
       hubblenetwork ble scan -o json --timeout 10
       hubblenetwork ble scan -n 5              # Stop after 5 packets
     """
+    # Validate --eid-pool-size constraints
+    if eid_pool_size is not None:
+        if not key:
+            raise click.UsageError("--eid-pool-size requires --key")
+        days_source = ctx.get_parameter_source("days")
+        if days_source == click.core.ParameterSource.COMMANDLINE:
+            raise click.UsageError(
+                "--eid-pool-size and --days are mutually exclusive"
+            )
+
     # Get the appropriate streaming printer
     printer_class = _STREAMING_PRINTERS.get(
         output_format.lower(), _StreamingTablePrinter
@@ -703,7 +751,9 @@ def ble_scan(
 
             # If we have a key, attempt to decrypt
             if decoded_key:
-                decrypted_pkt = decrypt(decoded_key, pkt, days=days)
+                decrypted_pkt = decrypt(
+                    decoded_key, pkt, days=days, eid_pool_size=eid_pool_size
+                )
                 if decrypted_pkt:
                     printer.print_row(decrypted_pkt)
                     # We only allow ingestion of packets you know the key of
