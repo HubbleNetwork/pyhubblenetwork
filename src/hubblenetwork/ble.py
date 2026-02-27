@@ -41,7 +41,12 @@ async def _scan_async(ttl: float) -> List[EncryptedPacket]:
         nonlocal packets
         # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
         service_data = getattr(adv_data, "service_data", None) or {}
+        service_uuids = getattr(adv_data, "service_uuids", None) or []
         payload = None
+
+        # Fast path: skip if target UUID not in advertised service UUIDs
+        if _TARGET_UUID not in service_uuids:
+            return
 
         # Keys are 128-bit UUID strings; compare lowercased
         for uuid_str, data in service_data.items():
@@ -61,7 +66,8 @@ async def _scan_async(ttl: float) -> List[EncryptedPacket]:
             )
 
     # Start scanning and wait for first match or timeout
-    async with BleakScanner(detection_callback=on_detect):
+    # Pass service_uuids to enable OS-level filtering, reducing Python callback volume
+    async with BleakScanner(detection_callback=on_detect, service_uuids=[_TARGET_UUID]):
         try:
             await asyncio.wait_for(done.wait(), timeout=ttl)
         except asyncio.TimeoutError:
@@ -148,7 +154,8 @@ async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
         done.set()
 
     # Start scanning and wait for first match or timeout
-    async with BleakScanner(detection_callback=on_detect):
+    # Pass service_uuids to enable OS-level filtering, reducing Python callback volume
+    async with BleakScanner(detection_callback=on_detect, service_uuids=[_TARGET_UUID]):
         try:
             await asyncio.wait_for(done.wait(), timeout=ttl)
         except asyncio.TimeoutError:
