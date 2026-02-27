@@ -59,24 +59,13 @@ def _packet_to_dict(pkt) -> dict:
     if isinstance(pkt, DecryptedPacket):
         data["counter"] = pkt.counter
         data["sequence"] = pkt.sequence
-        # Decode payload to string if possible, otherwise use hex
-        try:
-            data["payload"] = (
-                pkt.payload.decode("utf-8")
-                if isinstance(pkt.payload, bytes)
-                else str(pkt.payload)
-            )
-        except UnicodeDecodeError:
-            data["payload_hex"] = (
-                pkt.payload.hex()
-                if isinstance(pkt.payload, bytes)
-                else str(pkt.payload)
-            )
-    else:
-        # EncryptedPacket - show payload as hex
-        data["payload_hex"] = (
-            pkt.payload.hex() if isinstance(pkt.payload, bytes) else str(pkt.payload)
-        )
+
+    payload = pkt.payload
+    data["payload"] = (
+        base64.b64encode(payload).decode("ascii")
+        if isinstance(payload, bytes)
+        else str(payload)
+    )
 
     if not pkt.location.fake:
         data["location"] = {
@@ -271,7 +260,13 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
 
         if self._column_config["is_decrypted"]:
-            row.append(f'"{pkt.payload}"')
+            payload = pkt.payload
+            b64 = (
+                base64.b64encode(payload).decode("ascii")
+                if isinstance(payload, bytes)
+                else str(payload)
+            )
+            row.append(b64)
 
         # Print the data row
         click.echo(self._format_row(row))
