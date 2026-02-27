@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional, List
 from tabulate import tabulate
 from hubblenetwork import Organization
-from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
+from hubblenetwork import Device, DecryptedPacket
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import decrypt
@@ -26,6 +26,22 @@ logger = logging.getLogger(__name__)
 _handler = logging.StreamHandler(sys.stderr)
 _handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logger.addHandler(_handler)
+
+
+def _format_payload(payload, fmt: str) -> str:
+    """Format packet payload bytes for display."""
+    if not isinstance(payload, bytes):
+        return str(payload)
+    if fmt == "hex":
+        return payload.hex().upper()
+    elif fmt == "string":
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            click.echo("Warning: payload contains non-UTF-8 bytes", err=True)
+            return "<invalid UTF-8>"
+    else:  # base64 (default)
+        return base64.b64encode(payload).decode("ascii")
 
 
 def _get_env_or_fail(name: str) -> str:
@@ -47,7 +63,7 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
     return org_id, token
 
 
-def _packet_to_dict(pkt) -> dict:
+def _packet_to_dict(pkt, payload_format: str = "base64") -> dict:
     """Convert a packet to a dictionary for JSON serialization."""
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
     data = {
@@ -60,12 +76,7 @@ def _packet_to_dict(pkt) -> dict:
         data["counter"] = pkt.counter
         data["sequence"] = pkt.sequence
 
-    payload = pkt.payload
-    data["payload"] = (
-        base64.b64encode(payload).decode("ascii")
-        if isinstance(payload, bytes)
-        else str(payload)
-    )
+    data["payload"] = _format_payload(pkt.payload, payload_format)
 
     if not pkt.location.fake:
         data["location"] = {
@@ -197,11 +208,12 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         "PAYLOAD": 20,
     }
 
-    def __init__(self):
+    def __init__(self, payload_format: str = "base64"):
         super().__init__()
         self._header_printed = False
         self._headers: List[str] = []
         self._column_config: dict = {}
+        self._payload_format = payload_format
 
     def _determine_columns(self, pkt) -> tuple[List[str], dict]:
         """Determine column headers and configuration based on packet type."""
@@ -260,13 +272,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
 
         if self._column_config["is_decrypted"]:
-            payload = pkt.payload
-            b64 = (
-                base64.b64encode(payload).decode("ascii")
-                if isinstance(payload, bytes)
-                else str(payload)
-            )
-            row.append(b64)
+            row.append(_format_payload(pkt.payload, self._payload_format))
 
         # Print the data row
         click.echo(self._format_row(row))
@@ -277,9 +283,10 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
 class _StreamingJsonPrinter(_StreamingPrinterBase):
     """Print packets as a streaming JSON array."""
 
-    def __init__(self):
+    def __init__(self, payload_format: str = "base64"):
         super().__init__()
         self._array_started = False
+        self._payload_format = payload_format
 
     @property
     def suppress_info_messages(self) -> bool:
@@ -287,7 +294,7 @@ class _StreamingJsonPrinter(_StreamingPrinterBase):
 
     def print_row(self, pkt) -> None:
         """Print a single packet as JSON."""
-        pkt_dict = _packet_to_dict(pkt)
+        pkt_dict = _packet_to_dict(pkt, self._payload_format)
         if not self._array_started:
             click.echo("[")
             self._array_started = True
@@ -316,13 +323,12 @@ _STREAMING_PRINTERS = {
 }
 
 
-def _print_packets_tabular(pkts: List) -> None:
+def _print_packets_tabular(pkts: List, payload_format: str = "base64") -> None:
     """Print packets in a formatted table using tabulate."""
     if not pkts:
         click.echo("No packets!")
         return
 
-    # For batch printing, use the full table format
     first_pkt = pkts[0]
     is_decrypted = isinstance(first_pkt, DecryptedPacket)
     has_real_location = not first_pkt.location.fake
@@ -348,50 +354,37 @@ def _print_packets_tabular(pkts: List) -> None:
             row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
 
         if is_decrypted:
-            row.append(f'"{pkt.payload}"')
+            row.append(_format_payload(pkt.payload, payload_format))
 
         rows.append(row)
 
     click.echo("\n" + tabulate(rows, headers=headers, tablefmt="grid"))
 
 
-def _print_packets_csv(pkts) -> None:
+def _print_packets_csv(pkts, payload_format: str = "base64") -> None:
     click.echo("timestamp, datetime, latitude, longitude, payload")
     for pkt in pkts:
         ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-        if isinstance(pkt, DecryptedPacket):
-            payload = pkt.payload
-        elif isinstance(pkt, EncryptedPacket):
-            payload = pkt.payload.hex()
+        payload_str = _format_payload(pkt.payload, payload_format)
         click.echo(
-            f'{pkt.timestamp}, {ts}, {pkt.location.lat:.6f}, {pkt.location.lon:.6f}, "{payload}"'
+            f'{pkt.timestamp}, {ts}, {pkt.location.lat:.6f}, {pkt.location.lon:.6f}, "{payload_str}"'
         )
 
 
-def _print_packets_json(pkts) -> None:
+def _print_packets_json(pkts, payload_format: str = "base64") -> None:
     """Print packets as a JSON array."""
-    json_packets = [_packet_to_dict(pkt) for pkt in pkts]
+    json_packets = [_packet_to_dict(pkt, payload_format) for pkt in pkts]
     click.echo(json.dumps(json_packets, indent=2))
 
 
-_OUTPUT_FORMATS = {
-    "csv": "_print_packets_csv",
-    "tabular": "_print_packets_tabular",
-    "json": "_print_packets_json",
-}
-
-
-def _print_packets(pkts, output: str = "tabular") -> None:
-    if not output:
-        _print_packets_tabular(pkts)
-        return
-
-    format_key = output.lower().strip()
-    if format_key in _OUTPUT_FORMATS:
-        func = globals()[_OUTPUT_FORMATS[format_key]]
-        func(pkts)
+def _print_packets(pkts, output: str = "tabular", payload_format: str = "base64") -> None:
+    format_key = (output or "tabular").lower().strip()
+    if format_key == "json":
+        _print_packets_json(pkts, payload_format)
+    elif format_key == "csv":
+        _print_packets_csv(pkts, payload_format)
     else:
-        _print_packets_tabular(pkts)
+        _print_packets_tabular(pkts, payload_format)
 
 
 def _print_device(dev: Device) -> None:
@@ -502,6 +495,14 @@ def ble() -> None:
     help="Output format",
 )
 @click.option(
+    "--payload-format",
+    "payload_format",
+    type=click.Choice(["base64", "hex", "string"], case_sensitive=False),
+    default="base64",
+    show_default=True,
+    help="Encoding format for packet payload",
+)
+@click.option(
     "--debug",
     is_flag=True,
     default=False,
@@ -515,6 +516,7 @@ def ble_detect(
     days: int = 2,
     eid_pool_size: Optional[int] = None,
     output_format: str = "tabular",
+    payload_format: str = "base64",
     debug: bool = False,
 ) -> None:
     """
@@ -597,13 +599,14 @@ def ble_detect(
             )
             logger.info("Packet decrypted successfully!")
 
+            payload_str = _format_payload(decrypted_pkt.payload, payload_format)
             if use_json:
                 result = {
                     "success": True,
                     "packet": {
                         "datetime": datetime_str,
                         "rssi": decrypted_pkt.rssi,
-                        "payload_bytes": len(decrypted_pkt.payload),
+                        "payload": payload_str,
                         "counter": decrypted_pkt.counter,
                     },
                 }
@@ -611,7 +614,7 @@ def ble_detect(
             else:
                 click.secho("[SUCCESS] ", fg="green", nl=False)
                 click.echo(
-                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, {len(decrypted_pkt.payload)} bytes, counter: {decrypted_pkt.counter}"
+                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, payload: {payload_str}, counter: {decrypted_pkt.counter}"
                 )
             return
 
@@ -671,6 +674,14 @@ def ble_detect(
     show_default=True,
     help="Output format for packets",
 )
+@click.option(
+    "--payload-format",
+    "payload_format",
+    type=click.Choice(["base64", "hex", "string"], case_sensitive=False),
+    default="base64",
+    show_default=True,
+    help="Encoding format for packet payload",
+)
 @click.pass_context
 def ble_scan(
     ctx,
@@ -681,6 +692,7 @@ def ble_scan(
     days: int = 2,
     eid_pool_size: Optional[int] = None,
     output_format: str = "tabular",
+    payload_format: str = "base64",
 ) -> None:
     """
     Scan for UUID 0xFCA6 and print packets as they are found.
@@ -705,7 +717,7 @@ def ble_scan(
     printer_class = _STREAMING_PRINTERS.get(
         output_format.lower(), _StreamingTablePrinter
     )
-    printer = printer_class()
+    printer = printer_class(payload_format=payload_format)
 
     if not printer.suppress_info_messages:
         click.secho("[INFO] Scanning for Hubble devices... (Press Ctrl+C to stop)")
@@ -2272,9 +2284,17 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
     show_default=True,
     help="Number of days to query back (from now)",
 )
+@click.option(
+    "--payload-format",
+    "payload_format",
+    type=click.Choice(["base64", "hex", "string"], case_sensitive=False),
+    default="base64",
+    show_default=True,
+    help="Encoding format for packet payload",
+)
 @pass_orgcfg
 def get_packets(
-    org: Organization, device_id: str, output_format: str = "tabular", days: int = 7
+    org: Organization, device_id: str, output_format: str = "tabular", days: int = 7, payload_format: str = "base64"
 ) -> None:
     """
     Retrieve and display packets for a device.
@@ -2286,7 +2306,7 @@ def get_packets(
     """
     device = Device(id=device_id)
     packets = org.retrieve_packets(device, days=days)
-    _print_packets(packets, output_format)
+    _print_packets(packets, output_format, payload_format)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

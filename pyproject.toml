@@ -45,6 +45,7 @@ include = [
 # ---- Testing & dev tooling ----
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = [
   "ble: tests that require BLE hardware/permissions",
   "integration: slow or environment-dependent tests",
