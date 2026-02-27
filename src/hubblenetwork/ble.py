@@ -1,12 +1,13 @@
 # hubblenetwork/ble.py
 from __future__ import annotations
 import asyncio
+import subprocess
+import sys
 from datetime import datetime, timezone
 from typing import Optional, List
 
 from bleak import BleakScanner
 
-# Import your dataclass
 from .packets import (
     Location,
     EncryptedPacket,
@@ -26,14 +27,48 @@ are 128-bit strings. So matching against the normalized 128-bit form is the most
 """
 _TARGET_UUID = "0000fca6-0000-1000-8000-00805f9b34fb"
 
+# BLE scan parameters (units of 0.625 ms, per Bluetooth Core Spec)
+# 160 ticks = 100 ms.  100% duty cycle (interval == window) gives the highest
+# probability of catching a 2-second advertising interval within a short scan.
+_DEFAULT_SCAN_INTERVAL = 160  # 100 ms
+_DEFAULT_SCAN_WINDOW = 160  # 100 ms
+
+
+def _configure_linux_scan_params(
+    interval_ticks: int = _DEFAULT_SCAN_INTERVAL,
+    window_ticks: int = _DEFAULT_SCAN_WINDOW,
+) -> None:
+    """Attempt to set BLE scan parameters via btmgmt (Linux only).
+
+    Silently no-ops on non-Linux platforms or when the process lacks
+    CAP_NET_ADMIN (i.e. not running as root).  Values are in units of
+    0.625 ms as defined by the Bluetooth Core Specification.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        subprocess.run(
+            ["btmgmt", "le-scan-params", str(interval_ticks), str(window_ticks)],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
 
 def _get_location() -> Optional[Location]:
     # Return an unreasonable location
     return Location(lat=90, lon=0, fake=True)
 
 
-async def _scan_async(ttl: float) -> List[EncryptedPacket]:
+async def _scan_async(
+    ttl: float,
+    scan_interval: int = _DEFAULT_SCAN_INTERVAL,
+    scan_window: int = _DEFAULT_SCAN_WINDOW,
+) -> List[EncryptedPacket]:
     """Async implementation of BLE scan."""
+    _configure_linux_scan_params(scan_interval, scan_window)
     done = asyncio.Event()
     packets: List[EncryptedPacket] = []
 
@@ -65,9 +100,15 @@ async def _scan_async(ttl: float) -> List[EncryptedPacket]:
                 )
             )
 
-    # Start scanning and wait for first match or timeout
-    # Pass service_uuids to enable OS-level filtering, reducing Python callback volume
-    async with BleakScanner(detection_callback=on_detect, service_uuids=[_TARGET_UUID]):
+    # Start scanning and wait for first match or timeout.
+    # Pass service_uuids to enable OS-level filtering, reducing Python callback volume.
+    # Use passive scanning: Hubble beacons are non-connectable undirected advertisements
+    # that never respond to scan requests, so active mode wastes airtime.
+    async with BleakScanner(
+        detection_callback=on_detect,
+        service_uuids=[_TARGET_UUID],
+        scanning_mode="passive",
+    ):
         try:
             await asyncio.wait_for(done.wait(), timeout=ttl)
         except asyncio.TimeoutError:
@@ -76,15 +117,23 @@ async def _scan_async(ttl: float) -> List[EncryptedPacket]:
     return packets
 
 
-def scan(timeout: float) -> List[EncryptedPacket]:
+def scan(
+    timeout: float,
+    scan_interval: int = _DEFAULT_SCAN_INTERVAL,
+    scan_window: int = _DEFAULT_SCAN_WINDOW,
+) -> List[EncryptedPacket]:
     """
     Scan for BLE advertisements that include service data for UUID 0xFCA6 and
     return them as a List[EncryptedPacket] (payload=data bytes, rssi from the adv).
 
+    scan_interval and scan_window are in units of 0.625 ms (Linux only, requires
+    root/CAP_NET_ADMIN).  The defaults give 100% duty cycle (100 ms / 100 ms),
+    which is recommended for devices that advertise every ~2 seconds.
+
     For async environments (e.g., Jupyter), use scan_async() instead.
     """
     try:
-        return asyncio.run(_scan_async(timeout))
+        return asyncio.run(_scan_async(timeout, scan_interval, scan_window))
     except RuntimeError:
         # Fallback for environments with an active loop (e.g., Jupyter notebooks).
         # Note: For Jupyter, consider installing nest_asyncio for better compatibility.
@@ -95,7 +144,9 @@ def scan(timeout: float) -> List[EncryptedPacket]:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                return loop.run_until_complete(_scan_async(timeout))
+                return loop.run_until_complete(
+                    _scan_async(timeout, scan_interval, scan_window)
+                )
             finally:
                 loop.close()
         # If there's a running loop, we can't use run_until_complete
@@ -105,18 +156,27 @@ def scan(timeout: float) -> List[EncryptedPacket]:
         )
 
 
-async def scan_async(timeout: float) -> List[EncryptedPacket]:
+async def scan_async(
+    timeout: float,
+    scan_interval: int = _DEFAULT_SCAN_INTERVAL,
+    scan_window: int = _DEFAULT_SCAN_WINDOW,
+) -> List[EncryptedPacket]:
     """
     Async version of scan() for use in async environments like Jupyter notebooks.
 
     Usage:
         packets = await ble.scan_async(timeout=5.0)
     """
-    return await _scan_async(timeout)
+    return await _scan_async(timeout, scan_interval, scan_window)
 
 
-async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
+async def _scan_single_async(
+    ttl: float,
+    scan_interval: int = _DEFAULT_SCAN_INTERVAL,
+    scan_window: int = _DEFAULT_SCAN_WINDOW,
+) -> Optional[EncryptedPacket]:
     """Async implementation for scanning a single BLE packet."""
+    _configure_linux_scan_params(scan_interval, scan_window)
     done = asyncio.Event()
     packet: Optional[EncryptedPacket] = None
 
@@ -153,9 +213,15 @@ async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
         )
         done.set()
 
-    # Start scanning and wait for first match or timeout
-    # Pass service_uuids to enable OS-level filtering, reducing Python callback volume
-    async with BleakScanner(detection_callback=on_detect, service_uuids=[_TARGET_UUID]):
+    # Start scanning and wait for first match or timeout.
+    # Pass service_uuids to enable OS-level filtering, reducing Python callback volume.
+    # Use passive scanning: Hubble beacons are non-connectable undirected advertisements
+    # that never respond to scan requests, so active mode wastes airtime.
+    async with BleakScanner(
+        detection_callback=on_detect,
+        service_uuids=[_TARGET_UUID],
+        scanning_mode="passive",
+    ):
         try:
             await asyncio.wait_for(done.wait(), timeout=ttl)
         except asyncio.TimeoutError:
@@ -164,15 +230,23 @@ async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
     return packet
 
 
-def scan_single(timeout: float) -> Optional[EncryptedPacket]:
+def scan_single(
+    timeout: float,
+    scan_interval: int = _DEFAULT_SCAN_INTERVAL,
+    scan_window: int = _DEFAULT_SCAN_WINDOW,
+) -> Optional[EncryptedPacket]:
     """
     Scan for a BLE advertisement that includes service data for UUID 0xFCA6 and
     return it.
 
+    scan_interval and scan_window are in units of 0.625 ms (Linux only, requires
+    root/CAP_NET_ADMIN).  The defaults give 100% duty cycle (100 ms / 100 ms),
+    which is recommended for devices that advertise every ~2 seconds.
+
     For async environments (e.g., Jupyter), use scan_single_async() instead.
     """
     try:
-        return asyncio.run(_scan_single_async(timeout))
+        return asyncio.run(_scan_single_async(timeout, scan_interval, scan_window))
     except RuntimeError:
         # Fallback for environments with an active loop (e.g., Jupyter notebooks).
         try:
@@ -182,7 +256,9 @@ def scan_single(timeout: float) -> Optional[EncryptedPacket]:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                return loop.run_until_complete(_scan_single_async(timeout))
+                return loop.run_until_complete(
+                    _scan_single_async(timeout, scan_interval, scan_window)
+                )
             finally:
                 loop.close()
         # If there's a running loop, we can't use run_until_complete
@@ -192,11 +268,15 @@ def scan_single(timeout: float) -> Optional[EncryptedPacket]:
         )
 
 
-async def scan_single_async(timeout: float) -> Optional[EncryptedPacket]:
+async def scan_single_async(
+    timeout: float,
+    scan_interval: int = _DEFAULT_SCAN_INTERVAL,
+    scan_window: int = _DEFAULT_SCAN_WINDOW,
+) -> Optional[EncryptedPacket]:
     """
     Async version of scan_single() for use in async environments like Jupyter notebooks.
 
     Usage:
         packet = await ble.scan_single_async(timeout=5.0)
     """
-    return await _scan_single_async(timeout)
+    return await _scan_single_async(timeout, scan_interval, scan_window)

@@ -502,6 +502,18 @@ def ble() -> None:
     help="Output format",
 )
 @click.option(
+    "--scan-interval",
+    type=int,
+    default=None,
+    help="BLE scan interval in 0.625 ms ticks (Linux only, requires root). Default: 160 (100 ms).",
+)
+@click.option(
+    "--scan-window",
+    type=int,
+    default=None,
+    help="BLE scan window in 0.625 ms ticks (Linux only, requires root). Default: 160 (100 ms).",
+)
+@click.option(
     "--debug",
     is_flag=True,
     default=False,
@@ -515,6 +527,8 @@ def ble_detect(
     days: int = 2,
     eid_pool_size: Optional[int] = None,
     output_format: str = "tabular",
+    scan_interval: Optional[int] = None,
+    scan_window: Optional[int] = None,
     debug: bool = False,
 ) -> None:
     """
@@ -569,8 +583,13 @@ def ble_detect(
         this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
 
         # Scan for a single packet
+        scan_kwargs = {}
+        if scan_interval is not None:
+            scan_kwargs["scan_interval"] = scan_interval
+        if scan_window is not None:
+            scan_kwargs["scan_window"] = scan_window
         try:
-            pkt = ble_mod.scan_single(timeout=this_timeout)
+            pkt = ble_mod.scan_single(timeout=this_timeout, **scan_kwargs)
         except Exception as e:
             logger.error(f"BLE scanning error: {e}")
             _output_error(f"BLE scanning error: {str(e)}")
@@ -671,6 +690,18 @@ def ble_detect(
     show_default=True,
     help="Output format for packets",
 )
+@click.option(
+    "--scan-interval",
+    type=int,
+    default=None,
+    help="BLE scan interval in 0.625 ms ticks (Linux only, requires root). Default: 160 (100 ms).",
+)
+@click.option(
+    "--scan-window",
+    type=int,
+    default=None,
+    help="BLE scan window in 0.625 ms ticks (Linux only, requires root). Default: 160 (100 ms).",
+)
 @click.pass_context
 def ble_scan(
     ctx,
@@ -681,6 +712,8 @@ def ble_scan(
     days: int = 2,
     eid_pool_size: Optional[int] = None,
     output_format: str = "tabular",
+    scan_interval: Optional[int] = None,
+    scan_window: Optional[int] = None,
 ) -> None:
     """
     Scan for UUID 0xFCA6 and print packets as they are found.
@@ -740,7 +773,12 @@ def ble_scan(
                 None if deadline is None else max(deadline - time.monotonic(), 0)
             )
 
-            pkt = ble_mod.scan_single(timeout=this_timeout)
+            scan_kwargs = {}
+            if scan_interval is not None:
+                scan_kwargs["scan_interval"] = scan_interval
+            if scan_window is not None:
+                scan_kwargs["scan_window"] = scan_window
+            pkt = ble_mod.scan_single(timeout=this_timeout, **scan_kwargs)
             if not pkt:
                 break
 
