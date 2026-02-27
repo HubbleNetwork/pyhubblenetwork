@@ -116,7 +116,19 @@ If installed, the `hubblenetwork` command is available:
 ```bash
 hubblenetwork --help
 hubblenetwork ble scan
+hubblenetwork ble scan --payload-format hex
+hubblenetwork org get-packets --payload-format string
 ```
+
+### Payload format option
+
+Commands that output packet data (`ble scan`, `ble detect`, `org get-packets`) support the `--payload-format` flag to control how payloads are displayed:
+
+* `base64` (default) — encode payloads as base64
+* `hex` — display payloads as hexadecimal
+* `string` — decode payloads as UTF-8 text (falls back to `<invalid UTF-8>` if bytes are not valid UTF-8)
+
+This applies to all output formats (tabular, json, csv).
 
 ## Configuration
 
