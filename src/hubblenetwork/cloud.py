@@ -157,13 +157,23 @@ def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
 
 
 def register_device(
-    *, credentials: Credentials, env: Environment, encryption: str = "AES-256-CTR"
+    *,
+    credentials: Credentials,
+    env: Environment,
+    encryption: str = "AES-256-CTR",
+    counter_source: Optional[str] = None,
+    pool_size: Optional[int] = None,
 ) -> Any:
     """Create a new device and return it."""
-    data = {
+    data: dict = {
         "n_devices": 1,
-        "encryption": "AES-256-CTR" if not encryption else encryption,
+        "encryption": encryption or "AES-256-CTR",
     }
+    if counter_source is not None:
+        eid_rotation: dict = {"counter_source": counter_source}
+        if pool_size is not None:
+            eid_rotation["pool_size"] = pool_size
+        data["eid_rotation"] = eid_rotation
     return cloud_request(
         method="POST",
         env=env,

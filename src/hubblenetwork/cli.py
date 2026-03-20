@@ -14,6 +14,7 @@ from typing import Optional, List
 from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket
+from hubblenetwork.org import _VALID_COUNTER_SOURCES, _VALID_POOL_SIZES
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import decrypt
@@ -2247,14 +2248,37 @@ def list_devices(org: Organization) -> None:
     "-e",
     type=str,
     default=None,
-    show_default=False,  # show default in --help
-    help="Encryption type [AES-256-CTR, AES-128-CTR]",
+    show_default=False,
+    help="Encryption type [AES-256-CTR, AES-128-CTR, NONE]",
+)
+@click.option(
+    "--counter-source",
+    "-c",
+    type=click.Choice(sorted(_VALID_COUNTER_SOURCES)),
+    default=None,
+    show_default=False,
+    help="EID rotation counter source",
+)
+@click.option(
+    "--pool-size",
+    "-p",
+    type=click.Choice([str(x) for x in sorted(_VALID_POOL_SIZES)]),
+    default=None,
+    show_default=False,
+    help="EID rotation pool size (only valid with --counter-source DEVICE_UPTIME, default 128)",
 )
 @pass_orgcfg
-def register_device(org: Organization, encryption) -> None:
+def register_device(org: Organization, encryption, counter_source, pool_size) -> None:
     if encryption:
         click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
-    click.secho(str(org.register_device(encryption=encryption)))
+    if counter_source:
+        click.secho(f'[INFO] EID rotation counter source: "{counter_source}"')
+    pool_size_int = int(pool_size) if pool_size else None
+    click.secho(str(org.register_device(
+        encryption=encryption,
+        counter_source=counter_source,
+        pool_size=pool_size_int,
+    )))
 
 
 @org.command("set-device-name")
