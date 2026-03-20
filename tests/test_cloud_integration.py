@@ -3,6 +3,7 @@
 import os
 import time
 import pytest
+from hubblenetwork import Organization
 from hubblenetwork.cloud import (
     Environment,
     Credentials,
@@ -13,6 +14,7 @@ from hubblenetwork.cloud import (
     retrieve_packets,
     retrieve_org_metadata,
 )
+from hubblenetwork.errors import ValidationError
 
 pytestmark = pytest.mark.integration
 
@@ -68,6 +70,33 @@ class TestProdEnvironment:
             name=test_name,
         )
         assert updated is not None
+
+    def test_register_device_with_epoch_time(self, credentials, env):
+        result = register_device(
+            credentials=credentials, env=env, counter_source="EPOCH_TIME"
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
+    def test_register_device_with_device_uptime_and_pool_size(self, credentials, env):
+        result = register_device(
+            credentials=credentials,
+            env=env,
+            counter_source="DEVICE_UPTIME",
+            pool_size=64,
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
+    def test_register_device_with_device_uptime_default_pool_size(self, credentials, env):
+        result = register_device(
+            credentials=credentials, env=env, counter_source="DEVICE_UPTIME"
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
 
     def test_retrieve_packets(self, credentials, env):
         # First get a device to query
@@ -131,6 +160,33 @@ class TestTestingEnvironment:
         )
         assert updated is not None
 
+    def test_register_device_with_epoch_time(self, credentials, env):
+        result = register_device(
+            credentials=credentials, env=env, counter_source="EPOCH_TIME"
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
+    def test_register_device_with_device_uptime_and_pool_size(self, credentials, env):
+        result = register_device(
+            credentials=credentials,
+            env=env,
+            counter_source="DEVICE_UPTIME",
+            pool_size=64,
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
+    def test_register_device_with_device_uptime_default_pool_size(self, credentials, env):
+        result = register_device(
+            credentials=credentials, env=env, counter_source="DEVICE_UPTIME"
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
 
 class TestInvalidCredentials:
     """Test behavior with invalid credentials."""
@@ -139,3 +195,37 @@ class TestInvalidCredentials:
         bad_creds = Credentials(org_id="invalid-org", api_token="invalid-token")
         env = get_env_from_credentials(bad_creds)
         assert env is None
+
+
+class TestEidRotationValidation:
+    """SDK-side validation of EID rotation parameters in Organization.register_device().
+
+    These tests fire ValidationError before any cloud call beyond Organization.__init__,
+    so they only need credentials to construct the Organization instance.
+    Uses TESTING credentials preferentially, falling back to PROD.
+    """
+
+    @pytest.fixture
+    def org(self):
+        org_id = os.environ.get("HUBBLE_TESTING_ORG_ID") or os.environ.get("HUBBLE_PROD_ORG_ID")
+        api_token = os.environ.get("HUBBLE_TESTING_API_TOKEN") or os.environ.get("HUBBLE_PROD_API_TOKEN")
+        if not org_id or not api_token:
+            pytest.skip("No credentials available (set HUBBLE_TESTING_* or HUBBLE_PROD_*)")
+        return Organization(org_id=org_id, api_token=api_token)
+
+    def test_invalid_counter_source_raises(self, org):
+        with pytest.raises(ValidationError, match="counter_source"):
+            org.register_device(counter_source="INVALID_SOURCE")
+
+    def test_pool_size_without_counter_source_raises(self, org):
+        with pytest.raises(ValidationError, match="pool_size"):
+            org.register_device(pool_size=64)
+
+    def test_pool_size_with_epoch_time_raises(self, org):
+        """pool_size is only valid with DEVICE_UPTIME, not EPOCH_TIME."""
+        with pytest.raises(ValidationError, match="pool_size"):
+            org.register_device(counter_source="EPOCH_TIME", pool_size=64)
+
+    def test_invalid_pool_size_value_raises(self, org):
+        with pytest.raises(ValidationError, match="pool_size"):
+            org.register_device(counter_source="DEVICE_UPTIME", pool_size=99)
