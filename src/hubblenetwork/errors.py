@@ -58,6 +58,14 @@ class DecryptionError(HubbleError):
     """Local decryption failed (bad key, corrupt packet, etc.)."""
 
 
+class DockerError(HubbleError):
+    """Docker operation failed (not installed, daemon not running, pull failed, etc.)."""
+
+
+class SatelliteError(HubbleError):
+    """Satellite scanning failed (API unreachable, bad response, etc.)."""
+
+
 class BleError(HubbleError):
     """BLE operation failed (connection, GATT read/write, etc.)."""
 
@@ -152,6 +160,8 @@ __all__ = [
     "ValidationError",
     "ScanError",
     "DecryptionError",
+    "DockerError",
+    "SatelliteError",
     "BleError",
     "InvalidDeviceError",
     "ElfFetchError",

@@ -37,3 +37,17 @@ class DecryptedPacket:
     rssi: int  # received signal strength (dBm)
     counter: Optional[int] = None
     sequence: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class SatellitePacket:
+    """A packet decoded by the satellite receiver (PlutoSDR)."""
+
+    device_id: str  # e.g. "0xBB2973BD"
+    seq_num: int
+    device_type: str  # e.g. "silabs"
+    timestamp: float  # Unix timestamp
+    rssi_dB: float  # signal strength in dB
+    channel_num: int
+    freq_offset_hz: float
+    payload: bytes  # encrypted payload bytes (base64-decoded from API)
