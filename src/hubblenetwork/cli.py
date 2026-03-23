@@ -10,13 +10,16 @@ import base64
 import binascii
 import logging
 from datetime import datetime
+from functools import partial
 from typing import Optional, List
 from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket
+from hubblenetwork.packets import SatellitePacket
 from hubblenetwork.org import _VALID_COUNTER_SOURCES, _VALID_POOL_SIZES
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
+from hubblenetwork import sat as sat_mod
 from hubblenetwork import decrypt
 from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork import cloud
@@ -284,10 +287,11 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
 class _StreamingJsonPrinter(_StreamingPrinterBase):
     """Print packets as a streaming JSON array."""
 
-    def __init__(self, payload_format: str = "base64"):
+    def __init__(self, payload_format: str = "base64", to_dict_fn=None):
         super().__init__()
         self._array_started = False
         self._payload_format = payload_format
+        self._to_dict_fn = to_dict_fn or _packet_to_dict
 
     @property
     def suppress_info_messages(self) -> bool:
@@ -295,7 +299,7 @@ class _StreamingJsonPrinter(_StreamingPrinterBase):
 
     def print_row(self, pkt) -> None:
         """Print a single packet as JSON."""
-        pkt_dict = _packet_to_dict(pkt, self._payload_format)
+        pkt_dict = self._to_dict_fn(pkt, self._payload_format)
         if not self._array_started:
             click.echo("[")
             self._array_started = True
@@ -321,6 +325,92 @@ class _StreamingJsonPrinter(_StreamingPrinterBase):
 _STREAMING_PRINTERS = {
     "tabular": _StreamingTablePrinter,
     "json": _StreamingJsonPrinter,
+}
+
+
+# ---------------------------------------------------------------------------
+# Satellite streaming printers
+# ---------------------------------------------------------------------------
+
+
+def _sat_packet_to_dict(pkt: SatellitePacket, payload_format: str = "base64") -> dict:
+    """Convert a SatellitePacket to a dictionary for JSON serialization."""
+    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+    return {
+        "device_id": pkt.device_id,
+        "seq_num": pkt.seq_num,
+        "device_type": pkt.device_type,
+        "timestamp": pkt.timestamp,
+        "datetime": ts,
+        "rssi_dB": pkt.rssi_dB,
+        "channel_num": pkt.channel_num,
+        "freq_offset_hz": pkt.freq_offset_hz,
+        "payload": _format_payload(pkt.payload, payload_format),
+    }
+
+
+class _SatStreamingTablePrinter(_StreamingPrinterBase):
+    """Print satellite packet rows as they arrive."""
+
+    _COL_WIDTHS = {
+        "DEVICE_ID": 12,
+        "SEQ": 6,
+        "TYPE": 8,
+        "TIME": 26,
+        "RSSI_DB": 8,
+        "CHANNEL": 8,
+        "FREQ_OFFSET": 12,
+        "PAYLOAD": 20,
+    }
+
+    _HEADERS = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
+
+    def __init__(self, payload_format: str = "base64"):
+        super().__init__()
+        self._header_printed = False
+        self._payload_format = payload_format
+
+    def _format_row(self, values: List) -> str:
+        parts = []
+        for i, val in enumerate(values):
+            width = self._COL_WIDTHS.get(self._HEADERS[i], 10)
+            parts.append(f"{str(val):<{width}}")
+        return "| " + " | ".join(parts) + " |"
+
+    def _make_separator(self) -> str:
+        parts = []
+        for header in self._HEADERS:
+            width = self._COL_WIDTHS.get(header, 10)
+            parts.append("-" * width)
+        return "+-" + "-+-".join(parts) + "-+"
+
+    def print_row(self, pkt: SatellitePacket) -> None:
+        if not self._header_printed:
+            click.echo("")
+            click.echo(self._make_separator())
+            click.secho(self._format_row(self._HEADERS), bold=True)
+            click.echo(self._make_separator())
+            self._header_printed = True
+
+        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+        row = [
+            pkt.device_id,
+            pkt.seq_num,
+            pkt.device_type,
+            ts,
+            f"{pkt.rssi_dB:.1f}",
+            pkt.channel_num,
+            f"{pkt.freq_offset_hz:.1f}",
+            _format_payload(pkt.payload, self._payload_format),
+        ]
+        click.echo(self._format_row(row))
+        click.echo(self._make_separator())
+        self._packet_count += 1
+
+
+_SAT_STREAMING_PRINTERS = {
+    "tabular": _SatStreamingTablePrinter,
+    "json": partial(_StreamingJsonPrinter, to_dict_fn=_sat_packet_to_dict),
 }
 
 
@@ -2331,6 +2421,108 @@ def get_packets(
     device = Device(id=device_id)
     packets = org.retrieve_packets(device, days=days)
     _print_packets(packets, output_format, payload_format)
+
+
+# ---------------------------------------------------------------------------
+# sat – Satellite (PlutoSDR) commands
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def sat() -> None:
+    """Satellite (PlutoSDR) utilities."""
+
+
+@sat.command("scan")
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    show_default=False,
+    help="Timeout in seconds (default: no timeout)",
+)
+@click.option(
+    "--count",
+    "-n",
+    type=int,
+    default=None,
+    show_default=False,
+    help="Stop after receiving N packets",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format for packets",
+)
+@click.option(
+    "--poll-interval",
+    type=float,
+    default=2.0,
+    show_default=True,
+    help="Seconds between API polls",
+)
+@click.option(
+    "--payload-format",
+    "payload_format",
+    type=click.Choice(["base64", "hex", "string"], case_sensitive=False),
+    default="base64",
+    show_default=True,
+    help="Encoding format for packet payload",
+)
+def sat_scan(
+    timeout: Optional[int] = None,
+    count: Optional[int] = None,
+    output_format: str = "tabular",
+    poll_interval: float = 2.0,
+    payload_format: str = "base64",
+) -> None:
+    """
+    Start the satellite receiver and stream decoded packets.
+
+    Requires Docker and a PlutoSDR device connected via USB.
+
+    Example:
+      hubblenetwork sat scan --timeout 30
+      hubblenetwork sat scan -o json --timeout 10
+      hubblenetwork sat scan -n 5
+    """
+    printer_class = _SAT_STREAMING_PRINTERS.get(
+        output_format.lower(), _SatStreamingTablePrinter
+    )
+    printer = printer_class(payload_format=payload_format)
+
+    if not printer.suppress_info_messages:
+        click.secho(
+            "[INFO] Starting satellite receiver... (Press Ctrl+C to stop)"
+        )
+
+    try:
+        for pkt in sat_mod.scan(
+            timeout=timeout, poll_interval=poll_interval
+        ):
+            printer.print_row(pkt)
+            if count is not None and printer.packet_count >= count:
+                break
+    except (sat_mod.DockerError, sat_mod.SatelliteError) as e:
+        if printer.suppress_info_messages:
+            click.echo(json.dumps({"error": str(e)}))
+            return
+        raise click.ClickException(str(e))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        printer.finalize()
+
+        if not printer.suppress_info_messages:
+            click.echo("")
+            click.secho(
+                f"[INFO] Scanning stopped. {printer.packet_count} packet(s) received.",
+                fg="yellow",
+            )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
