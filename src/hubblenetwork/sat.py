@@ -104,7 +104,7 @@ def stop_container(container_id: str) -> None:
     try:
         client = _get_client()
         container = client.containers.get(container_id)
-        container.stop(timeout=10)
+        container.stop(timeout=5)
     except Exception:
         pass  # best-effort cleanup
 

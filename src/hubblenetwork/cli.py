@@ -4,6 +4,7 @@ from __future__ import annotations
 import click
 import os
 import json
+import signal
 import sys
 import time
 import base64
@@ -2523,6 +2524,17 @@ def sat_scan(
             "[INFO] Starting satellite receiver... (Press Ctrl+C to stop)"
         )
 
+    _stop_msg_shown = [False]
+
+    def _on_interrupt(sig, frame):
+        if not _stop_msg_shown[0] and not printer.suppress_info_messages:
+            click.secho(
+                "\n[INFO] Stopping satellite receiver...", fg="yellow", err=True
+            )
+            _stop_msg_shown[0] = True
+        raise KeyboardInterrupt()
+
+    old_handler = signal.signal(signal.SIGINT, _on_interrupt)
     error_occurred = False
     try:
         for pkt in sat_mod.scan(
@@ -2549,6 +2561,7 @@ def sat_scan(
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, old_handler)
         printer.finalize()
 
         if not printer.suppress_info_messages and not error_occurred:
