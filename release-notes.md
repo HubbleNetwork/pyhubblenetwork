@@ -1,5 +1,14 @@
 # Release Notes
 
+## [0.4.1] - 2026-03-25
+
+### Fixed
+- fix(cli): improve sat scan Ctrl+C responsiveness
+- fix(cli): improve sat scan Docker error handling
+
+### Documentation
+- docs: add satellite scanning docs and drop mypy
+
 ## [0.4.0] - 2026-03-24
 
 ### Added
