@@ -37,7 +37,7 @@
   - **Linux**: BlueZ required; user must have permission to access the BLE adapter (often `bluetooth` group).
   - **Windows**: Requires a compatible BLE stack/adapter.
 - Satellite scanning prerequisites (only needed if you use `sat.scan()`):
-  - **Docker**: Docker Desktop (macOS/Windows) or Docker Engine (Linux) must be installed and running.
+  - **Docker**: [Docker Desktop](https://www.docker.com/get-started/) (macOS/Windows) or Docker Engine (Linux) must be installed and running.
   - **PlutoSDR**: An Analog Devices ADALM-PLUTO SDR dongle connected via USB.
 
 ## Installation

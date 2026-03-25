@@ -51,11 +51,8 @@ def _get_client():
         )
     try:
         return docker.from_env()
-    except docker.errors.DockerException as exc:
-        raise DockerError(
-            "Docker is not available. Ensure Docker is installed and the "
-            f"daemon is running: {exc}"
-        )
+    except docker.errors.DockerException:
+        raise DockerError("Docker is not available")
 
 
 def ensure_docker_available() -> None:
@@ -63,11 +60,8 @@ def ensure_docker_available() -> None:
     client = _get_client()
     try:
         client.ping()
-    except Exception as exc:
-        raise DockerError(
-            "Docker daemon is not responding. Ensure Docker is running: "
-            f"{exc}"
-        )
+    except Exception:
+        raise DockerError("Docker daemon is not responding")
 
 
 def pull_image(image: str = DOCKER_IMAGE) -> None:

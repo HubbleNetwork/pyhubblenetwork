@@ -2427,6 +2427,18 @@ def get_packets(
 # sat – Satellite (PlutoSDR) commands
 # ---------------------------------------------------------------------------
 
+_DOCKER_INSTALL_URL = "https://www.docker.com/get-started/"
+
+
+def _docker_err_msg() -> str:
+    url = _DOCKER_INSTALL_URL
+    if sys.stderr.isatty():
+        url = f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
+    return (
+        f"Docker Desktop is required for satellite scanning. "
+        f"Install from {url} and make sure it is running."
+    )
+
 
 @cli.group()
 def sat() -> None:
@@ -2495,11 +2507,23 @@ def sat_scan(
     )
     printer = printer_class(payload_format=payload_format)
 
+    # Fail fast: verify Docker is available before printing anything.
+    try:
+        sat_mod.ensure_docker_available()
+    except sat_mod.DockerError:
+        msg = _docker_err_msg()
+        if printer.suppress_info_messages:
+            click.echo(json.dumps({"error": msg}))
+        else:
+            click.secho(f"\n[ERROR] {msg}", fg="red", err=True)
+        sys.exit(1)
+
     if not printer.suppress_info_messages:
         click.secho(
             "[INFO] Starting satellite receiver... (Press Ctrl+C to stop)"
         )
 
+    error_occurred = False
     try:
         for pkt in sat_mod.scan(
             timeout=timeout, poll_interval=poll_interval
@@ -2507,17 +2531,27 @@ def sat_scan(
             printer.print_row(pkt)
             if count is not None and printer.packet_count >= count:
                 break
-    except (sat_mod.DockerError, sat_mod.SatelliteError) as e:
+    except sat_mod.DockerError:
+        error_occurred = True
+        msg = _docker_err_msg()
+        if printer.suppress_info_messages:
+            click.echo(json.dumps({"error": msg}))
+        else:
+            click.secho(f"\n[ERROR] {msg}", fg="red", err=True)
+        sys.exit(1)
+    except sat_mod.SatelliteError as e:
+        error_occurred = True
         if printer.suppress_info_messages:
             click.echo(json.dumps({"error": str(e)}))
-            return
-        raise click.ClickException(str(e))
+        else:
+            click.secho(f"\n[ERROR] {e}", fg="red", err=True)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass
     finally:
         printer.finalize()
 
-        if not printer.suppress_info_messages:
+        if not printer.suppress_info_messages and not error_occurred:
             click.echo("")
             click.secho(
                 f"[INFO] Scanning stopped. {printer.packet_count} packet(s) received.",
@@ -2536,6 +2570,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         cli.main(args=argv, prog_name="hubblenetwork", standalone_mode=False)
     except SystemExit as e:
         return int(e.code)
+    except click.ClickException as e:
+        click.echo("", err=True)
+        click.secho(f"Error: {e.format_message()}", fg="red", bold=True, err=True)
+        return e.exit_code
     except Exception as e:  # safety net to avoid tracebacks in user CLI
         click.secho(f"Unexpected error: {e}", fg="red", err=True)
         return 2
