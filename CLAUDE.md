@@ -43,6 +43,8 @@ hubblenetwork --help
 hubblenetwork ble scan --timeout 10
 hubblenetwork ready scan
 hubblenetwork org list-devices
+hubblenetwork sat scan --timeout 30
+hubblenetwork sat scan -o json -n 5
 ```
 
 ## Architecture
@@ -68,7 +70,9 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`errors.py`** - Exception hierarchy. Base `HubbleError` with specialized errors for backend, network, validation, BLE scanning, and decryption failures.
 
-- **`cli.py`** - Click-based CLI. Command groups: `ble` (scan, detect, check-time), `ready` (scan, info, provision), `org` (info, list-devices, get-packets, register-device, set-device-name).
+- **`cli.py`** - Click-based CLI. Command groups: `ble` (scan, detect, check-time), `ready` (scan, info, provision), `org` (info, list-devices, get-packets, register-device, set-device-name), `sat` (scan).
+
+- **`sat.py`** - Satellite packet scanning via PlutoSDR. Manages Docker container lifecycle (pull, start, stop) and polls the container's HTTP API for decoded packets. Requires Docker daemon running. Image: `ghcr.io/hubblenetwork/pluto-sdr-docker:latest`.
 
 ### Key Patterns
 
@@ -79,6 +83,8 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 - **Pagination**: Cloud API uses continuation tokens. `Organization.list_devices()` and `retrieve_packets()` handle pagination internally.
 
 - **Encryption modes**: Devices support either AES-256-CTR (32-byte key) or AES-128-CTR (16-byte key). Mode is auto-detected from device during provisioning.
+
+- **Satellite scanning requires Docker**: `sat.scan()` pulls and runs a privileged Docker container. Docker daemon must be running. Raises `DockerError` (not `SatelliteError`) if Docker is unavailable. The `docker` Python package is a required (not optional) dependency.
 
 ### Environment Variables
 - `HUBBLE_ORG_ID` - Organization ID
