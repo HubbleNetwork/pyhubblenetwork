@@ -1,5 +1,11 @@
 # Release Notes
 
+## [0.4.0] - 2026-03-24
+
+### Added
+- feat(cli): add sat scan command for satellite packet reception via PlutoSDR
+- feat(org): add EID rotation params to register_device
+
 ## [0.3.0] - 2026-02-27
 
 ### Added
