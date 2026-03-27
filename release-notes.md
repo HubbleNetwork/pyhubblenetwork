@@ -1,5 +1,12 @@
 # Release Notes
 
+## [0.5.0] - 2026-03-27
+
+### Added
+- feat(org): add Organization.delete_device method
+- feat(cli): add org delete-device command with confirmation prompt
+- feat(cli): add ble validate command with EID type detection
+
 ## [0.4.1] - 2026-03-25
 
 ### Fixed
