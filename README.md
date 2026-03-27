@@ -149,7 +149,7 @@ This applies to all output formats (tabular, json, csv).
 
 ## Satellite scanning (PlutoSDR)
 
-The `sat` command group receives packets via a PlutoSDR SDR dongle. It runs a Docker container ([`ghcr.io/hubblenetwork/pluto-sdr-docker`](https://ghcr.io/hubblenetwork/pluto-sdr-docker)) that handles RF reception and decoding, then polls that container's HTTP API and streams decoded packets to stdout.
+The `sat` command group receives packets via a PlutoSDR SDR dongle. It runs a Docker container ([`ghcr.io/hubblenetwork/sdr-docker`](https://ghcr.io/hubblenetwork/sdr-docker)) that handles RF reception and decoding, then polls that container's HTTP API and streams decoded packets to stdout.
 
 ### Requirements
 
@@ -271,7 +271,7 @@ ruff check src
 * **`DockerError: Docker is not available`**: Docker daemon is not running. Start Docker Desktop (macOS/Windows) or `sudo systemctl start docker` (Linux).
 * **`DockerError: The ‘docker’ Python package is required`**: run `pip install docker` (it is bundled with `pyhubblenetwork` but may be missing in some environments).
 * **`SatelliteError: Satellite receiver API did not become ready`**: the PlutoSDR container started but couldn’t access the hardware. Ensure the ADALM-PLUTO dongle is plugged in before running `sat scan`, and that no other process is using it.
-* **`sat scan` hangs pulling the image**: first run fetches `ghcr.io/hubblenetwork/pluto-sdr-docker:latest`; this may take a minute on a slow connection. Subsequent runs use the cached image.
+* **`sat scan` hangs pulling the image**: first run fetches `ghcr.io/hubblenetwork/sdr-docker:latest`; this may take a minute on a slow connection. Subsequent runs use the cached image.
 
 
 ## Releases & versioning

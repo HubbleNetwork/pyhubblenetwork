@@ -22,7 +22,7 @@ from .packets import SatellitePacket
 
 logger = logging.getLogger(__name__)
 
-DOCKER_IMAGE = "ghcr.io/hubblenetwork/pluto-sdr-docker:latest"
+DOCKER_IMAGE = "ghcr.io/hubblenetwork/sdr-docker:latest"
 CONTAINER_NAME = "hubble-pluto-sdr"
 API_PORT = 8050
 _CONTAINER_INTERNAL_PORT = 8050  # fixed by the Docker image
