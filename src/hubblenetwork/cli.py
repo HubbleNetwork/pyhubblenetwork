@@ -2684,6 +2684,96 @@ def get_packets(
 
 
 # ---------------------------------------------------------------------------
+# metrics -- Device metrics commands
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+@click.option(
+    "--org-id",
+    "-o",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    default=None,
+    show_default=False,
+    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+)
+@click.option(
+    "--token",
+    "-t",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    default=None,
+    show_default=False,
+    help="Token (if not using HUBBLE_API_TOKEN env var)",
+)
+@click.pass_context
+def metrics(ctx, org_id, token) -> None:
+    """Device metrics and analytics."""
+    try:
+        ctx.obj = Organization(org_id=org_id, api_token=token)
+    except InvalidCredentialsError as e:
+        raise click.BadParameter(str(e))
+
+
+@metrics.command("devices")
+@click.option(
+    "--days",
+    "-d",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Number of days to look back",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default="table",
+    show_default=True,
+    help="Output format",
+)
+@pass_orgcfg
+def metrics_devices(org: Organization, days: int, output_format: str) -> None:
+    """Show device metrics (registered, active, never-active counts).
+
+    Example:
+      hubblenetwork metrics devices
+      hubblenetwork metrics devices --days 7
+      hubblenetwork metrics devices --days 30 -o json
+    """
+    data = org.device_metrics(days_back=days)
+
+    if output_format == "json":
+        click.echo(json.dumps(data, indent=2))
+        return
+
+    # Table output
+    buckets = data.get("buckets", [])
+    if buckets:
+        headers = ["TIMESTAMP", "REGISTERED", "ACTIVE", "NEVER ACTIVE"]
+        rows = [
+            [
+                b["timestamp"],
+                b["registered_devices"],
+                b["active_devices"],
+                b["never_active_devices"],
+            ]
+            for b in buckets
+        ]
+        click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
+    else:
+        click.echo("No bucket data available.")
+
+    click.echo("")
+    click.echo("Totals:")
+    click.echo(f"  Registered:   {data.get('total_registered_devices', 'N/A')}")
+    click.echo(f"  Active:       {data.get('total_active_devices', 'N/A')}")
+    click.echo(f"  Never Active: {data.get('total_never_active_devices', 'N/A')}")
+
+
+# ---------------------------------------------------------------------------
 # sat – Satellite (PlutoSDR) commands
 # ---------------------------------------------------------------------------
 

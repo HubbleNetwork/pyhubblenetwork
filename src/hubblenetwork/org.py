@@ -178,6 +178,14 @@ class Organization:
                 break
         return packets
 
+    def device_metrics(self, days_back: int = 1) -> dict:
+        """Fetch device metrics for this organization."""
+        return cloud.device_metrics(
+            credentials=self.credentials,
+            env=self.env,
+            days_back=days_back,
+        )
+
     def ingest_packet(self, packet: EncryptedPacket) -> None:
         cloud.ingest_packet(
             credentials=self.credentials,

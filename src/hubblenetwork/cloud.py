@@ -79,6 +79,10 @@ def _validate_key_endpoint(credentials: Credentials) -> str:
     return f"/org/{credentials.org_id}/check"
 
 
+def _device_metrics_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}/device_metrics"
+
+
 def cloud_request(
     *,
     method: str,
@@ -318,4 +322,26 @@ def retrieve_org_metadata(
         env=env,
         path=_retrieve_org_metadata_endpoint(credentials),
         credentials=credentials,
+    )[0]
+
+
+def device_metrics(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    days_back: int = 1,
+    time_interval: Optional[str] = None,
+) -> dict:
+    """Fetch device metrics (registered, active, never-active counts)."""
+    params: MutableMapping[str, Any] = {
+        "daysBack": days_back,
+    }
+    if time_interval:
+        params["timeInterval"] = time_interval
+    return cloud_request(
+        method="GET",
+        env=env,
+        path=_device_metrics_endpoint(credentials),
+        credentials=credentials,
+        params=params,
     )[0]
