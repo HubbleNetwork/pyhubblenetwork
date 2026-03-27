@@ -98,6 +98,19 @@ class Organization:
         )
         return Device(id=resp["id"], name=resp["name"])
 
+    def delete_device(self, device_id: str) -> None:
+        """
+        Delete a device from this organization.
+
+        Args:
+            device_id: The ID of the device to delete.
+        """
+        cloud.delete_device(
+            credentials=self.credentials,
+            env=self.env,
+            device_id=device_id,
+        )
+
     def list_devices(self) -> list[Device]:
         """
         Call the Cloud API “List Devices” endpoint and return Device objects.

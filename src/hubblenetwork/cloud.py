@@ -67,6 +67,10 @@ def _update_device_endpoint(credentials: Credentials, device_id: str) -> str:
     return f"/org/{credentials.org_id}/devices/{device_id}"
 
 
+def _delete_device_endpoint(credentials: Credentials, device_id: str) -> str:
+    return f"/org/{credentials.org_id}/devices/{device_id}"
+
+
 def _retrieve_org_metadata_endpoint(credentials: Credentials) -> str:
     return f"/org/{credentials.org_id}"
 
@@ -202,6 +206,21 @@ def update_device(
         credentials=credentials,
         json=data,
     )[0]
+
+
+def delete_device(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    device_id: str,
+) -> None:
+    """Delete a device."""
+    cloud_request(
+        method="DELETE",
+        path=_delete_device_endpoint(credentials, device_id),
+        credentials=credentials,
+        env=env,
+    )
 
 
 def list_devices(

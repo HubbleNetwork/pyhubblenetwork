@@ -2617,6 +2617,20 @@ def register_device(org: Organization, encryption, counter_source, pool_size) ->
     )))
 
 
+@org.command("delete-device")
+@click.argument("device-id", type=str)
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
+@pass_orgcfg
+def delete_device(org: Organization, device_id: str, yes: bool) -> None:
+    if not yes:
+        click.confirm(
+            f"Delete device {device_id}? This cannot be undone.",
+            abort=True,
+        )
+    org.delete_device(device_id)
+    click.echo(f"Device {device_id} deleted.")
+
+
 @org.command("set-device-name")
 @click.argument("device-id", type=str)
 @click.argument("name", type=str)
