@@ -70,7 +70,7 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`errors.py`** - Exception hierarchy. Base `HubbleError` with specialized errors for backend, network, validation, BLE scanning, and decryption failures.
 
-- **`cli.py`** - Click-based CLI. Command groups: `ble` (scan, detect, check-time), `ready` (scan, info, provision), `org` (info, list-devices, get-packets, register-device, set-device-name), `sat` (scan).
+- **`cli.py`** - Click-based CLI. Command groups: `ble` (scan, detect, check-time, validate), `ready` (scan, info, read-status, read-key-info, read-config, read-time, write-key, write-config, write-time, provision), `org` (info, list-devices, get-packets, register-device, delete-device, set-device-name), `sat` (scan). Top-level: `validate-credentials`.
 
 - **`sat.py`** - Satellite packet scanning via PlutoSDR. Manages Docker container lifecycle (pull, start, stop) and polls the container's HTTP API for decoded packets. Requires Docker daemon running. Image: `ghcr.io/hubblenetwork/pluto-sdr-docker:latest`.
 
@@ -90,6 +90,12 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 - `HUBBLE_ORG_ID` - Organization ID
 - `HUBBLE_API_TOKEN` - API token
 - For integration tests: `HUBBLE_PROD_ORG_ID`, `HUBBLE_PROD_API_TOKEN`, `HUBBLE_TESTING_ORG_ID`, `HUBBLE_TESTING_API_TOKEN`
+
+### Releasing
+Use the `/release` skill to cut a release. It bumps the version in `pyproject.toml`, generates release notes from conventional commits into `release-notes.md`, commits, tags (`vX.Y.Z`), and pushes. The tag push triggers `.github/workflows/release.yml` which runs tests, builds, creates a GitHub Release, and publishes to PyPI via trusted publishing.
+
+### Conventions
+- **Commit messages**: Use conventional commits — `feat(scope):`, `fix(scope):`, `docs:`, `test(scope):`, `chore:`. The scope is typically the module name (cli, org, ble, ready, sat, crypto).
 
 ### Test Markers
 - `@pytest.mark.integration` - Tests requiring real API credentials
