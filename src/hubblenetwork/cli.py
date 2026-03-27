@@ -10,12 +10,13 @@ import time
 import base64
 import binascii
 import logging
+import uuid
 from datetime import datetime
 from functools import partial
 from typing import Optional, List
 from tabulate import tabulate
 from hubblenetwork import Organization
-from hubblenetwork import Device, DecryptedPacket
+from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
 from hubblenetwork.packets import SatellitePacket
 from hubblenetwork.org import _VALID_COUNTER_SOURCES, _VALID_POOL_SIZES
 from hubblenetwork import ble as ble_mod
@@ -25,12 +26,67 @@ from hubblenetwork import decrypt
 from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
+from hubblenetwork.errors import BackendError
 
 # Set up logger for CLI (outputs to stderr)
 logger = logging.getLogger(__name__)
 _handler = logging.StreamHandler(sys.stderr)
 _handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logger.addHandler(_handler)
+
+
+def _validate_info(msg):
+    click.secho("[INFO] ", fg="cyan", bold=True, nl=False)
+    click.echo(msg + "... ", nl=False)
+
+
+def _validate_success():
+    click.secho("[SUCCESS]", fg="green", bold=True)
+
+
+def _validate_error(msg):
+    click.secho("[ERROR]", fg="red", bold=True)
+    click.secho(f"\n{msg}", bold=True)
+    sys.exit(1)
+
+
+def _get_pkt_from_be_with_timestamp(org, device, timestamp):
+    backend_pkts = org.retrieve_packets(device, days=1)
+    for p in backend_pkts:
+        if p.timestamp == timestamp:
+            return p
+    return None
+
+
+def _detect_eid_type(
+    key: bytes,
+    pkts: List[EncryptedPacket],
+    pool_size: int,
+) -> tuple[Optional[EncryptedPacket], Optional[DecryptedPacket], Optional[str], bool]:
+    epoch_pkt = None
+    epoch_dec = None
+    counter_pkt = None
+    counter_dec = None
+    for pkt in pkts:
+        if epoch_pkt is None:
+            result = decrypt(key, pkt)
+            if result:
+                epoch_pkt = pkt
+                epoch_dec = result
+        if counter_pkt is None:
+            result = decrypt(key, pkt, eid_pool_size=pool_size)
+            if result:
+                counter_pkt = pkt
+                counter_dec = result
+        if epoch_pkt and counter_pkt:
+            break
+    if epoch_pkt and counter_pkt:
+        return (epoch_pkt, epoch_dec, "AMBIGUOUS", True)
+    if epoch_pkt:
+        return (epoch_pkt, epoch_dec, "EPOCH_TIME", False)
+    if counter_pkt:
+        return (counter_pkt, counter_dec, "DEVICE_UPTIME", False)
+    return (None, None, None, False)
 
 
 def _format_payload(payload, fmt: str) -> str:
@@ -991,6 +1047,195 @@ def ble_check_time(
             "[ERROR] No valid packets found within timeout period", fg="red", err=True
         )
     return -1
+
+
+@ble.command("validate")
+@click.option(
+    "--key",
+    "-k",
+    type=str,
+    required=True,
+    show_default=False,
+    help="Device key (to test packet encryption)",
+)
+@click.option(
+    "--device-id",
+    "-d",
+    type=str,
+    required=True,
+    show_default=False,
+    help="Device ID (to test backend)",
+)
+@click.option(
+    "--org-id",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    default=None,
+    show_default=False,
+    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+)
+@click.option(
+    "--token",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    default=None,
+    show_default=False,
+    help="Token (if not using HUBBLE_API_TOKEN env var)",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    default=30,
+    show_default=True,
+    help="BLE scan timeout in seconds",
+)
+@click.option(
+    "--pool-size",
+    type=int,
+    default=1024,
+    show_default=True,
+    help="Pool size for counter-based EID detection. Valid values: 16, 32, 64, 128, 256, 512, 1024.",
+)
+def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int, pool_size: int) -> None:
+    """
+    Validate the operation of a Hubble device, including:
+
+    \b
+    - Valid credentials passed in
+    - Device registration (must be a registered device)
+    - BLE advertisements
+    - Advertisement encryption
+    - Backend ingestion/retrieval of data
+
+    NOTE: HUBBLE_ORG_ID and HUBBLE_API_TOKEN env vars must be set
+    unless --org-id and --token are provided.
+    """
+
+    # Step 1: Validate inputs
+    _validate_info("Validating format of inputs")
+    try:
+        decoded_key = base64.b64decode(key, validate=True)
+    except Exception:
+        _validate_error(
+            'Incorrectly formatted device key passed in. Must be a base 64'
+            '\nencoded string such as (fake keys):'
+            '\n 16byte key: "q9vH3u2J4aN8Rw1KpZsO+A=="'
+            '\n 32byte key: "N4e7xq9X1pQ0sVbY2mT3uA6fH9rK2dW5cG8jL1oQ0vU="'
+            '\nNote the "=" characters at the end which must be included.'
+        )
+    try:
+        uuid.UUID(device_id)
+    except ValueError:
+        _validate_error(
+            'Device UUID formatted incorrectly.'
+            '\nMust be in standard 8-4-4-4-12 format (removing hyphens accepted).'
+            '\nExample UUID: "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"'
+            '\n\nIf you are having troubles with your UUID please contact support@hubble.com'
+        )
+    if pool_size not in _VALID_POOL_SIZES:
+        _validate_error(
+            f"Invalid --pool-size value. Must be one of: "
+            f"{', '.join(str(s) for s in sorted(_VALID_POOL_SIZES))}."
+        )
+    _validate_success()
+
+    # Step 2: Get credentials
+    _validate_info("Getting organization ID and API token")
+    try:
+        org_id, token = _get_org_and_token(org_id, token)
+    except click.ClickException:
+        _validate_error("HUBBLE_ORG_ID and/or HUBBLE_API_TOKEN environment variables not set")
+    _validate_success()
+
+    # Step 3: Validate org credentials
+    _validate_info("Validating organization credentials")
+    try:
+        org = Organization(
+            org_id=org_id,
+            api_token=token,
+        )
+    except InvalidCredentialsError:
+        _validate_error("Invalid credentials (Org ID or API token) passed in.")
+    _validate_success()
+
+    # Step 4: Validate device registration
+    _validate_info("Validating that the given device is registered")
+    device = Device(id=device_id)
+    if not any(d.id == device_id for d in org.list_devices()):
+        _validate_error("Device ID not found in backend")
+    _validate_success()
+
+    # Step 5: BLE scan
+    _validate_info(f"Scanning for Hubble-compatible advertisers (timeout={timeout}s)")
+    pkts = ble_mod.scan(timeout=timeout)
+    if not pkts:
+        _validate_error(
+            'No Hubble advertisements found.'
+            '\n\nNOTE: This may be due to a slow advertising interval and BLE-scanning'
+            '\n      optimizations done by your operating system. Try running this'
+            '\n      script again if your advertising interval is slow.'
+            '\n\nOther debug tips:'
+            '\n 1. Ensure your advertising packet is constructed correctly with both'
+            '\n    the "Complete List of 16-bit Service UUIDs" advertising type (with'
+            '\n    the Hubble UUID) and "Service Data" type included.'
+            '\n 2. Ensure your device as advertising at all (if in doubt, try a BLE'
+            '\n    scanning app on your phone)'
+            '\n\nIf these do not resolve your issue please contact support@hubble.com.'
+        )
+    _validate_success()
+
+    # Step 6: Validate encryption and detect EID type
+    _validate_info("Validating encryption of received packets")
+    pkt_to_ingest, dec_result, eid_label, _ = _detect_eid_type(decoded_key, pkts, pool_size)
+    if not pkt_to_ingest:
+        _validate_error(
+            'Unable to decrypt packet with given device key.'
+            '\n\nDebug tips:'
+            '\n 1. Ensure you entered the key correctly when running this script.'
+            '\n 2. Check that your device is provisioned with this same key.'
+            '\n 3. Check that your device-level encryption is working.'
+            '\n\nIf these do not resolve your issue please contact support@hubble.com.'
+        )
+    _validate_success()
+    if eid_label == "EPOCH_TIME":
+        click.echo(f"       EID type: EPOCH_TIME (day counter={dec_result.counter})")
+    elif eid_label == "DEVICE_UPTIME":
+        click.echo(f"       EID type: DEVICE_UPTIME (counter={dec_result.counter})")
+    else:
+        click.echo("       EID type: AMBIGUOUS (resolved with both EPOCH_TIME and DEVICE_UPTIME)")
+        click.secho(
+            "       NOTE: Multiple devices may be in BLE range with different configs,\n"
+            "             or a very unlikely cryptographic coincidence. "
+            "Check your device config.",
+            bold=True,
+        )
+
+    # Step 7: Ingest + backend retrieval
+    _validate_info("Ingesting packet into the backend")
+    try:
+        org.ingest_packet(pkt_to_ingest)
+    except BackendError:
+        _validate_error("Unable to ingest packet on the backend (not your fault)")
+    _validate_success()
+
+    _validate_info("Checking for packet in the backend")
+    timestamp = pkt_to_ingest.timestamp
+    backend_pkt = None
+    for _ in range(10):
+        time.sleep(1)
+        backend_pkt = _get_pkt_from_be_with_timestamp(org, device, timestamp)
+        if backend_pkt:
+            break
+    if not backend_pkt:
+        _validate_error("Unable to retrieve packet from the backend")
+    _validate_success()
+
+    click.secho("\n[COMPLETE] All validation steps passed!", fg="green", bold=True)
+    click.secho("Packet metadata:")
+    click.secho(f'\tname:     "{backend_pkt.device_name}"')
+    click.secho(f'\tpayload:  "{backend_pkt.payload}"')
+    click.secho(f"\tsequence: {backend_pkt.sequence}")
 
 
 @cli.group()
