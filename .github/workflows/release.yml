@@ -6,8 +6,10 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
-  test:
+  test-and-build:
     runs-on: ubuntu-latest
+    outputs:
+      notes: ${{ steps.extract-notes.outputs.notes }}
     steps:
       - uses: actions/checkout@v6
 
@@ -20,20 +22,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-
-      - name: Run unit tests (exclude integration and BLE)
-        run: pytest -m "not integration and not ble" -v --tb=short
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
 
       - name: Verify tag matches package version
         run: |
@@ -51,11 +39,25 @@ jobs:
             exit 1
           fi
 
-      - name: Install build tool
-        run: pip install build
+      - name: Lint
+        run: ruff check src
+
+      - name: Run unit tests (exclude integration and BLE)
+        run: pytest -m "not integration and not ble" -v --tb=short
 
       - name: Build sdist and wheel
-        run: python -m build
+        run: |
+          pip install build
+          python -m build
+
+      - name: Read release notes
+        id: extract-notes
+        run: |
+          {
+            echo "notes<<EOF"
+            cat release-notes.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v6
@@ -64,30 +66,8 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  release-notes:
-    needs: build
-    runs-on: ubuntu-latest
-    outputs:
-      notes: ${{ steps.extract.outputs.notes }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Extract release notes for this version
-        id: extract
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          NOTES=$(awk "/^## \[$TAG_VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" release-notes.md)
-          if [ -z "$NOTES" ]; then
-            NOTES="See release-notes.md for details."
-          fi
-          {
-            echo "notes<<EOF"
-            echo "$NOTES"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
   github-release:
-    needs: release-notes
+    needs: test-and-build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -103,7 +83,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body: ${{ needs.release-notes.outputs.notes }}
+          body: ${{ needs.test-and-build.outputs.notes }}
           files: dist/*
           fail_on_unmatched_files: true
 

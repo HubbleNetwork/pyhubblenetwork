@@ -276,6 +276,35 @@ ruff check src
 
 ## Releases & versioning
 
-* Follows **SemVer** (MAJOR.MINOR.PATCH).
-* Tagged releases (e.g., `v0.3.0`) publish wheels/sdists to PyPI.
-* Release process: (add short steps for how to cut a release—tagging, CI release job, PyPI publish credentials).
+Follows **SemVer** (MAJOR.MINOR.PATCH). Pushing a version tag triggers a GitHub Actions workflow that runs tests, builds the package, creates a GitHub Release, and publishes to PyPI.
+
+### Cutting a release
+
+1. **Bump the version** in `pyproject.toml`:
+   ```
+   version = "0.6.0"
+   ```
+
+2. **Add release notes** to the top of `release-notes.md`:
+   ```markdown
+   ## [0.6.0] - 2026-04-01
+
+   ### Added
+   - feat(cli): new command description
+
+   ### Fixed
+   - fix(org): bug description
+   ```
+
+3. **Commit, tag, and push:**
+   ```bash
+   git add pyproject.toml release-notes.md
+   git commit -m "chore: release 0.6.0"
+   git push origin main
+   git tag v0.6.0
+   git push origin v0.6.0
+   ```
+
+4. **Approve the publish step** in the [GitHub Actions UI](https://github.com/HubbleNetwork/pyhubblenetwork/actions) (the `pypi` environment requires manual approval).
+
+The workflow verifies the tag matches the version in `pyproject.toml`, so both must agree. PyPI publishing uses [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) — no API tokens are stored in the repo.
