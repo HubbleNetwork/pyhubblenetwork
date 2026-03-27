@@ -1,5 +1,10 @@
 # Release Notes
 
+## [0.6.1] - 2026-03-27
+
+### Maintenance
+- chore(sat): update Docker image to sdr-docker
+
 ## [0.6.0] - 2026-03-27
 
 ### Added
