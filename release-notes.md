@@ -1,5 +1,17 @@
 # Release Notes
 
+## [0.6.0] - 2026-03-27
+
+### Added
+- feat(cli): add metrics devices command for device metrics
+
+### Documentation
+- docs: update CLAUDE.md with release workflow and current CLI commands
+
+### Maintenance
+- ci: consolidate release workflow to 3 jobs and add lint step
+- ci: upgrade actions to supported versions
+
 ## [0.5.0] - 2026-03-27
 
 ### Added
