@@ -106,13 +106,25 @@ def pull_image(image: str = DOCKER_IMAGE) -> None:
 def start_container(
     image: str = DOCKER_IMAGE,
     port: int = API_PORT,
+    pluto_uri: Optional[str] = None,
 ) -> str:
     """Start the PlutoSDR container and return the container ID.
 
     The container is started with ``auto_remove=True`` so it is
     automatically removed when stopped.
+
+    Parameters
+    ----------
+    pluto_uri : str, optional
+        PlutoSDR connection URI (e.g. ``"ip:192.168.2.1"``).  Passed as
+        the ``PLUTO_URI`` environment variable.  Required on macOS where
+        USB passthrough is unavailable and the PlutoSDR is accessed over
+        Ethernet.  If *None*, the container uses its built-in default.
     """
     client = _get_client()
+    env = {}
+    if pluto_uri is not None:
+        env["PLUTO_URI"] = pluto_uri
     try:
         container = client.containers.run(
             image,
@@ -121,6 +133,7 @@ def start_container(
             ports={f"{_CONTAINER_INTERNAL_PORT}/tcp": port},
             name=CONTAINER_NAME,
             privileged=True,
+            environment=env or None,
         )
         logger.debug("Started container %s", container.short_id)
         return container.id
@@ -214,17 +227,24 @@ def scan(
     poll_interval: float = 2.0,
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
+    pluto_uri: Optional[str] = None,
 ) -> Generator[SatellitePacket, None, None]:
     """Scan for satellite packets, managing the Docker container lifecycle.
 
     Yields new ``SatellitePacket`` objects as they are discovered.  The
     container is guaranteed to be stopped when the generator is closed or
     an exception occurs.
+
+    Parameters
+    ----------
+    pluto_uri : str, optional
+        PlutoSDR connection URI (e.g. ``"ip:192.168.2.1"``).  Required on
+        macOS where the PlutoSDR is connected over Ethernet.
     """
     ensure_docker_available()
     pull_image(image)
 
-    container_id = start_container(image=image, port=port)
+    container_id = start_container(image=image, port=port, pluto_uri=pluto_uri)
     try:
         _wait_for_api(port=port)
 
