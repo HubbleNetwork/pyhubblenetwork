@@ -2860,8 +2860,8 @@ def sat_scan(
     # Fail fast: verify Docker is available before printing anything.
     try:
         sat_mod.ensure_docker_available()
-    except sat_mod.DockerError:
-        msg = _docker_err_msg()
+    except sat_mod.DockerError as exc:
+        msg = str(exc) or _docker_err_msg()
         if printer.suppress_info_messages:
             click.echo(json.dumps({"error": msg}))
         else:
@@ -2892,9 +2892,9 @@ def sat_scan(
             printer.print_row(pkt)
             if count is not None and printer.packet_count >= count:
                 break
-    except sat_mod.DockerError:
+    except sat_mod.DockerError as exc:
         error_occurred = True
-        msg = _docker_err_msg()
+        msg = str(exc) or _docker_err_msg()
         if printer.suppress_info_messages:
             click.echo(json.dumps({"error": msg}))
         else:

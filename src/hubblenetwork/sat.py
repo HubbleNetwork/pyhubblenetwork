@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Generator, List, Optional, Set, Tuple
 
 import httpx
@@ -37,10 +38,21 @@ def _packets_url(port: int = API_PORT) -> str:
 # ---------------------------------------------------------------------------
 
 
+_DOCKER_DESKTOP_SOCKETS = [
+    Path.home() / ".docker/run/docker.sock",
+    Path.home() / "Library/Containers/com.docker.docker/Data/docker-cli.sock",
+]
+
+
 def _get_client():
     """Return a Docker client from the environment.
 
-    Raises ``DockerError`` if the Docker SDK is not installed.
+    Tries ``docker.from_env()`` first (which honours ``DOCKER_HOST`` and the
+    default ``/var/run/docker.sock``).  If that fails, probes well-known
+    Docker Desktop socket paths on macOS before giving up.
+
+    Raises ``DockerError`` if the Docker SDK is not installed or no
+    reachable daemon is found.
     """
     try:
         import docker
@@ -52,7 +64,24 @@ def _get_client():
     try:
         return docker.from_env()
     except docker.errors.DockerException:
-        raise DockerError("Docker is not available")
+        pass
+
+    # Fallback: try known Docker Desktop socket paths.
+    for sock in _DOCKER_DESKTOP_SOCKETS:
+        if sock.exists():
+            try:
+                client = docker.DockerClient(base_url=f"unix://{sock}")
+                client.ping()
+                return client
+            except Exception:
+                continue
+
+    raise DockerError(
+        "Docker is not available. If Docker Desktop is running, enable "
+        "'Allow the default Docker socket to be used' in Docker Desktop "
+        "settings, or set the DOCKER_HOST environment variable "
+        "(e.g. export DOCKER_HOST=unix://$HOME/.docker/run/docker.sock)."
+    )
 
 
 def ensure_docker_available() -> None:
@@ -140,7 +169,7 @@ def _parse_jsonl(text: str) -> List[SatellitePacket]:
             continue
         try:
             obj = json.loads(line)
-            payload_b64 = obj.get("payload", "")
+            payload_b64 = obj.get("payload_b64", "")
             payload = base64.b64decode(payload_b64) if payload_b64 else b""
             packets.append(
                 SatellitePacket(

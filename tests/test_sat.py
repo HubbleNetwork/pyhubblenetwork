@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -65,10 +66,10 @@ _PAYLOAD_B64 = base64.b64encode(b"\xde\xad\xbe\xef").decode()
 SAMPLE_JSONL = (
     '{"device_id": "0xBB2973BD", "seq_num": 153, "device_type": "silabs", '
     '"timestamp": 1774289859.339, "rssi_dB": -42.3, "channel_num": 2, '
-    f'"freq_offset_hz": 21654.5, "payload": "{_PAYLOAD_B64}"}}\n'
+    f'"freq_offset_hz": 21654.5, "payload_b64": "{_PAYLOAD_B64}"}}\n'
     '{"device_id": "0xBB2973BD", "seq_num": 154, "device_type": "silabs", '
     '"timestamp": 1774289863.860, "rssi_dB": -42.9, "channel_num": 15, '
-    f'"freq_offset_hz": 21588.0, "payload": "{_PAYLOAD_B64}"}}\n'
+    f'"freq_offset_hz": 21588.0, "payload_b64": "{_PAYLOAD_B64}"}}\n'
 )
 
 
@@ -134,6 +135,96 @@ class TestPacketKey:
 # ---------------------------------------------------------------------------
 # Docker helpers
 # ---------------------------------------------------------------------------
+
+
+class TestGetClient:
+    @patch("docker.from_env")
+    def test_from_env_succeeds(self, mock_from_env):
+        mock_client = MagicMock()
+        mock_from_env.return_value = mock_client
+        assert sat._get_client() is mock_client
+
+    @patch("hubblenetwork.sat._DOCKER_DESKTOP_SOCKETS", [])
+    @patch("docker.from_env")
+    def test_from_env_fails_no_fallbacks(self, mock_from_env):
+        import docker
+
+        mock_from_env.side_effect = docker.errors.DockerException("no sock")
+        with pytest.raises(DockerError, match="Docker is not available"):
+            sat._get_client()
+
+    @patch("docker.DockerClient")
+    @patch("docker.from_env")
+    def test_fallback_to_desktop_socket(self, mock_from_env, mock_client_cls, tmp_path):
+        import docker
+
+        mock_from_env.side_effect = docker.errors.DockerException("no sock")
+
+        # Create a fake socket file so the path.exists() check passes.
+        fake_sock = tmp_path / "docker.sock"
+        fake_sock.touch()
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        with patch("hubblenetwork.sat._DOCKER_DESKTOP_SOCKETS", [fake_sock]):
+            result = sat._get_client()
+
+        mock_client_cls.assert_called_once_with(base_url=f"unix://{fake_sock}")
+        mock_client.ping.assert_called_once()
+        assert result is mock_client
+
+    @patch("docker.DockerClient")
+    @patch("docker.from_env")
+    def test_fallback_skips_nonexistent_sockets(
+        self, mock_from_env, mock_client_cls, tmp_path
+    ):
+        import docker
+
+        mock_from_env.side_effect = docker.errors.DockerException("no sock")
+
+        missing = tmp_path / "missing.sock"
+        existing = tmp_path / "docker.sock"
+        existing.touch()
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        with patch(
+            "hubblenetwork.sat._DOCKER_DESKTOP_SOCKETS", [missing, existing]
+        ):
+            result = sat._get_client()
+
+        # Only the existing socket should be tried.
+        mock_client_cls.assert_called_once_with(base_url=f"unix://{existing}")
+        assert result is mock_client
+
+    @patch("docker.DockerClient")
+    @patch("docker.from_env")
+    def test_fallback_skips_socket_that_fails_ping(
+        self, mock_from_env, mock_client_cls, tmp_path
+    ):
+        import docker
+
+        mock_from_env.side_effect = docker.errors.DockerException("no sock")
+
+        bad_sock = tmp_path / "bad.sock"
+        bad_sock.touch()
+        good_sock = tmp_path / "good.sock"
+        good_sock.touch()
+
+        bad_client = MagicMock()
+        bad_client.ping.side_effect = Exception("connection refused")
+        good_client = MagicMock()
+
+        mock_client_cls.side_effect = [bad_client, good_client]
+
+        with patch(
+            "hubblenetwork.sat._DOCKER_DESKTOP_SOCKETS", [bad_sock, good_sock]
+        ):
+            result = sat._get_client()
+
+        assert result is good_client
 
 
 class TestDockerHelpers:
@@ -254,4 +345,4 @@ class TestSatScanCli:
 
         result = runner.invoke(cli, ["sat", "scan", "--timeout", "1"])
         assert result.exit_code != 0
-        assert "Docker" in result.output
+        assert "Docker is not installed" in result.output
