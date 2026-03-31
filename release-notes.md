@@ -1,5 +1,10 @@
 # Release Notes
 
+## [0.6.2] - 2026-03-31
+
+### Fixed
+- fix(sat): improve Docker error reporting, socket fallback, and payload field name
+
 ## [0.6.1] - 2026-03-27
 
 ### Maintenance
