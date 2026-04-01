@@ -1,5 +1,13 @@
 # Release Notes
 
+## [0.6.3] - 2026-04-01
+
+### Added
+- feat(sat): add mock-scan command for testing without hardware
+
+### Tests
+- test(sat): add GitHub Action and integration tests for mock scanning
+
 ## [0.6.2] - 2026-03-31
 
 ### Fixed
