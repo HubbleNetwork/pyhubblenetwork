@@ -42,8 +42,8 @@ jobs:
       - name: Lint
         run: ruff check src
 
-      - name: Run unit tests (exclude integration and BLE)
-        run: pytest -m "not integration and not ble" -v --tb=short
+      - name: Run unit tests (exclude integration, BLE, and Docker)
+        run: pytest -m "not integration and not ble and not docker" -v --tb=short
 
       - name: Build sdist and wheel
         run: |

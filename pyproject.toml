@@ -49,6 +49,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
   "ble: tests that require BLE hardware/permissions",
+  "docker: tests that require a running Docker daemon",
   "integration: slow or environment-dependent tests",
 ]
 
