@@ -2803,6 +2803,7 @@ def _run_sat_scan(
     output_format: str,
     poll_interval: float,
     payload_format: str,
+    debug: bool = False,
 ) -> None:
     """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
     mode_label = "mock satellite receiver" if mock else "satellite receiver"
@@ -2811,6 +2812,11 @@ def _run_sat_scan(
         output_format.lower(), _SatStreamingTablePrinter
     )
     printer = printer_class(payload_format=payload_format)
+
+    if debug:
+        sat_logger = logging.getLogger("hubblenetwork.sat")
+        sat_logger.setLevel(logging.DEBUG)
+        sat_logger.addHandler(_handler)
 
     # Fail fast: verify Docker is available before printing anything.
     try:
@@ -2828,6 +2834,10 @@ def _run_sat_scan(
             f"[INFO] Starting {mode_label}... (Press Ctrl+C to stop)"
         )
 
+    def _on_status(msg: str) -> None:
+        if not printer.suppress_info_messages:
+            click.secho(f"[INFO] {msg}", fg="cyan", err=True)
+
     _stop_msg_shown = [False]
 
     def _on_interrupt(sig, frame):
@@ -2842,7 +2852,8 @@ def _run_sat_scan(
     error_occurred = False
     try:
         for pkt in sat_mod.scan(
-            timeout=timeout, poll_interval=poll_interval, mock=mock
+            timeout=timeout, poll_interval=poll_interval, mock=mock,
+            on_status=_on_status,
         ):
             printer.print_row(pkt)
             if count is not None and printer.packet_count >= count:
@@ -2894,6 +2905,8 @@ def _sat_scan_options(fn):
                                        case_sensitive=False),
                      default="base64", show_default=True,
                      help="Encoding format for packet payload"),
+        click.option("--debug", is_flag=True, default=False,
+                     help="Enable debug logging to stderr"),
     ]):
         fn = decorator(fn)
     return fn
@@ -2901,13 +2914,7 @@ def _sat_scan_options(fn):
 
 @sat.command("scan")
 @_sat_scan_options
-def sat_scan(
-    timeout: Optional[int] = None,
-    count: Optional[int] = None,
-    output_format: str = "tabular",
-    poll_interval: float = 2.0,
-    payload_format: str = "base64",
-) -> None:
+def sat_scan(**kwargs) -> None:
     """
     Start the satellite receiver and stream decoded packets.
 
@@ -2918,25 +2925,12 @@ def sat_scan(
       hubblenetwork sat scan -o json --timeout 10
       hubblenetwork sat scan -n 5
     """
-    _run_sat_scan(
-        mock=False,
-        timeout=timeout,
-        count=count,
-        output_format=output_format,
-        poll_interval=poll_interval,
-        payload_format=payload_format,
-    )
+    _run_sat_scan(mock=False, **kwargs)
 
 
 @sat.command("mock-scan")
 @_sat_scan_options
-def sat_mock_scan(
-    timeout: Optional[int] = None,
-    count: Optional[int] = None,
-    output_format: str = "tabular",
-    poll_interval: float = 2.0,
-    payload_format: str = "base64",
-) -> None:
+def sat_mock_scan(**kwargs) -> None:
     """
     Start the satellite receiver in mock mode and stream synthetic packets.
 
@@ -2947,14 +2941,7 @@ def sat_mock_scan(
       hubblenetwork sat mock-scan --timeout 30
       hubblenetwork sat mock-scan -o json -n 5
     """
-    _run_sat_scan(
-        mock=True,
-        timeout=timeout,
-        count=count,
-        output_format=output_format,
-        poll_interval=poll_interval,
-        payload_format=payload_format,
-    )
+    _run_sat_scan(mock=True, **kwargs)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

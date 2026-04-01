@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Set, Tuple
+from typing import Callable, Dict, Generator, List, Optional, Set, Tuple
 
 import httpx
 
@@ -222,6 +222,7 @@ def scan(
     image: str = DOCKER_IMAGE,
     *,
     mock: bool = False,
+    on_status: Optional[Callable[[str], None]] = None,
 ) -> Generator[SatellitePacket, None, None]:
     """Scan for satellite packets, managing the Docker container lifecycle.
 
@@ -232,10 +233,18 @@ def scan(
     When *mock* is ``True`` the container is started in mock mode
     (``SDR_TYPE=mock``) which emits synthetic packets without requiring
     PlutoSDR hardware.
+
+    *on_status*, when provided, is called with a human-readable message
+    at each lifecycle step (pull, start, wait, ready).
     """
+    _emit = on_status or (lambda _msg: None)
+
     ensure_docker_available()
+
+    _emit("Pulling Docker image...")
     pull_image(image)
 
+    _emit("Starting container...")
     container_name = MOCK_CONTAINER_NAME if mock else CONTAINER_NAME
     environment: Optional[Dict[str, str]] = {"SDR_TYPE": "mock"} if mock else None
 
@@ -247,7 +256,9 @@ def scan(
         name=container_name,
     )
     try:
+        _emit("Waiting for receiver API to be ready...")
         _wait_for_api(port=port)
+        _emit("Receiver ready, listening for packets...")
 
         seen: Set[Tuple[str, int]] = set()
         start = time.monotonic()
