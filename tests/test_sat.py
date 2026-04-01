@@ -256,6 +256,90 @@ class TestDockerHelpers:
             sat.pull_image("test:latest")
 
 
+class TestStartContainer:
+    @patch("hubblenetwork.sat._get_client")
+    def test_default_privileged(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_container.id = "abc123"
+        mock_client.containers.run.return_value = mock_container
+        mock_get_client.return_value = mock_client
+
+        result = sat.start_container("test:latest", 8050)
+        call_kwargs = mock_client.containers.run.call_args[1]
+        assert call_kwargs["privileged"] is True
+        assert call_kwargs["name"] == sat.CONTAINER_NAME
+        assert result == "abc123"
+
+    @patch("hubblenetwork.sat._get_client")
+    def test_mock_mode_params(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_container = MagicMock()
+        mock_container.id = "mock123"
+        mock_client.containers.run.return_value = mock_container
+        mock_get_client.return_value = mock_client
+
+        result = sat.start_container(
+            "test:latest",
+            8050,
+            environment={"SDR_TYPE": "mock"},
+            privileged=False,
+            name=sat.MOCK_CONTAINER_NAME,
+        )
+        call_kwargs = mock_client.containers.run.call_args[1]
+        assert call_kwargs["privileged"] is False
+        assert call_kwargs["environment"] == {"SDR_TYPE": "mock"}
+        assert call_kwargs["name"] == "hubble-pluto-sdr-mock"
+        assert result == "mock123"
+
+
+class TestScanMockMode:
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat.fetch_packets")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_scan_mock_passes_correct_params(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_fetch, mock_stop
+    ):
+        mock_start.return_value = "container123"
+        mock_fetch.return_value = []
+
+        list(sat.scan(timeout=0.1, mock=True))
+
+        mock_start.assert_called_once_with(
+            image=sat.DOCKER_IMAGE,
+            port=sat.API_PORT,
+            environment={"SDR_TYPE": "mock"},
+            privileged=False,
+            name=sat.MOCK_CONTAINER_NAME,
+        )
+        mock_stop.assert_called_once_with("container123")
+
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat.fetch_packets")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_scan_real_passes_correct_params(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_fetch, mock_stop
+    ):
+        mock_start.return_value = "container456"
+        mock_fetch.return_value = []
+
+        list(sat.scan(timeout=0.1, mock=False))
+
+        mock_start.assert_called_once_with(
+            image=sat.DOCKER_IMAGE,
+            port=sat.API_PORT,
+            environment=None,
+            privileged=True,
+            name=sat.CONTAINER_NAME,
+        )
+
+
 # ---------------------------------------------------------------------------
 # CLI - sat scan
 # ---------------------------------------------------------------------------
@@ -344,5 +428,81 @@ class TestSatScanCli:
         mock_sat.SatelliteError = SatelliteError
 
         result = runner.invoke(cli, ["sat", "scan", "--timeout", "1"])
+        assert result.exit_code != 0
+        assert "Docker is not installed" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI - sat mock-scan
+# ---------------------------------------------------------------------------
+
+
+class TestSatMockScanCli:
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_help(self, runner):
+        result = runner.invoke(cli, ["sat", "mock-scan", "--help"])
+        assert result.exit_code == 0
+        assert "--timeout" in result.output
+        assert "--count" in result.output
+        assert "--format" in result.output
+        assert "mock" in result.output.lower()
+
+    def test_listed_in_sat_help(self, runner):
+        result = runner.invoke(cli, ["sat", "--help"])
+        assert result.exit_code == 0
+        assert "mock-scan" in result.output
+
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_mock_scan_tabular_output(self, mock_sat, runner):
+        mock_sat.scan.return_value = iter([_make_sat_pkt()])
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+
+        result = runner.invoke(
+            cli, ["sat", "mock-scan", "--timeout", "1", "--poll-interval", "0.1"]
+        )
+        assert result.exit_code == 0
+        assert "0xBB2973BD" in result.output
+        # Verify mock=True was passed
+        mock_sat.scan.assert_called_once()
+        assert mock_sat.scan.call_args[1].get("mock") is True
+
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_mock_scan_json_output(self, mock_sat, runner):
+        mock_sat.scan.return_value = iter([_make_sat_pkt()])
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+
+        result = runner.invoke(
+            cli,
+            ["sat", "mock-scan", "-o", "json", "--timeout", "1", "--poll-interval", "0.1"],
+        )
+        assert result.exit_code == 0
+        assert "0xBB2973BD" in result.output
+
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_mock_scan_count_limit(self, mock_sat, runner):
+        pkts = [_make_sat_pkt(seq_num=i) for i in range(10)]
+        mock_sat.scan.return_value = iter(pkts)
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+
+        result = runner.invoke(
+            cli,
+            ["sat", "mock-scan", "-n", "3", "--timeout", "5", "--poll-interval", "0.1"],
+        )
+        assert result.exit_code == 0
+        assert "3 packet(s) received" in result.output
+
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_docker_not_available(self, mock_sat, runner):
+        mock_sat.scan.side_effect = DockerError("Docker is not installed")
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+
+        result = runner.invoke(cli, ["sat", "mock-scan", "--timeout", "1"])
         assert result.exit_code != 0
         assert "Docker is not installed" in result.output

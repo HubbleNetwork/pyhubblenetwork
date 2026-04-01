@@ -2795,63 +2795,18 @@ def sat() -> None:
     """Satellite (PlutoSDR) utilities."""
 
 
-@sat.command("scan")
-@click.option(
-    "--timeout",
-    "-t",
-    type=int,
-    show_default=False,
-    help="Timeout in seconds (default: no timeout)",
-)
-@click.option(
-    "--count",
-    "-n",
-    type=int,
-    default=None,
-    show_default=False,
-    help="Stop after receiving N packets",
-)
-@click.option(
-    "--format",
-    "-o",
-    "output_format",
-    type=click.Choice(["tabular", "json"], case_sensitive=False),
-    default="tabular",
-    show_default=True,
-    help="Output format for packets",
-)
-@click.option(
-    "--poll-interval",
-    type=float,
-    default=2.0,
-    show_default=True,
-    help="Seconds between API polls",
-)
-@click.option(
-    "--payload-format",
-    "payload_format",
-    type=click.Choice(["base64", "hex", "string"], case_sensitive=False),
-    default="base64",
-    show_default=True,
-    help="Encoding format for packet payload",
-)
-def sat_scan(
-    timeout: Optional[int] = None,
-    count: Optional[int] = None,
-    output_format: str = "tabular",
-    poll_interval: float = 2.0,
-    payload_format: str = "base64",
+def _run_sat_scan(
+    *,
+    mock: bool,
+    timeout: Optional[int],
+    count: Optional[int],
+    output_format: str,
+    poll_interval: float,
+    payload_format: str,
 ) -> None:
-    """
-    Start the satellite receiver and stream decoded packets.
+    """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
+    mode_label = "mock satellite receiver" if mock else "satellite receiver"
 
-    Requires Docker and a PlutoSDR device connected via USB.
-
-    Example:
-      hubblenetwork sat scan --timeout 30
-      hubblenetwork sat scan -o json --timeout 10
-      hubblenetwork sat scan -n 5
-    """
     printer_class = _SAT_STREAMING_PRINTERS.get(
         output_format.lower(), _SatStreamingTablePrinter
     )
@@ -2870,7 +2825,7 @@ def sat_scan(
 
     if not printer.suppress_info_messages:
         click.secho(
-            "[INFO] Starting satellite receiver... (Press Ctrl+C to stop)"
+            f"[INFO] Starting {mode_label}... (Press Ctrl+C to stop)"
         )
 
     _stop_msg_shown = [False]
@@ -2878,7 +2833,7 @@ def sat_scan(
     def _on_interrupt(sig, frame):
         if not _stop_msg_shown[0] and not printer.suppress_info_messages:
             click.secho(
-                "\n[INFO] Stopping satellite receiver...", fg="yellow", err=True
+                f"\n[INFO] Stopping {mode_label}...", fg="yellow", err=True
             )
             _stop_msg_shown[0] = True
         raise KeyboardInterrupt()
@@ -2887,7 +2842,7 @@ def sat_scan(
     error_occurred = False
     try:
         for pkt in sat_mod.scan(
-            timeout=timeout, poll_interval=poll_interval
+            timeout=timeout, poll_interval=poll_interval, mock=mock
         ):
             printer.print_row(pkt)
             if count is not None and printer.packet_count >= count:
@@ -2919,6 +2874,87 @@ def sat_scan(
                 f"[INFO] Scanning stopped. {printer.packet_count} packet(s) received.",
                 fg="yellow",
             )
+
+
+def _sat_scan_options(fn):
+    """Apply the common sat scan/mock-scan Click options."""
+    for decorator in reversed([
+        click.option("--timeout", "-t", type=int, show_default=False,
+                     help="Timeout in seconds (default: no timeout)"),
+        click.option("--count", "-n", type=int, default=None,
+                     show_default=False, help="Stop after receiving N packets"),
+        click.option("--format", "-o", "output_format",
+                     type=click.Choice(["tabular", "json"], case_sensitive=False),
+                     default="tabular", show_default=True,
+                     help="Output format for packets"),
+        click.option("--poll-interval", type=float, default=2.0,
+                     show_default=True, help="Seconds between API polls"),
+        click.option("--payload-format", "payload_format",
+                     type=click.Choice(["base64", "hex", "string"],
+                                       case_sensitive=False),
+                     default="base64", show_default=True,
+                     help="Encoding format for packet payload"),
+    ]):
+        fn = decorator(fn)
+    return fn
+
+
+@sat.command("scan")
+@_sat_scan_options
+def sat_scan(
+    timeout: Optional[int] = None,
+    count: Optional[int] = None,
+    output_format: str = "tabular",
+    poll_interval: float = 2.0,
+    payload_format: str = "base64",
+) -> None:
+    """
+    Start the satellite receiver and stream decoded packets.
+
+    Requires Docker and a PlutoSDR device connected via USB.
+
+    Example:
+      hubblenetwork sat scan --timeout 30
+      hubblenetwork sat scan -o json --timeout 10
+      hubblenetwork sat scan -n 5
+    """
+    _run_sat_scan(
+        mock=False,
+        timeout=timeout,
+        count=count,
+        output_format=output_format,
+        poll_interval=poll_interval,
+        payload_format=payload_format,
+    )
+
+
+@sat.command("mock-scan")
+@_sat_scan_options
+def sat_mock_scan(
+    timeout: Optional[int] = None,
+    count: Optional[int] = None,
+    output_format: str = "tabular",
+    poll_interval: float = 2.0,
+    payload_format: str = "base64",
+) -> None:
+    """
+    Start the satellite receiver in mock mode and stream synthetic packets.
+
+    Uses simulated data -- no PlutoSDR hardware required. Useful for testing
+    the satellite scanning interface.
+
+    Example:
+      hubblenetwork sat mock-scan --timeout 30
+      hubblenetwork sat mock-scan -o json -n 5
+    """
+    _run_sat_scan(
+        mock=True,
+        timeout=timeout,
+        count=count,
+        output_format=output_format,
+        poll_interval=poll_interval,
+        payload_format=payload_format,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:

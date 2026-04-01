@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Generator, List, Optional, Set, Tuple
+from typing import Dict, Generator, List, Optional, Set, Tuple
 
 import httpx
 
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 DOCKER_IMAGE = "ghcr.io/hubblenetwork/sdr-docker:latest"
 CONTAINER_NAME = "hubble-pluto-sdr"
+MOCK_CONTAINER_NAME = "hubble-pluto-sdr-mock"
 API_PORT = 8050
 _CONTAINER_INTERNAL_PORT = 8050  # fixed by the Docker image
 
@@ -106,6 +107,10 @@ def pull_image(image: str = DOCKER_IMAGE) -> None:
 def start_container(
     image: str = DOCKER_IMAGE,
     port: int = API_PORT,
+    *,
+    environment: Optional[Dict[str, str]] = None,
+    privileged: bool = True,
+    name: str = CONTAINER_NAME,
 ) -> str:
     """Start the PlutoSDR container and return the container ID.
 
@@ -119,8 +124,9 @@ def start_container(
             detach=True,
             auto_remove=True,
             ports={f"{_CONTAINER_INTERNAL_PORT}/tcp": port},
-            name=CONTAINER_NAME,
-            privileged=True,
+            name=name,
+            privileged=privileged,
+            environment=environment or {},
         )
         logger.debug("Started container %s", container.short_id)
         return container.id
@@ -214,17 +220,32 @@ def scan(
     poll_interval: float = 2.0,
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
+    *,
+    mock: bool = False,
 ) -> Generator[SatellitePacket, None, None]:
     """Scan for satellite packets, managing the Docker container lifecycle.
 
     Yields new ``SatellitePacket`` objects as they are discovered.  The
     container is guaranteed to be stopped when the generator is closed or
     an exception occurs.
+
+    When *mock* is ``True`` the container is started in mock mode
+    (``SDR_TYPE=mock``) which emits synthetic packets without requiring
+    PlutoSDR hardware.
     """
     ensure_docker_available()
     pull_image(image)
 
-    container_id = start_container(image=image, port=port)
+    container_name = MOCK_CONTAINER_NAME if mock else CONTAINER_NAME
+    environment: Optional[Dict[str, str]] = {"SDR_TYPE": "mock"} if mock else None
+
+    container_id = start_container(
+        image=image,
+        port=port,
+        environment=environment,
+        privileged=not mock,
+        name=container_name,
+    )
     try:
         _wait_for_api(port=port)
 
