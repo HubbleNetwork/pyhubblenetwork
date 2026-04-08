@@ -79,18 +79,7 @@ class TestProdEnvironment:
         assert len(result["devices"]) > 0
         assert result["devices"][0]["device_id"]
 
-    def test_register_device_with_device_uptime_and_pool_size(self, credentials, env):
-        result = register_device(
-            credentials=credentials,
-            env=env,
-            counter_source="DEVICE_UPTIME",
-            pool_size=64,
-        )
-        assert "devices" in result
-        assert len(result["devices"]) > 0
-        assert result["devices"][0]["device_id"]
-
-    def test_register_device_with_device_uptime_default_pool_size(self, credentials, env):
+    def test_register_device_with_device_uptime(self, credentials, env):
         result = register_device(
             credentials=credentials, env=env, counter_source="DEVICE_UPTIME"
         )
@@ -168,18 +157,7 @@ class TestTestingEnvironment:
         assert len(result["devices"]) > 0
         assert result["devices"][0]["device_id"]
 
-    def test_register_device_with_device_uptime_and_pool_size(self, credentials, env):
-        result = register_device(
-            credentials=credentials,
-            env=env,
-            counter_source="DEVICE_UPTIME",
-            pool_size=64,
-        )
-        assert "devices" in result
-        assert len(result["devices"]) > 0
-        assert result["devices"][0]["device_id"]
-
-    def test_register_device_with_device_uptime_default_pool_size(self, credentials, env):
+    def test_register_device_with_device_uptime(self, credentials, env):
         result = register_device(
             credentials=credentials, env=env, counter_source="DEVICE_UPTIME"
         )
@@ -216,16 +194,3 @@ class TestEidRotationValidation:
     def test_invalid_counter_source_raises(self, org):
         with pytest.raises(ValidationError, match="counter_source"):
             org.register_device(counter_source="INVALID_SOURCE")
-
-    def test_pool_size_without_counter_source_raises(self, org):
-        with pytest.raises(ValidationError, match="pool_size"):
-            org.register_device(pool_size=64)
-
-    def test_pool_size_with_epoch_time_raises(self, org):
-        """pool_size is only valid with DEVICE_UPTIME, not EPOCH_TIME."""
-        with pytest.raises(ValidationError, match="pool_size"):
-            org.register_device(counter_source="EPOCH_TIME", pool_size=64)
-
-    def test_invalid_pool_size_value_raises(self, org):
-        with pytest.raises(ValidationError, match="pool_size"):
-            org.register_device(counter_source="DEVICE_UPTIME", pool_size=99)

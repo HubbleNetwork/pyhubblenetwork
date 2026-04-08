@@ -78,16 +78,16 @@ def decrypt(
     key: bytes,
     encrypted_pkt: EncryptedPacket,
     days: int = 2,
-    eid_pool_size: Optional[int] = None,
+    counter_mode: bool = False,
 ) -> Optional[DecryptedPacket]:
-    if eid_pool_size is not None and days != 2:
-        raise ValueError("Cannot specify both eid_pool_size and days")
+    if counter_mode and days != 2:
+        raise ValueError("Cannot specify both counter_mode and days")
 
     parsed = ParsedPacket(encrypted_pkt)
     keylen = len(key)
 
-    if eid_pool_size is not None:
-        candidates = range(eid_pool_size)
+    if counter_mode:
+        candidates = range(128)
     else:
         time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
         candidates = (time_counter + t for t in range(-days, days + 1))

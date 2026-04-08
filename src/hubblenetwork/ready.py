@@ -519,7 +519,6 @@ def write_key(address: str, key: bytes, timeout: float = 30.0) -> WriteResult:
 async def _write_config_async(
     address: str,
     eid_type: str,
-    pool_size: int,
     rotation_period: int = 0,
     timeout: float = 30.0
 ) -> WriteResult:
@@ -529,7 +528,6 @@ async def _write_config_async(
         BleError,
         extract_att_error_code,
         ATT_INVALID_EID_TYPE,
-        ATT_INVALID_POOL_SIZE,
         ATT_INVALID_ROTATION_PERIOD,
     )
     from bleak.exc import BleakError as BleBleakError
@@ -548,20 +546,8 @@ async def _write_config_async(
             duration_ms=duration_ms,
         )
 
-    # Validate pool size for counter mode
-    if eid_type_lower == "counter":
-        if pool_size < 1 or pool_size > 65535:
-            duration_ms = int((time.monotonic() - start_time) * 1000)
-            return WriteResult(
-                success=False,
-                characteristic_name="Device Configuration",
-                error_code=ATT_INVALID_POOL_SIZE,
-                error_message=f"Invalid pool size: {pool_size}. Must be between 1 and 65535 for counter mode",
-                duration_ms=duration_ms,
-            )
-    else:
-        # UTC mode should have pool_size = 0
-        pool_size = 0
+    # Pool size is fixed at 128 for counter mode, 0 for UTC mode
+    pool_size = 128 if eid_type_lower == "counter" else 0
 
     # Validate rotation period (should be 0)
     if rotation_period != 0:
@@ -603,19 +589,17 @@ async def _write_config_async(
 def write_config(
     address: str,
     eid_type: str,
-    pool_size: int,
     rotation_period: int = 0,
     timeout: float = 30.0
 ) -> WriteResult:
     """
-    Write device configuration (EID type, pool size, rotation period) to a Hubble Ready device.
+    Write device configuration (EID type, rotation period) to a Hubble Ready device.
 
-    This function validates the configuration parameters locally before writing.
+    Pool size is fixed at 128 for counter mode and 0 for UTC mode.
 
     Args:
         address: BLE address of the device
         eid_type: EID type ("utc" or "counter")
-        pool_size: Pool size for counter mode (1-65535). Ignored for UTC mode.
         rotation_period: Rotation period in seconds (must be 0, default: 0)
         timeout: Connection timeout in seconds (default: 30.0)
 
@@ -626,7 +610,7 @@ def write_config(
         BleError: If connection fails or GATT operation fails
     """
     try:
-        return asyncio.run(_write_config_async(address, eid_type, pool_size, rotation_period, timeout))
+        return asyncio.run(_write_config_async(address, eid_type, rotation_period, timeout))
     except RuntimeError:
         try:
             loop = asyncio.get_running_loop()
@@ -634,7 +618,7 @@ def write_config(
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                return loop.run_until_complete(_write_config_async(address, eid_type, pool_size, rotation_period, timeout))
+                return loop.run_until_complete(_write_config_async(address, eid_type, rotation_period, timeout))
             finally:
                 loop.close()
         raise RuntimeError(

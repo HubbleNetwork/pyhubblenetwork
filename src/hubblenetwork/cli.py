@@ -18,7 +18,7 @@ from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
 from hubblenetwork.packets import SatellitePacket
-from hubblenetwork.org import _VALID_COUNTER_SOURCES, _VALID_POOL_SIZES
+from hubblenetwork.org import _VALID_COUNTER_SOURCES
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
@@ -61,7 +61,6 @@ def _get_pkt_from_be_with_timestamp(org, device, timestamp):
 def _detect_eid_type(
     key: bytes,
     pkts: List[EncryptedPacket],
-    pool_size: int,
 ) -> tuple[Optional[EncryptedPacket], Optional[DecryptedPacket], Optional[str], bool]:
     epoch_pkt = None
     epoch_dec = None
@@ -74,7 +73,7 @@ def _detect_eid_type(
                 epoch_pkt = pkt
                 epoch_dec = result
         if counter_pkt is None:
-            result = decrypt(key, pkt, eid_pool_size=pool_size)
+            result = decrypt(key, pkt, counter_mode=True)
             if result:
                 counter_pkt = pkt
                 counter_dec = result
@@ -628,10 +627,10 @@ def ble() -> None:
     help="Number of days to check back when decrypting",
 )
 @click.option(
-    "--eid-pool-size",
-    type=int,
-    default=None,
-    help="Use counter-based EID with given pool size (0..N-1) instead of UTC-based",
+    "--counter-mode",
+    is_flag=True,
+    default=False,
+    help="Use counter-based EID (pool size 128) instead of UTC-based",
 )
 @click.option(
     "--format",
@@ -662,7 +661,7 @@ def ble_detect(
     timeout: Optional[int] = None,
     key: str = None,
     days: int = 2,
-    eid_pool_size: Optional[int] = None,
+    counter_mode: bool = False,
     output_format: str = "tabular",
     payload_format: str = "base64",
     debug: bool = False,
@@ -679,12 +678,12 @@ def ble_detect(
     """
     use_json = output_format.lower() == "json"
 
-    # Validate --eid-pool-size and --days mutual exclusivity
-    if eid_pool_size is not None:
+    # Validate --counter-mode and --days mutual exclusivity
+    if counter_mode:
         days_source = ctx.get_parameter_source("days")
         if days_source == click.core.ParameterSource.COMMANDLINE:
             raise click.UsageError(
-                "--eid-pool-size and --days are mutually exclusive"
+                "--counter-mode and --days are mutually exclusive"
             )
 
     # Set log level based on debug flag
@@ -737,7 +736,7 @@ def ble_detect(
 
         # Attempt to decrypt the packet
         decrypted_pkt = decrypt(
-            decoded_key, pkt, days=days, eid_pool_size=eid_pool_size
+            decoded_key, pkt, days=days, counter_mode=counter_mode
         )
 
         if decrypted_pkt:
@@ -807,10 +806,10 @@ def ble_detect(
     help="Number of days to check back when decrypting",
 )
 @click.option(
-    "--eid-pool-size",
-    type=int,
-    default=None,
-    help="Use counter-based EID with given pool size (0..N-1) instead of UTC-based",
+    "--counter-mode",
+    is_flag=True,
+    default=False,
+    help="Use counter-based EID (pool size 128) instead of UTC-based",
 )
 @click.option("--ingest", is_flag=True, help="Ingest packets to backend (requires key)")
 @click.option(
@@ -838,7 +837,7 @@ def ble_scan(
     ingest: bool = False,
     key: Optional[str] = None,
     days: int = 2,
-    eid_pool_size: Optional[int] = None,
+    counter_mode: bool = False,
     output_format: str = "tabular",
     payload_format: str = "base64",
 ) -> None:
@@ -851,14 +850,14 @@ def ble_scan(
       hubblenetwork ble scan -o json --timeout 10
       hubblenetwork ble scan -n 5              # Stop after 5 packets
     """
-    # Validate --eid-pool-size constraints
-    if eid_pool_size is not None:
+    # Validate --counter-mode constraints
+    if counter_mode:
         if not key:
-            raise click.UsageError("--eid-pool-size requires --key")
+            raise click.UsageError("--counter-mode requires --key")
         days_source = ctx.get_parameter_source("days")
         if days_source == click.core.ParameterSource.COMMANDLINE:
             raise click.UsageError(
-                "--eid-pool-size and --days are mutually exclusive"
+                "--counter-mode and --days are mutually exclusive"
             )
 
     # Get the appropriate streaming printer
@@ -907,7 +906,7 @@ def ble_scan(
             # If we have a key, attempt to decrypt
             if decoded_key:
                 decrypted_pkt = decrypt(
-                    decoded_key, pkt, days=days, eid_pool_size=eid_pool_size
+                    decoded_key, pkt, days=days, counter_mode=counter_mode
                 )
                 if decrypted_pkt:
                     printer.print_row(decrypted_pkt)
@@ -1090,14 +1089,7 @@ def ble_check_time(
     show_default=True,
     help="BLE scan timeout in seconds",
 )
-@click.option(
-    "--pool-size",
-    type=int,
-    default=1024,
-    show_default=True,
-    help="Pool size for counter-based EID detection. Valid values: 16, 32, 64, 128, 256, 512, 1024.",
-)
-def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int, pool_size: int) -> None:
+def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int) -> None:
     """
     Validate the operation of a Hubble device, including:
 
@@ -1132,11 +1124,6 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
             '\nMust be in standard 8-4-4-4-12 format (removing hyphens accepted).'
             '\nExample UUID: "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"'
             '\n\nIf you are having troubles with your UUID please contact support@hubble.com'
-        )
-    if pool_size not in _VALID_POOL_SIZES:
-        _validate_error(
-            f"Invalid --pool-size value. Must be one of: "
-            f"{', '.join(str(s) for s in sorted(_VALID_POOL_SIZES))}."
         )
     _validate_success()
 
@@ -1187,7 +1174,7 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
 
     # Step 6: Validate encryption and detect EID type
     _validate_info("Validating encryption of received packets")
-    pkt_to_ingest, dec_result, eid_label, _ = _detect_eid_type(decoded_key, pkts, pool_size)
+    pkt_to_ingest, dec_result, eid_label, _ = _detect_eid_type(decoded_key, pkts)
     if not pkt_to_ingest:
         _validate_error(
             'Unable to decrypt packet with given device key.'
@@ -2090,11 +2077,6 @@ def ready_write_key(
     help="EID type: 'utc' for UTC-based or 'counter' for counter-based",
 )
 @click.option(
-    "--pool-size",
-    type=int,
-    help="Pool size for counter mode (1-65535, required for counter mode)",
-)
-@click.option(
     "--timeout",
     "-t",
     type=float,
@@ -2111,15 +2093,17 @@ def ready_write_key(
     show_default=True,
     help="Output format",
 )
-def ready_write_config(address: str, eid_type: str, pool_size: Optional[int], timeout: float, output_format: str):
-    """Write device configuration (EID type, pool size) to a Hubble Ready device.
+def ready_write_config(address: str, eid_type: str, timeout: float, output_format: str):
+    """Write device configuration (EID type) to a Hubble Ready device.
+
+    Pool size is fixed at 128 for counter mode.
 
     This command validates configuration parameters locally and writes them to the
     Device Configuration characteristic.
 
     Examples:
       hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type utc
-      hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type counter --pool-size 100
+      hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type counter
     """
     import time
     import sys
@@ -2128,30 +2112,8 @@ def ready_write_config(address: str, eid_type: str, pool_size: Optional[int], ti
 
     start_time = time.monotonic()
 
-    # Validate that pool_size is provided for counter mode
-    if eid_type.lower() == "counter":
-        if pool_size is None:
-            if output_format == "json":
-                error_obj = {
-                    "success": False,
-                    "command": "write-config",
-                    "device": {"address": address},
-                    "error": {
-                        "code": "ValidationError",
-                        "message": "--pool-size is required for counter mode",
-                    },
-                    "duration_ms": 0,
-                }
-                click.echo(json.dumps(error_obj, indent=2))
-            else:
-                click.echo("Error: --pool-size is required for counter mode", err=True)
-            sys.exit(1)
-    else:
-        # UTC mode - pool_size will be ignored
-        pool_size = 0
-
     try:
-        result = write_config(address, eid_type, pool_size, rotation_period=0, timeout=timeout)
+        result = write_config(address, eid_type, rotation_period=0, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
         if result.success:
@@ -2163,7 +2125,7 @@ def ready_write_config(address: str, eid_type: str, pool_size: Optional[int], ti
                     "rotation_period": 0,
                 }
                 if eid_type.lower() == "counter":
-                    success_result["pool_size"] = pool_size
+                    success_result["pool_size"] = 128
 
                 success_obj = _format_ready_json_success(
                     command="write-config",
@@ -2178,7 +2140,7 @@ def ready_write_config(address: str, eid_type: str, pool_size: Optional[int], ti
                 click.echo(f"  EID type: {eid_type.lower()}")
                 click.echo("  Rotation period: 0 seconds")
                 if eid_type.lower() == "counter":
-                    click.echo(f"  Pool size: {pool_size}")
+                    click.echo("  Pool size: 128")
                 click.echo("")
                 click.echo(f"  Duration: {duration_ms} ms")
             sys.exit(0)
@@ -2595,25 +2557,15 @@ def list_devices(org: Organization) -> None:
     show_default=False,
     help="EID rotation counter source",
 )
-@click.option(
-    "--pool-size",
-    "-p",
-    type=click.Choice([str(x) for x in sorted(_VALID_POOL_SIZES)]),
-    default=None,
-    show_default=False,
-    help="EID rotation pool size (only valid with --counter-source DEVICE_UPTIME, default 128)",
-)
 @pass_orgcfg
-def register_device(org: Organization, encryption, counter_source, pool_size) -> None:
+def register_device(org: Organization, encryption, counter_source) -> None:
     if encryption:
         click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
     if counter_source:
         click.secho(f'[INFO] EID rotation counter source: "{counter_source}"')
-    pool_size_int = int(pool_size) if pool_size else None
     click.secho(str(org.register_device(
         encryption=encryption,
         counter_source=counter_source,
-        pool_size=pool_size_int,
     )))
 
 
