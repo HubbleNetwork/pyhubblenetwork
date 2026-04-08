@@ -62,7 +62,7 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`ready.py`** - Hubble Ready device provisioning (UUID 0xFCA7). Handles GATT connections, characteristic reads/writes, and the full provisioning flow (register with backend, write key/config/time).
 
-- **`crypto.py`** - Local packet decryption. Implements AES-CTR decryption with CMAC-based key derivation (SP800_108_Counter KDF). Supports both AES-256-CTR and AES-128-CTR. `decrypt()` accepts `counter_mode=True` for counter-based EID (fixed pool size 128).
+- **`crypto.py`** - Local packet decryption. Implements AES-CTR decryption with CMAC-based key derivation (SP800_108_Counter KDF). Supports both AES-256-CTR and AES-128-CTR. `decrypt()` accepts `counter_mode` as `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"` (counter-based, fixed pool size 128). Exports `UNIX_TIME` and `DEVICE_UPTIME` constants.
 
 - **`packets.py`** - Data classes: `Location`, `EncryptedPacket`, `DecryptedPacket`.
 
@@ -84,7 +84,7 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **Encryption modes**: Devices support either AES-256-CTR (32-byte key) or AES-128-CTR (16-byte key). Mode is auto-detected from device during provisioning.
 
-- **EID modes**: Two EID rotation modes — EPOCH_TIME (UTC day-based) and DEVICE_UPTIME (counter-based). Counter-based mode uses a fixed pool size of 128. The `decrypt()` function's `counter_mode=True` flag enables counter-based decryption; CLI commands use `--counter-mode`.
+- **EID modes**: Two EID rotation modes — UNIX_TIME (UTC day-based, also known as EPOCH_TIME in the cloud API) and DEVICE_UPTIME (counter-based). Counter-based mode uses a fixed pool size of 128. The `decrypt()` function's `counter_mode` parameter accepts `"UNIX_TIME"` (default) or `"DEVICE_UPTIME"`; CLI commands use `--counter-mode UNIX_TIME|DEVICE_UPTIME`.
 
 - **Satellite scanning requires Docker**: `sat.scan()` pulls and runs a privileged Docker container. Docker daemon must be running. Raises `DockerError` (not `SatelliteError`) if Docker is unavailable. The `docker` Python package is a required (not optional) dependency.
 
