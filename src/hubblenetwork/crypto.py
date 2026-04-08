@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 
 from .packets import EncryptedPacket, DecryptedPacket
 
+UNIX_TIME = "UNIX_TIME"
+DEVICE_UPTIME = "DEVICE_UPTIME"
+_VALID_COUNTER_MODES = {UNIX_TIME, DEVICE_UPTIME}
+
 _HUBBLE_AES_NONCE_SIZE = 12
 _HUBBLE_AES_TAG_SIZE = 4
 
@@ -78,15 +82,20 @@ def decrypt(
     key: bytes,
     encrypted_pkt: EncryptedPacket,
     days: int = 2,
-    counter_mode: bool = False,
+    counter_mode: str = UNIX_TIME,
 ) -> Optional[DecryptedPacket]:
-    if counter_mode and days != 2:
-        raise ValueError("Cannot specify both counter_mode and days")
+    counter_mode = counter_mode.upper()
+    if counter_mode not in _VALID_COUNTER_MODES:
+        raise ValueError(
+            f"counter_mode must be one of {sorted(_VALID_COUNTER_MODES)}, got {counter_mode!r}"
+        )
+    if counter_mode == DEVICE_UPTIME and days != 2:
+        raise ValueError("Cannot specify both counter_mode=DEVICE_UPTIME and days")
 
     parsed = ParsedPacket(encrypted_pkt)
     keylen = len(key)
 
-    if counter_mode:
+    if counter_mode == DEVICE_UPTIME:
         candidates = range(128)
     else:
         time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400

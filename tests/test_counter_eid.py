@@ -68,7 +68,7 @@ class TestCounterEidDecrypt:
         counter_value = 7
         pkt = _make_encrypted_packet(_KEY_256, counter_value, seq_no=1, plaintext=b"hello")
 
-        result = decrypt(_KEY_256, pkt, counter_mode=True)
+        result = decrypt(_KEY_256, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is not None
         assert result.payload == b"hello"
@@ -78,7 +78,7 @@ class TestCounterEidDecrypt:
         """Counter value 0 is found."""
         pkt = _make_encrypted_packet(_KEY_256, 0, seq_no=5, plaintext=b"zero")
 
-        result = decrypt(_KEY_256, pkt, counter_mode=True)
+        result = decrypt(_KEY_256, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is not None
         assert result.counter == 0
@@ -88,7 +88,7 @@ class TestCounterEidDecrypt:
         """Counter value 127 (last in pool) is found."""
         pkt = _make_encrypted_packet(_KEY_128, 127, seq_no=2, plaintext=b"edge")
 
-        result = decrypt(_KEY_128, pkt, counter_mode=True)
+        result = decrypt(_KEY_128, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is not None
         assert result.counter == 127
@@ -98,7 +98,7 @@ class TestCounterEidDecrypt:
         """Counter value >= 128 is not found."""
         pkt = _make_encrypted_packet(_KEY_256, 128, seq_no=3, plaintext=b"miss")
 
-        result = decrypt(_KEY_256, pkt, counter_mode=True)
+        result = decrypt(_KEY_256, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is None
 
@@ -107,7 +107,7 @@ class TestCounterEidDecrypt:
         pkt = _make_encrypted_packet(_KEY_256, 5, seq_no=1, plaintext=b"data")
         wrong_key = bytes(range(1, 33))
 
-        result = decrypt(wrong_key, pkt, counter_mode=True)
+        result = decrypt(wrong_key, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is None
 
@@ -115,7 +115,7 @@ class TestCounterEidDecrypt:
         """Counter-based decryption works with AES-128 keys."""
         pkt = _make_encrypted_packet(_KEY_128, 3, seq_no=10, plaintext=b"aes128")
 
-        result = decrypt(_KEY_128, pkt, counter_mode=True)
+        result = decrypt(_KEY_128, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is not None
         assert result.payload == b"aes128"
@@ -125,7 +125,7 @@ class TestCounterEidDecrypt:
         """Decrypted packet retains timestamp, rssi, location, sequence."""
         pkt = _make_encrypted_packet(_KEY_256, 2, seq_no=42, plaintext=b"meta")
 
-        result = decrypt(_KEY_256, pkt, counter_mode=True)
+        result = decrypt(_KEY_256, pkt, counter_mode="DEVICE_UPTIME")
 
         assert result is not None
         assert result.timestamp == 1700000000
@@ -143,15 +143,22 @@ class TestCounterEidValidation:
     def test_raises_when_both_counter_mode_and_days_set(self):
         pkt = _make_encrypted_packet(_KEY_256, 0, seq_no=1, plaintext=b"x")
 
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            decrypt(_KEY_256, pkt, days=5, counter_mode=True)
+        with pytest.raises(ValueError, match="Cannot specify both counter_mode=DEVICE_UPTIME and days"):
+            decrypt(_KEY_256, pkt, days=5, counter_mode="DEVICE_UPTIME")
 
     def test_counter_mode_with_default_days_is_ok(self):
         """counter_mode + days=2 (the default) should NOT raise."""
         pkt = _make_encrypted_packet(_KEY_256, 0, seq_no=1, plaintext=b"ok")
 
-        result = decrypt(_KEY_256, pkt, days=2, counter_mode=True)
+        result = decrypt(_KEY_256, pkt, days=2, counter_mode="DEVICE_UPTIME")
         assert result is not None
+
+    def test_invalid_counter_mode_raises(self):
+        """counter_mode with an invalid value should raise ValueError."""
+        pkt = _make_encrypted_packet(_KEY_256, 0, seq_no=1, plaintext=b"x")
+
+        with pytest.raises(ValueError, match="counter_mode must be one of"):
+            decrypt(_KEY_256, pkt, counter_mode="INVALID")
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +175,7 @@ class TestCliCounterModeOptions:
     def test_scan_counter_mode_without_key_errors(self, runner):
         from hubblenetwork.cli import cli
 
-        result = runner.invoke(cli, ["ble", "scan", "--counter-mode"])
+        result = runner.invoke(cli, ["ble", "scan", "--counter-mode", "DEVICE_UPTIME"])
         assert result.exit_code != 0
         assert "requires --key" in result.output or "requires --key" in (result.exception and str(result.exception) or "")
 
@@ -178,7 +185,7 @@ class TestCliCounterModeOptions:
         result = runner.invoke(cli, [
             "ble", "scan",
             "--key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "--counter-mode",
+            "--counter-mode", "DEVICE_UPTIME",
             "--days", "3",
         ])
         assert result.exit_code != 0
@@ -189,7 +196,7 @@ class TestCliCounterModeOptions:
         result = runner.invoke(cli, [
             "ble", "detect",
             "--key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "--counter-mode",
+            "--counter-mode", "DEVICE_UPTIME",
             "--days", "3",
         ])
         assert result.exit_code != 0

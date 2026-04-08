@@ -166,14 +166,14 @@ class TestDetectEidType:
         mock_dec = MagicMock()
 
         def side_effect(*args, **kwargs):
-            return None if "counter_mode" in kwargs else mock_dec
+            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
             enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
 
         assert enc is pkt
         assert dec is mock_dec
-        assert label == "EPOCH_TIME"
+        assert label == "UNIX_TIME"
         assert ambiguous is False
 
     def test_counter_only(self):
@@ -181,7 +181,7 @@ class TestDetectEidType:
         mock_dec = MagicMock()
 
         def side_effect(*args, **kwargs):
-            return mock_dec if "counter_mode" in kwargs else None
+            return mock_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else None
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
             enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
@@ -197,7 +197,7 @@ class TestDetectEidType:
         counter_dec = MagicMock()
 
         def side_effect(*args, **kwargs):
-            return counter_dec if "counter_mode" in kwargs else epoch_dec
+            return counter_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else epoch_dec
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
             enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
@@ -247,14 +247,14 @@ class TestDetectEidType:
             # pkt0 always fails; pkt1 succeeds epoch only
             if args[1] is pkt0:
                 return None
-            return None if "counter_mode" in kwargs else mock_dec
+            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
             enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt0, pkt1])
 
         assert enc is pkt1
         assert dec is mock_dec
-        assert label == "EPOCH_TIME"
+        assert label == "UNIX_TIME"
         assert ambiguous is False
 
 
@@ -267,7 +267,7 @@ class TestBleValidateEidOutput:
         device_id = str(uuid.uuid4())
 
         def decrypt_side_effect(*args, **kwargs):
-            return MagicMock(counter=20172) if "counter_mode" not in kwargs else None
+            return MagicMock(counter=20172) if kwargs.get("counter_mode") != "DEVICE_UPTIME" else None
 
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \
@@ -286,7 +286,7 @@ class TestBleValidateEidOutput:
                 "--token", "fake-token",
             ])
 
-        assert "EID type: EPOCH_TIME" in result.output
+        assert "EID type: UNIX_TIME" in result.output
         assert "20172" in result.output
 
     def test_counter_eid_reported(self):
@@ -295,7 +295,7 @@ class TestBleValidateEidOutput:
         device_id = str(uuid.uuid4())
 
         def decrypt_side_effect(*args, **kwargs):
-            return MagicMock(counter=42) if "counter_mode" in kwargs else None
+            return MagicMock(counter=42) if kwargs.get("counter_mode") == "DEVICE_UPTIME" else None
 
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \

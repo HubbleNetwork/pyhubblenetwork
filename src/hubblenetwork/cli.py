@@ -22,7 +22,7 @@ from hubblenetwork.org import _VALID_COUNTER_SOURCES
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
-from hubblenetwork import decrypt
+from hubblenetwork import decrypt, UNIX_TIME, DEVICE_UPTIME
 from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
@@ -73,7 +73,7 @@ def _detect_eid_type(
                 epoch_pkt = pkt
                 epoch_dec = result
         if counter_pkt is None:
-            result = decrypt(key, pkt, counter_mode=True)
+            result = decrypt(key, pkt, counter_mode=DEVICE_UPTIME)
             if result:
                 counter_pkt = pkt
                 counter_dec = result
@@ -82,9 +82,9 @@ def _detect_eid_type(
     if epoch_pkt and counter_pkt:
         return (epoch_pkt, epoch_dec, "AMBIGUOUS", True)
     if epoch_pkt:
-        return (epoch_pkt, epoch_dec, "EPOCH_TIME", False)
+        return (epoch_pkt, epoch_dec, UNIX_TIME, False)
     if counter_pkt:
-        return (counter_pkt, counter_dec, "DEVICE_UPTIME", False)
+        return (counter_pkt, counter_dec, DEVICE_UPTIME, False)
     return (None, None, None, False)
 
 
@@ -628,9 +628,10 @@ def ble() -> None:
 )
 @click.option(
     "--counter-mode",
-    is_flag=True,
-    default=False,
-    help="Use counter-based EID (pool size 128) instead of UTC-based",
+    type=click.Choice(["UNIX_TIME", "DEVICE_UPTIME"], case_sensitive=False),
+    default="UNIX_TIME",
+    show_default=True,
+    help="EID counter mode: UNIX_TIME (UTC day-based) or DEVICE_UPTIME (counter 0-127)",
 )
 @click.option(
     "--format",
@@ -661,7 +662,7 @@ def ble_detect(
     timeout: Optional[int] = None,
     key: str = None,
     days: int = 2,
-    counter_mode: bool = False,
+    counter_mode: str = "UNIX_TIME",
     output_format: str = "tabular",
     payload_format: str = "base64",
     debug: bool = False,
@@ -678,12 +679,11 @@ def ble_detect(
     """
     use_json = output_format.lower() == "json"
 
-    # Validate --counter-mode and --days mutual exclusivity
-    if counter_mode:
+    if counter_mode == DEVICE_UPTIME:
         days_source = ctx.get_parameter_source("days")
         if days_source == click.core.ParameterSource.COMMANDLINE:
             raise click.UsageError(
-                "--counter-mode and --days are mutually exclusive"
+                "--counter-mode DEVICE_UPTIME and --days are mutually exclusive"
             )
 
     # Set log level based on debug flag
@@ -807,9 +807,10 @@ def ble_detect(
 )
 @click.option(
     "--counter-mode",
-    is_flag=True,
-    default=False,
-    help="Use counter-based EID (pool size 128) instead of UTC-based",
+    type=click.Choice(["UNIX_TIME", "DEVICE_UPTIME"], case_sensitive=False),
+    default="UNIX_TIME",
+    show_default=True,
+    help="EID counter mode: UNIX_TIME (UTC day-based) or DEVICE_UPTIME (counter 0-127)",
 )
 @click.option("--ingest", is_flag=True, help="Ingest packets to backend (requires key)")
 @click.option(
@@ -837,7 +838,7 @@ def ble_scan(
     ingest: bool = False,
     key: Optional[str] = None,
     days: int = 2,
-    counter_mode: bool = False,
+    counter_mode: str = "UNIX_TIME",
     output_format: str = "tabular",
     payload_format: str = "base64",
 ) -> None:
@@ -850,14 +851,13 @@ def ble_scan(
       hubblenetwork ble scan -o json --timeout 10
       hubblenetwork ble scan -n 5              # Stop after 5 packets
     """
-    # Validate --counter-mode constraints
-    if counter_mode:
+    if counter_mode == DEVICE_UPTIME:
         if not key:
-            raise click.UsageError("--counter-mode requires --key")
+            raise click.UsageError("--counter-mode DEVICE_UPTIME requires --key")
         days_source = ctx.get_parameter_source("days")
         if days_source == click.core.ParameterSource.COMMANDLINE:
             raise click.UsageError(
-                "--counter-mode and --days are mutually exclusive"
+                "--counter-mode DEVICE_UPTIME and --days are mutually exclusive"
             )
 
     # Get the appropriate streaming printer
@@ -1185,12 +1185,12 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
             '\n\nIf these do not resolve your issue please contact support@hubble.com.'
         )
     _validate_success()
-    if eid_label == "EPOCH_TIME":
-        click.echo(f"       EID type: EPOCH_TIME (day counter={dec_result.counter})")
-    elif eid_label == "DEVICE_UPTIME":
+    if eid_label == UNIX_TIME:
+        click.echo(f"       EID type: {UNIX_TIME} (day counter={dec_result.counter})")
+    elif eid_label == DEVICE_UPTIME:
         click.echo(f"       EID type: DEVICE_UPTIME (counter={dec_result.counter})")
     else:
-        click.echo("       EID type: AMBIGUOUS (resolved with both EPOCH_TIME and DEVICE_UPTIME)")
+        click.echo("       EID type: AMBIGUOUS (resolved with both UNIX_TIME and DEVICE_UPTIME)")
         click.secho(
             "       NOTE: Multiple devices may be in BLE range with different configs,\n"
             "             or a very unlikely cryptographic coincidence. "

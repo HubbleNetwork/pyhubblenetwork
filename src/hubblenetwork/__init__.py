@@ -12,7 +12,7 @@ from . import sat
 from .packets import Location, EncryptedPacket, DecryptedPacket, SatellitePacket
 from .device import Device
 from .org import Organization
-from .crypto import decrypt
+from .crypto import decrypt, UNIX_TIME, DEVICE_UPTIME
 from .errors import InvalidCredentialsError
 from .cloud import Credentials, Environment
 
@@ -22,6 +22,8 @@ __all__ = [
     "ready",
     "sat",
     "decrypt",
+    "UNIX_TIME",
+    "DEVICE_UPTIME",
     "SatellitePacket",
     "Location",
     "EncryptedPacket",

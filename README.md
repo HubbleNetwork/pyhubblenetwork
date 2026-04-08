@@ -113,13 +113,13 @@ for pkt in pkts:
         print("failed to decrypt packet")
 ```
 
-For devices using counter-based EID (DEVICE_UPTIME mode), pass `counter_mode=True`:
+For devices using counter-based EID (DEVICE_UPTIME mode), pass `counter_mode="DEVICE_UPTIME"`:
 
 ```python
-maybe_dec = decrypt(dev.key, pkt, counter_mode=True)
+maybe_dec = decrypt(dev.key, pkt, counter_mode="DEVICE_UPTIME")
 ```
 
-Counter-mode decryption uses a fixed pool size of 128 (counter values 0–127).
+The `counter_mode` parameter accepts `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"` (counter values 0–127, fixed pool size of 128).
 
 ### Receive satellite packets
 
@@ -142,7 +142,7 @@ If installed, the `hubblenetwork` command is available:
 hubblenetwork --help
 hubblenetwork ble scan
 hubblenetwork ble scan --payload-format hex
-hubblenetwork ble scan --key "base64key=" --counter-mode   # counter-based EID decryption
+hubblenetwork ble scan --key "base64key=" --counter-mode DEVICE_UPTIME  # counter-based EID
 hubblenetwork org get-packets --payload-format string
 ```
 
