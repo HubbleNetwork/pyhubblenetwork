@@ -62,7 +62,7 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`ready.py`** - Hubble Ready device provisioning (UUID 0xFCA7). Handles GATT connections, characteristic reads/writes, and the full provisioning flow (register with backend, write key/config/time).
 
-- **`crypto.py`** - Local packet decryption. Implements AES-CTR decryption with CMAC-based key derivation (SP800_108_Counter KDF). Supports both AES-256-CTR and AES-128-CTR.
+- **`crypto.py`** - Local packet decryption. Implements AES-CTR decryption with CMAC-based key derivation (SP800_108_Counter KDF). Supports both AES-256-CTR and AES-128-CTR. `decrypt()` accepts `counter_mode=True` for counter-based EID (fixed pool size 128).
 
 - **`packets.py`** - Data classes: `Location`, `EncryptedPacket`, `DecryptedPacket`.
 
@@ -83,6 +83,8 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 - **Pagination**: Cloud API uses continuation tokens. `Organization.list_devices()` and `retrieve_packets()` handle pagination internally.
 
 - **Encryption modes**: Devices support either AES-256-CTR (32-byte key) or AES-128-CTR (16-byte key). Mode is auto-detected from device during provisioning.
+
+- **EID modes**: Two EID rotation modes — EPOCH_TIME (UTC day-based) and DEVICE_UPTIME (counter-based). Counter-based mode uses a fixed pool size of 128. The `decrypt()` function's `counter_mode=True` flag enables counter-based decryption; CLI commands use `--counter-mode`.
 
 - **Satellite scanning requires Docker**: `sat.scan()` pulls and runs a privileged Docker container. Docker daemon must be running. Raises `DockerError` (not `SatelliteError`) if Docker is unavailable. The `docker` Python package is a required (not optional) dependency.
 
