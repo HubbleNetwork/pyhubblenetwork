@@ -69,18 +69,6 @@ class TestBleValidateInputs:
         ])
         assert "Validating format of inputs" in result.output
 
-    def test_rejects_invalid_pool_size(self):
-        runner = CliRunner()
-        key = base64.b64encode(b"a" * 16).decode()
-        result = runner.invoke(cli, [
-            "ble", "validate",
-            "--key", key,
-            "--device-id", str(uuid.uuid4()),
-            "--pool-size", "7",
-        ])
-        assert result.exit_code != 0
-        assert "Invalid --pool-size" in result.output
-
 
 class TestBleValidateErrorPaths:
     """Test error handling for validation steps 4-6 using mocks."""
@@ -178,10 +166,10 @@ class TestDetectEidType:
         mock_dec = MagicMock()
 
         def side_effect(*args, **kwargs):
-            return None if "eid_pool_size" in kwargs else mock_dec
+            return None if "counter_mode" in kwargs else mock_dec
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt], pool_size=1024)
+            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
 
         assert enc is pkt
         assert dec is mock_dec
@@ -193,10 +181,10 @@ class TestDetectEidType:
         mock_dec = MagicMock()
 
         def side_effect(*args, **kwargs):
-            return mock_dec if "eid_pool_size" in kwargs else None
+            return mock_dec if "counter_mode" in kwargs else None
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt], pool_size=1024)
+            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
 
         assert enc is pkt
         assert dec is mock_dec
@@ -209,10 +197,10 @@ class TestDetectEidType:
         counter_dec = MagicMock()
 
         def side_effect(*args, **kwargs):
-            return counter_dec if "eid_pool_size" in kwargs else epoch_dec
+            return counter_dec if "counter_mode" in kwargs else epoch_dec
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt], pool_size=1024)
+            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
 
         assert enc is pkt
         assert dec is epoch_dec  # epoch preferred
@@ -223,7 +211,7 @@ class TestDetectEidType:
         pkt = MagicMock()
 
         with patch("hubblenetwork.cli.decrypt", return_value=None):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt], pool_size=1024)
+            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
 
         assert enc is None
         assert dec is None
@@ -237,7 +225,7 @@ class TestDetectEidType:
 
         with patch("hubblenetwork.cli.decrypt", return_value=MagicMock()) as mock_decrypt:
             enc, dec, label, ambiguous = _detect_eid_type(
-                b"k" * 16, [pkt0, pkt1], pool_size=1024
+                b"k" * 16, [pkt0, pkt1]
             )
 
         # Both modes resolved on pkt0: 1 epoch call + 1 counter call = 2 total
@@ -259,10 +247,10 @@ class TestDetectEidType:
             # pkt0 always fails; pkt1 succeeds epoch only
             if args[1] is pkt0:
                 return None
-            return None if "eid_pool_size" in kwargs else mock_dec
+            return None if "counter_mode" in kwargs else mock_dec
 
         with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt0, pkt1], pool_size=1024)
+            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt0, pkt1])
 
         assert enc is pkt1
         assert dec is mock_dec
@@ -279,7 +267,7 @@ class TestBleValidateEidOutput:
         device_id = str(uuid.uuid4())
 
         def decrypt_side_effect(*args, **kwargs):
-            return MagicMock(counter=20172) if "eid_pool_size" not in kwargs else None
+            return MagicMock(counter=20172) if "counter_mode" not in kwargs else None
 
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \
@@ -307,7 +295,7 @@ class TestBleValidateEidOutput:
         device_id = str(uuid.uuid4())
 
         def decrypt_side_effect(*args, **kwargs):
-            return MagicMock(counter=42) if "eid_pool_size" in kwargs else None
+            return MagicMock(counter=42) if "counter_mode" in kwargs else None
 
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \

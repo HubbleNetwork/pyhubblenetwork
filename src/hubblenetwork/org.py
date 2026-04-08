@@ -10,7 +10,6 @@ from .errors import InvalidCredentialsError, ValidationError
 
 
 _VALID_COUNTER_SOURCES = {"EPOCH_TIME", "DEVICE_UPTIME"}
-_VALID_POOL_SIZES = {16, 32, 64, 128, 256, 512, 1024}
 
 
 class Organization:
@@ -50,7 +49,6 @@ class Organization:
         self,
         encryption: Optional[str] = None,
         counter_source: Optional[str] = None,
-        pool_size: Optional[int] = None,
     ) -> Device:
         """
         Register a new device in this organization and return it.
@@ -60,26 +58,17 @@ class Organization:
             encryption: Encryption type ("AES-256-CTR", "AES-128-CTR", or "NONE").
                         Defaults to "AES-256-CTR".
             counter_source: EID rotation counter source ("EPOCH_TIME" or "DEVICE_UPTIME").
-            pool_size: EID rotation pool size. Only valid when counter_source="DEVICE_UPTIME".
-                       Must be one of: 16, 32, 64, 128, 256, 512, 1024. Defaults to 128.
+                            Pool size is fixed at 128 for counter-based EID modes.
         """
         if counter_source is not None and counter_source not in _VALID_COUNTER_SOURCES:
             raise ValidationError(
                 f"counter_source must be one of {sorted(_VALID_COUNTER_SOURCES)}, got {counter_source!r}"
             )
-        if pool_size is not None:
-            if counter_source != "DEVICE_UPTIME":
-                raise ValidationError("pool_size is only valid when counter_source='DEVICE_UPTIME'")
-            if pool_size not in _VALID_POOL_SIZES:
-                raise ValidationError(
-                    f"pool_size must be one of {sorted(_VALID_POOL_SIZES)}, got {pool_size!r}"
-                )
         resp = cloud.register_device(
             credentials=self.credentials,
             env=self.env,
             encryption=encryption,
             counter_source=counter_source,
-            pool_size=pool_size,
         )
         device = resp["devices"][0]
         key_bytes = base64.b64decode(device["key"]) if device.get("key") else None
