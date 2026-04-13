@@ -1,5 +1,17 @@
 # Release Notes
 
+## [0.7.0] - 2026-04-13
+
+### Added
+- feat(crypto): change counter_mode from bool to UNIX_TIME/DEVICE_UPTIME string
+- feat(sat): add status messages and --debug flag to sat scan commands
+
+### Fixed
+- fix(crypto): fix EID pool size to 128 for counter mode
+
+### Documentation
+- docs: document fixed EID pool size and --counter-mode flag
+
 ## [0.6.3] - 2026-04-01
 
 ### Added
