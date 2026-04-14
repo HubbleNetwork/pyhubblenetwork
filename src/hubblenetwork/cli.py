@@ -17,7 +17,7 @@ from typing import Optional, List
 from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket
-from hubblenetwork.packets import SatellitePacket
+from hubblenetwork.packets import SatellitePacket, UnencryptedPacket
 from hubblenetwork.org import _VALID_COUNTER_SOURCES
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
@@ -132,7 +132,10 @@ def _packet_to_dict(pkt, payload_format: str = "base64") -> dict:
         "rssi": pkt.rssi,
     }
 
-    if isinstance(pkt, DecryptedPacket):
+    if isinstance(pkt, UnencryptedPacket):
+        data["protocol_version"] = pkt.protocol_version
+        data["network_id"] = pkt.network_id
+    elif isinstance(pkt, DecryptedPacket):
         data["counter"] = pkt.counter
         data["sequence"] = pkt.sequence
 
@@ -264,6 +267,8 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         "RSSI": 6,
         "COUNTER": 8,
         "SEQ": 6,
+        "NET_ID": 12,
+        "VERSION": 8,
         "COORDINATES": 22,
         "PAYLOAD": 20,
     }
@@ -278,18 +283,22 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
     def _determine_columns(self, pkt) -> tuple[List[str], dict]:
         """Determine column headers and configuration based on packet type."""
         is_decrypted = isinstance(pkt, DecryptedPacket)
+        is_unencrypted = isinstance(pkt, UnencryptedPacket)
         has_real_location = not pkt.location.fake
 
         headers = ["TIMESTAMP", "TIME", "RSSI"]
         if is_decrypted:
             headers.extend(["COUNTER", "SEQ"])
+        if is_unencrypted:
+            headers.extend(["NET_ID", "VERSION"])
         if has_real_location:
             headers.append("COORDINATES")
-        if is_decrypted:
+        if is_decrypted or is_unencrypted:
             headers.append("PAYLOAD")
 
         return headers, {
             "is_decrypted": is_decrypted,
+            "is_unencrypted": is_unencrypted,
             "has_real_location": has_real_location,
         }
 
@@ -327,11 +336,14 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         if self._column_config["is_decrypted"]:
             row.extend([pkt.counter, pkt.sequence])
 
+        if self._column_config["is_unencrypted"]:
+            row.extend([pkt.network_id, pkt.protocol_version])
+
         if self._column_config["has_real_location"]:
             loc = pkt.location
             row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
 
-        if self._column_config["is_decrypted"]:
+        if self._column_config["is_decrypted"] or self._column_config["is_unencrypted"]:
             row.append(_format_payload(pkt.payload, self._payload_format))
 
         # Print the data row
@@ -812,6 +824,13 @@ def ble_detect(
     show_default=True,
     help="EID counter mode: UNIX_TIME (UTC day-based) or DEVICE_UPTIME (counter 0-127)",
 )
+@click.option(
+    "--network-id",
+    type=int,
+    default=None,
+    show_default=False,
+    help="Filter by network ID (unencrypted protocol packets only)",
+)
 @click.option("--ingest", is_flag=True, help="Ingest packets to backend (requires key)")
 @click.option(
     "--format",
@@ -835,6 +854,7 @@ def ble_scan(
     ctx,
     timeout: Optional[int] = None,
     count: Optional[int] = None,
+    network_id: Optional[int] = None,
     ingest: bool = False,
     key: Optional[str] = None,
     days: int = 2,
@@ -845,11 +865,14 @@ def ble_scan(
     """
     Scan for UUID 0xFCA6 and print packets as they are found.
 
+    Automatically detects encrypted vs unencrypted protocol packets.
+
     Example:
       hubblenetwork ble scan --timeout 30
       hubblenetwork ble scan --key "base64key=" --timeout 60
       hubblenetwork ble scan -o json --timeout 10
       hubblenetwork ble scan -n 5              # Stop after 5 packets
+      hubblenetwork ble scan --network-id 4378792717
     """
     if counter_mode == DEVICE_UPTIME:
         if not key:
@@ -903,8 +926,13 @@ def ble_scan(
             if not pkt:
                 break
 
-            # If we have a key, attempt to decrypt
-            if decoded_key:
+            # Unencrypted packets: apply network_id filter, print directly
+            if isinstance(pkt, UnencryptedPacket):
+                if network_id is not None and pkt.network_id != network_id:
+                    continue
+                printer.print_row(pkt)
+            # Encrypted packets: optionally decrypt and/or ingest
+            elif decoded_key:
                 decrypted_pkt = decrypt(
                     decoded_key, pkt, days=days, counter_mode=counter_mode
                 )

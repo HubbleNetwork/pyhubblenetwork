@@ -9,7 +9,7 @@ from . import cloud
 from . import ready
 from . import sat
 
-from .packets import Location, EncryptedPacket, DecryptedPacket, SatellitePacket
+from .packets import Location, EncryptedPacket, UnencryptedPacket, DecryptedPacket, SatellitePacket
 from .device import Device
 from .org import Organization
 from .crypto import decrypt, UNIX_TIME, DEVICE_UPTIME
@@ -27,6 +27,7 @@ __all__ = [
     "SatellitePacket",
     "Location",
     "EncryptedPacket",
+    "UnencryptedPacket",
     "DecryptedPacket",
     "Device",
     "Organization",

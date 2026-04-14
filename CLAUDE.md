@@ -41,6 +41,7 @@ pytest -m integration
 ```bash
 hubblenetwork --help
 hubblenetwork ble scan --timeout 10
+hubblenetwork ble scan --network-id 4378792717 -o json
 hubblenetwork ready scan
 hubblenetwork org list-devices
 hubblenetwork sat scan --timeout 30
@@ -58,7 +59,7 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`cloud.py`** - Low-level HTTP client for Hubble Cloud API. Contains `Credentials`, `Environment` dataclasses and all REST endpoint functions. Uses `httpx` for HTTP requests.
 
-- **`ble.py`** - BLE scanning for beacon packets (UUID 0xFCA6). Uses `bleak` library. Provides both sync (`scan()`) and async (`scan_async()`) variants.
+- **`ble.py`** - BLE scanning for beacon packets (UUID 0xFCA6). Uses `bleak` library. Provides both sync (`scan()`) and async (`scan_async()`) variants. Automatically detects encrypted vs unencrypted protocol packets. Unencrypted protocol (version 1) packets carry a 34-bit network ID and up to 18 bytes of customer payload; `parse_unencrypted()` extracts these fields.
 
 - **`ready.py`** - Hubble Ready device provisioning (UUID 0xFCA7). Handles GATT connections, characteristic reads/writes, and the full provisioning flow (register with backend, write key/config/time).
 

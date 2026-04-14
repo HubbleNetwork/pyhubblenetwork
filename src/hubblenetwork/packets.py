@@ -25,6 +25,18 @@ class EncryptedPacket:
 
 
 @dataclass(frozen=True)
+class UnencryptedPacket:
+    """A packet received via BLE using the unencrypted Hubble protocol."""
+
+    timestamp: int
+    location: Optional[Location]
+    network_id: int  # 34-bit static network ID
+    protocol_version: int  # 6-bit protocol version
+    payload: bytes  # 0-18 bytes customer payload
+    rssi: int
+
+
+@dataclass(frozen=True)
 class DecryptedPacket:
     """A packet decrypted by backend or locally."""
 
