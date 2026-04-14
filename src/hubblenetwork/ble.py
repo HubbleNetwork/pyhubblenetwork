@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from bleak import BleakScanner
 
@@ -10,6 +10,7 @@ from bleak import BleakScanner
 from .packets import (
     Location,
     EncryptedPacket,
+    UnencryptedPacket,
 )
 
 """
@@ -27,40 +28,85 @@ are 128-bit strings. So matching against the normalized 128-bit form is the most
 _TARGET_UUID = "0000fca6-0000-1000-8000-00805f9b34fb"
 
 
-def _get_location() -> Optional[Location]:
-    # Return an unreasonable location
-    return Location(lat=90, lon=0, fake=True)
+_FAKE_LOCATION = Location(lat=90, lon=0, fake=True)
+
+# ---------------------------------------------------------------------------
+# Unencrypted protocol parsing (version 1)
+# ---------------------------------------------------------------------------
+
+_NETWORK_ID_MASK = (1 << 34) - 1
+
+HubblePacket = Union[EncryptedPacket, UnencryptedPacket]
 
 
-async def _scan_async(ttl: float) -> List[EncryptedPacket]:
+def parse_unencrypted(data: bytes) -> Optional[tuple]:
+    """Parse unencrypted protocol service data bytes.
+
+    Returns (protocol_version, network_id, payload) or None if *data* does
+    not look like an unencrypted-protocol advertisement (e.g. version == 0
+    means it is an encrypted packet).
+    """
+    if len(data) < 5:
+        return None
+    header = int.from_bytes(data[0:5], "big")
+    version = header >> 34
+    if version == 0:
+        return None
+    network_id = header & _NETWORK_ID_MASK
+    return (version, network_id, data[5:])
+
+
+def _make_packet(raw: bytes, rssi: int) -> HubblePacket:
+    """Build the right packet type from raw service data bytes."""
+    ts = int(datetime.now(timezone.utc).timestamp())
+    parsed = parse_unencrypted(raw)
+    if parsed is not None:
+        version, network_id, customer_payload = parsed
+        return UnencryptedPacket(
+            timestamp=ts,
+            location=_FAKE_LOCATION,
+            network_id=network_id,
+            protocol_version=version,
+            payload=customer_payload,
+            rssi=rssi,
+        )
+    return EncryptedPacket(
+        timestamp=ts,
+        location=_FAKE_LOCATION,
+        payload=raw,
+        rssi=rssi,
+    )
+
+
+def _extract_hubble_service_data(adv_data) -> Optional[tuple]:
+    """Extract Hubble service data payload and RSSI from a BLE advertisement.
+
+    Returns (payload_bytes, rssi) or None if UUID 0xFCA6 not present.
+    """
+    service_data = getattr(adv_data, "service_data", None) or {}
+    for uuid_str, data in service_data.items():
+        if (uuid_str or "").lower() == _TARGET_UUID:
+            return (bytes(data), int(getattr(adv_data, "rssi", 0) or 0))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Scanning (auto-detects encrypted vs unencrypted)
+# ---------------------------------------------------------------------------
+
+
+async def _scan_async(ttl: float) -> List[HubblePacket]:
     """Async implementation of BLE scan."""
     done = asyncio.Event()
-    packets: List[EncryptedPacket] = []
+    packets: List[HubblePacket] = []
 
     def on_detect(device, adv_data) -> None:
         nonlocal packets
-        # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
-        service_data = getattr(adv_data, "service_data", None) or {}
-        payload = None
+        extracted = _extract_hubble_service_data(adv_data)
+        if extracted is not None:
+            payload, rssi = extracted
+            packets.append(_make_packet(payload, rssi))
 
-        # Keys are 128-bit UUID strings; compare lowercased
-        for uuid_str, data in service_data.items():
-            if (uuid_str or "").lower() == _TARGET_UUID:
-                payload = bytes(data)
-                break
-
-        if payload is not None:
-            rssi = getattr(adv_data, "rssi", getattr(device, "rssi", 0)) or 0
-            packets.append(
-                EncryptedPacket(
-                    timestamp=int(datetime.now(timezone.utc).timestamp()),
-                    location=_get_location(),
-                    payload=payload,
-                    rssi=int(rssi),
-                )
-            )
-
-    # Start scanning and wait for first match or timeout
     async with BleakScanner(detection_callback=on_detect):
         try:
             await asyncio.wait_for(done.wait(), timeout=ttl)
@@ -70,36 +116,32 @@ async def _scan_async(ttl: float) -> List[EncryptedPacket]:
     return packets
 
 
-def scan(timeout: float) -> List[EncryptedPacket]:
+def scan(timeout: float) -> List[HubblePacket]:
     """
-    Scan for BLE advertisements that include service data for UUID 0xFCA6 and
-    return them as a List[EncryptedPacket] (payload=data bytes, rssi from the adv).
+    Scan for BLE advertisements that include service data for UUID 0xFCA6.
+    Automatically detects encrypted vs unencrypted protocol packets.
 
     For async environments (e.g., Jupyter), use scan_async() instead.
     """
     try:
         return asyncio.run(_scan_async(timeout))
     except RuntimeError:
-        # Fallback for environments with an active loop (e.g., Jupyter notebooks).
-        # Note: For Jupyter, consider installing nest_asyncio for better compatibility.
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop, create a new one
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 return loop.run_until_complete(_scan_async(timeout))
             finally:
                 loop.close()
-        # If there's a running loop, we can't use run_until_complete
         raise RuntimeError(
             "Cannot run synchronous BLE scan inside an existing async event loop. "
             "Use 'await ble.scan_async()' or install 'nest_asyncio' for Jupyter support."
         )
 
 
-async def scan_async(timeout: float) -> List[EncryptedPacket]:
+async def scan_async(timeout: float) -> List[HubblePacket]:
     """
     Async version of scan() for use in async environments like Jupyter notebooks.
 
@@ -109,45 +151,25 @@ async def scan_async(timeout: float) -> List[EncryptedPacket]:
     return await _scan_async(timeout)
 
 
-async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
+async def _scan_single_async(ttl: float) -> Optional[HubblePacket]:
     """Async implementation for scanning a single BLE packet."""
     done = asyncio.Event()
-    packet: Optional[EncryptedPacket] = None
+    packet: Optional[HubblePacket] = None
 
     def on_detect(device, adv_data) -> None:
         nonlocal packet
 
-        # If we already found a packet, ignore further callbacks
         if packet is not None:
             return
 
-        # Normalize to a dict; bleak provides service_data as {uuid_str: bytes}
-        service_data = getattr(adv_data, "service_data", None) or {}
-        service_uuids = getattr(adv_data, "service_uuids", None) or []
-        payload = None
-
-        if _TARGET_UUID not in service_uuids:
+        extracted = _extract_hubble_service_data(adv_data)
+        if extracted is None:
             return
 
-        # Keys are 128-bit UUID strings; compare lowercased
-        for uuid_str, data in service_data.items():
-            if (uuid_str or "").lower() == _TARGET_UUID:
-                payload = bytes(data)
-                break
-
-        if payload is None:
-            return
-
-        rssi = getattr(adv_data, "rssi", getattr(device, "rssi", 0)) or 0
-        packet = EncryptedPacket(
-            timestamp=int(datetime.now(timezone.utc).timestamp()),
-            location=_get_location(),
-            payload=payload,
-            rssi=int(rssi),
-        )
+        payload, rssi = extracted
+        packet = _make_packet(payload, rssi)
         done.set()
 
-    # Start scanning and wait for first match or timeout
     async with BleakScanner(detection_callback=on_detect):
         try:
             await asyncio.wait_for(done.wait(), timeout=ttl)
@@ -157,35 +179,32 @@ async def _scan_single_async(ttl: float) -> Optional[EncryptedPacket]:
     return packet
 
 
-def scan_single(timeout: float) -> Optional[EncryptedPacket]:
+def scan_single(timeout: float) -> Optional[HubblePacket]:
     """
-    Scan for a BLE advertisement that includes service data for UUID 0xFCA6 and
-    return it.
+    Scan for a BLE advertisement that includes service data for UUID 0xFCA6
+    and return it. Automatically detects encrypted vs unencrypted protocol.
 
     For async environments (e.g., Jupyter), use scan_single_async() instead.
     """
     try:
         return asyncio.run(_scan_single_async(timeout))
     except RuntimeError:
-        # Fallback for environments with an active loop (e.g., Jupyter notebooks).
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop, create a new one
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 return loop.run_until_complete(_scan_single_async(timeout))
             finally:
                 loop.close()
-        # If there's a running loop, we can't use run_until_complete
         raise RuntimeError(
             "Cannot run synchronous BLE scan inside an existing async event loop. "
             "Use 'await ble.scan_single_async()' or install 'nest_asyncio' for Jupyter support."
         )
 
 
-async def scan_single_async(timeout: float) -> Optional[EncryptedPacket]:
+async def scan_single_async(timeout: float) -> Optional[HubblePacket]:
     """
     Async version of scan_single() for use in async environments like Jupyter notebooks.
 
