@@ -297,11 +297,11 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
 
         headers = ["TIMESTAMP", "TIME", "RSSI"]
         if is_decrypted:
-            headers.extend(["COUNTER", "SEQ"])
+            headers.extend(["COUNTER", "SALT"])
         if is_unencrypted:
             headers.extend(["NET_ID", "VERSION"])
         if is_aes_eax:
-            headers.extend(["VERSION", "EID", "SEQ"])
+            headers.extend(["VERSION", "EID", "SALT"])
         if is_unknown:
             headers.append("VERSION")
         if has_real_location:
