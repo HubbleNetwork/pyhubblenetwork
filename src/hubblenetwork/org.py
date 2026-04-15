@@ -10,10 +10,7 @@ from .crypto import UNIX_TIME, DEVICE_UPTIME
 from .errors import InvalidCredentialsError, ValidationError
 
 
-_VALID_COUNTER_SOURCES = {UNIX_TIME, DEVICE_UPTIME, "EPOCH_TIME"}
-
-# Cloud API still uses EPOCH_TIME; map UNIX_TIME → EPOCH_TIME at the boundary.
-_COUNTER_SOURCE_TO_API = {UNIX_TIME: "EPOCH_TIME"}
+_VALID_COUNTER_SOURCES = {UNIX_TIME, DEVICE_UPTIME}
 
 
 class Organization:
@@ -62,19 +59,17 @@ class Organization:
             encryption: Encryption type ("AES-256-CTR", "AES-128-CTR", or "NONE").
                         Defaults to "AES-256-CTR".
             counter_source: EID rotation counter source ("UNIX_TIME" or "DEVICE_UPTIME").
-                            "EPOCH_TIME" is also accepted as a synonym for "UNIX_TIME".
                             Pool size is fixed at 128 for counter-based EID modes.
         """
         if counter_source is not None and counter_source not in _VALID_COUNTER_SOURCES:
             raise ValidationError(
                 f"counter_source must be one of {sorted(_VALID_COUNTER_SOURCES)}, got {counter_source!r}"
             )
-        api_counter_source = _COUNTER_SOURCE_TO_API.get(counter_source, counter_source)
         resp = cloud.register_device(
             credentials=self.credentials,
             env=self.env,
             encryption=encryption,
-            counter_source=api_counter_source,
+            counter_source=counter_source,
         )
         device = resp["devices"][0]
         key_bytes = base64.b64decode(device["key"]) if device.get("key") else None

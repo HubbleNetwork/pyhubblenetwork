@@ -71,9 +71,9 @@ class TestProdEnvironment:
         )
         assert updated is not None
 
-    def test_register_device_with_epoch_time(self, credentials, env):
+    def test_register_device_with_unix_time(self, credentials, env):
         result = register_device(
-            credentials=credentials, env=env, counter_source="EPOCH_TIME"
+            credentials=credentials, env=env, counter_source="UNIX_TIME"
         )
         assert "devices" in result
         assert len(result["devices"]) > 0
@@ -149,9 +149,9 @@ class TestTestingEnvironment:
         )
         assert updated is not None
 
-    def test_register_device_with_epoch_time(self, credentials, env):
+    def test_register_device_with_unix_time(self, credentials, env):
         result = register_device(
-            credentials=credentials, env=env, counter_source="EPOCH_TIME"
+            credentials=credentials, env=env, counter_source="UNIX_TIME"
         )
         assert "devices" in result
         assert len(result["devices"]) > 0
