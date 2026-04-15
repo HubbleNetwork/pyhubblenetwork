@@ -18,7 +18,6 @@ from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket, decrypt_eax
 from hubblenetwork.packets import SatellitePacket, UnencryptedPacket, AesEaxPacket, UnknownPacket
-from hubblenetwork.org import _VALID_COUNTER_SOURCES
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
@@ -2625,7 +2624,7 @@ def list_devices(org: Organization) -> None:
 @click.option(
     "--counter-source",
     "-c",
-    type=click.Choice(sorted(_VALID_COUNTER_SOURCES)),
+    type=click.Choice(sorted([UNIX_TIME, DEVICE_UPTIME])),
     default=None,
     show_default=False,
     help="EID rotation counter source",
