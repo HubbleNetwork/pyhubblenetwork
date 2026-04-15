@@ -1,6 +1,7 @@
 # hubblenetwork/ble.py
 from __future__ import annotations
 import asyncio
+import struct
 from datetime import datetime, timezone
 from typing import Optional, List, Union
 
@@ -11,6 +12,8 @@ from .packets import (
     Location,
     EncryptedPacket,
     UnencryptedPacket,
+    AesEaxPacket,
+    UnknownPacket,
 )
 
 """
@@ -36,7 +39,7 @@ _FAKE_LOCATION = Location(lat=90, lon=0, fake=True)
 
 _NETWORK_ID_MASK = (1 << 34) - 1
 
-HubblePacket = Union[EncryptedPacket, UnencryptedPacket]
+HubblePacket = Union[EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket]
 
 
 def parse_unencrypted(data: bytes) -> Optional[tuple]:
@@ -56,23 +59,57 @@ def parse_unencrypted(data: bytes) -> Optional[tuple]:
     return (version, network_id, data[5:])
 
 
+_AES_EAX_MIN_SIZE = 15  # version(1) + salt(2) + EID(8) + tag(4)
+_AES_EAX_TAG_SIZE = 4
+
+
 def _make_packet(raw: bytes, rssi: int) -> HubblePacket:
     """Build the right packet type from raw service data bytes."""
     ts = int(datetime.now(timezone.utc).timestamp())
-    parsed = parse_unencrypted(raw)
-    if parsed is not None:
-        version, network_id, customer_payload = parsed
-        return UnencryptedPacket(
+
+    if len(raw) < 1:
+        return EncryptedPacket(
+            timestamp=ts, location=_FAKE_LOCATION, payload=raw, rssi=rssi
+        )
+
+    version = raw[0] >> 2
+
+    if version == 0:
+        return EncryptedPacket(
+            timestamp=ts, location=_FAKE_LOCATION, payload=raw, rssi=rssi
+        )
+    elif version == 1:
+        parsed = parse_unencrypted(raw)
+        if parsed is not None:
+            ver, network_id, customer_payload = parsed
+            return UnencryptedPacket(
+                timestamp=ts,
+                location=_FAKE_LOCATION,
+                network_id=network_id,
+                protocol_version=ver,
+                payload=customer_payload,
+                rssi=rssi,
+            )
+    elif version == 2 and len(raw) >= _AES_EAX_MIN_SIZE:
+        nonce_salt = raw[1:3]
+        eid = struct.unpack("<Q", raw[3:11])[0]
+        auth_tag = raw[-_AES_EAX_TAG_SIZE:]
+        payload = raw[11:-_AES_EAX_TAG_SIZE] if len(raw) > _AES_EAX_MIN_SIZE else b""
+        return AesEaxPacket(
             timestamp=ts,
             location=_FAKE_LOCATION,
-            network_id=network_id,
             protocol_version=version,
-            payload=customer_payload,
+            nonce_salt=nonce_salt,
+            eid=eid,
+            payload=payload,
+            auth_tag=auth_tag,
             rssi=rssi,
         )
-    return EncryptedPacket(
+
+    return UnknownPacket(
         timestamp=ts,
         location=_FAKE_LOCATION,
+        protocol_version=version,
         payload=raw,
         rssi=rssi,
     )

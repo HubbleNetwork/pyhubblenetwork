@@ -59,13 +59,13 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`cloud.py`** - Low-level HTTP client for Hubble Cloud API. Contains `Credentials`, `Environment` dataclasses and all REST endpoint functions. Uses `httpx` for HTTP requests.
 
-- **`ble.py`** - BLE scanning for beacon packets (UUID 0xFCA6). Uses `bleak` library. Provides both sync (`scan()`) and async (`scan_async()`) variants. Automatically detects encrypted vs unencrypted protocol packets. Unencrypted protocol (version 1) packets carry a 34-bit network ID and up to 18 bytes of customer payload; `parse_unencrypted()` extracts these fields.
+- **`ble.py`** - BLE scanning for beacon packets (UUID 0xFCA6). Uses `bleak` library. Provides both sync (`scan()`) and async (`scan_async()`) variants. Automatically detects encrypted vs unencrypted protocol packets. Unencrypted protocol (version 1) packets carry a 34-bit network ID and up to 18 bytes of customer payload; `parse_unencrypted()` extracts these fields. AES-EAX protocol (version 2) packets carry a 2-byte nonce salt, 8-byte EID, encrypted payload (0-9 bytes), and 4-byte auth tag; `AesEaxPacket` stores these parsed fields. Unknown protocol versions (3+) are captured as `UnknownPacket`.
 
 - **`ready.py`** - Hubble Ready device provisioning (UUID 0xFCA7). Handles GATT connections, characteristic reads/writes, and the full provisioning flow (register with backend, write key/config/time).
 
-- **`crypto.py`** - Local packet decryption. Implements AES-CTR decryption with CMAC-based key derivation (SP800_108_Counter KDF). Supports both AES-256-CTR and AES-128-CTR. `decrypt()` accepts `counter_mode` as `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"` (counter-based, fixed pool size 128). Exports `UNIX_TIME` and `DEVICE_UPTIME` constants.
+- **`crypto.py`** - Local packet decryption. Implements AES-CTR decryption with CMAC-based key derivation (SP800_108_Counter KDF). Supports both AES-256-CTR and AES-128-CTR. `decrypt()` accepts `counter_mode` as `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"` (counter-based, fixed pool size 128). Exports `UNIX_TIME` and `DEVICE_UPTIME` constants. `decrypt_eax()` decrypts AES-EAX packets by iterating counters 0-127, generating candidate EIDs via AES-ECB, and using `AES.MODE_EAX` for authenticated decryption. Uses key directly (no KDF).
 
-- **`packets.py`** - Data classes: `Location`, `EncryptedPacket`, `DecryptedPacket`.
+- **`packets.py`** - Data classes: `Location`, `EncryptedPacket`, `DecryptedPacket`, `AesEaxPacket`, `UnknownPacket`.
 
 - **`device.py`** - `Device` dataclass representing a registered device.
 
