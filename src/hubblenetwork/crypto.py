@@ -135,7 +135,7 @@ def decrypt_eax(
             tags={},
             payload=decrypted,
             rssi=pkt.rssi,
-            counter=counter,
+            counter=i,
             sequence=int.from_bytes(pkt.nonce_salt, "big"),
         )
 
