@@ -87,6 +87,18 @@ class TestProdEnvironment:
         assert len(result["devices"]) > 0
         assert result["devices"][0]["device_id"]
 
+    def test_register_device_aes_128_eax(self, credentials, env):
+        result = register_device(
+            credentials=credentials,
+            env=env,
+            encryption="AES-128-EAX",
+            counter_source="DEVICE_UPTIME",
+            period_in_seconds=1024,
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
     def test_retrieve_packets(self, credentials, env):
         # First get a device to query
         devices_result, _ = list_devices(credentials=credentials, env=env)
@@ -160,6 +172,18 @@ class TestTestingEnvironment:
     def test_register_device_with_device_uptime(self, credentials, env):
         result = register_device(
             credentials=credentials, env=env, counter_source="DEVICE_UPTIME"
+        )
+        assert "devices" in result
+        assert len(result["devices"]) > 0
+        assert result["devices"][0]["device_id"]
+
+    def test_register_device_aes_128_eax(self, credentials, env):
+        result = register_device(
+            credentials=credentials,
+            env=env,
+            encryption="AES-128-EAX",
+            counter_source="DEVICE_UPTIME",
+            period_in_seconds=1024,
         )
         assert "devices" in result
         assert len(result["devices"]) > 0

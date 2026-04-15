@@ -170,6 +170,7 @@ def register_device(
     env: Environment,
     encryption: str = "AES-256-CTR",
     counter_source: Optional[str] = None,
+    period_in_seconds: Optional[int] = None,
 ) -> Any:
     """Create a new device and return it."""
     data: dict = {
@@ -177,7 +178,9 @@ def register_device(
         "encryption": encryption or "AES-256-CTR",
     }
     if counter_source is not None:
-        eid_rotation: dict = {"counter_source": counter_source, "pool_size": 128}
+        eid_rotation: dict = {"counter_source": counter_source}
+        if period_in_seconds is not None:
+            eid_rotation["period_in_seconds"] = period_in_seconds
         data["eid_rotation"] = eid_rotation
     return cloud_request(
         method="POST",
