@@ -37,6 +37,31 @@ class UnencryptedPacket:
 
 
 @dataclass(frozen=True)
+class AesEaxPacket:
+    """A packet using AES-EAX authenticated encryption (protocol version 2)."""
+
+    timestamp: int
+    location: Optional[Location]
+    protocol_version: int  # 6-bit version (2 for AES-EAX)
+    nonce_salt: bytes  # 2 bytes, random per-message
+    eid: int  # 8-byte EID as uint64
+    payload: bytes  # 0-9 bytes encrypted
+    auth_tag: bytes  # 4 bytes AEAD tag
+    rssi: int
+
+
+@dataclass(frozen=True)
+class UnknownPacket:
+    """A packet with an unrecognized protocol version."""
+
+    timestamp: int
+    location: Optional[Location]
+    protocol_version: int
+    payload: bytes
+    rssi: int
+
+
+@dataclass(frozen=True)
 class DecryptedPacket:
     """A packet decrypted by backend or locally."""
 

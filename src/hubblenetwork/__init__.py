@@ -9,10 +9,10 @@ from . import cloud
 from . import ready
 from . import sat
 
-from .packets import Location, EncryptedPacket, UnencryptedPacket, DecryptedPacket, SatellitePacket
+from .packets import Location, EncryptedPacket, UnencryptedPacket, DecryptedPacket, SatellitePacket, AesEaxPacket, UnknownPacket
 from .device import Device
 from .org import Organization
-from .crypto import decrypt, UNIX_TIME, DEVICE_UPTIME
+from .crypto import decrypt, decrypt_eax, UNIX_TIME, DEVICE_UPTIME
 from .errors import InvalidCredentialsError
 from .cloud import Credentials, Environment
 
@@ -22,12 +22,15 @@ __all__ = [
     "ready",
     "sat",
     "decrypt",
+    "decrypt_eax",
     "UNIX_TIME",
     "DEVICE_UPTIME",
     "SatellitePacket",
     "Location",
     "EncryptedPacket",
     "UnencryptedPacket",
+    "AesEaxPacket",
+    "UnknownPacket",
     "DecryptedPacket",
     "Device",
     "Organization",

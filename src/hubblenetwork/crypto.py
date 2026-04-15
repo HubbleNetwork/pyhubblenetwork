@@ -5,7 +5,7 @@ from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
 from datetime import datetime, timezone
 
-from .packets import EncryptedPacket, DecryptedPacket
+from .packets import EncryptedPacket, DecryptedPacket, AesEaxPacket
 
 UNIX_TIME = "UNIX_TIME"
 DEVICE_UPTIME = "DEVICE_UPTIME"
@@ -64,6 +64,82 @@ def _aes_decrypt(key: bytes, session_nonce: bytes, ciphertext: bytes) -> bytes:
     cipher = AES.new(key, AES.MODE_CTR, nonce=session_nonce)
 
     return cipher.decrypt(ciphertext)
+
+
+def _derive_eid_key(key: bytes, counter: int) -> bytes:
+    """Derive the intermediate key (key_0) for EID generation.
+
+    For counters 0-127, the result is identical (high counter bytes are [00 00]).
+    """
+    counter_bytes = counter.to_bytes(4, "little")
+    high_counter_bytes = bytes(reversed(counter_bytes[2:4]))
+    msg1 = b"\x00" * 11 + b"\xff" + b"\x00\x00" + high_counter_bytes
+    return AES.new(key, AES.MODE_ECB).encrypt(msg1)
+
+
+def _generate_eid(key: bytes, counter: int, scale_factor: int = 0) -> int:
+    """Generate an 8-byte EID for a given counter value using AES-ECB."""
+    key_0 = _derive_eid_key(key, counter)
+    masked = counter & ~((1 << scale_factor) - 1)
+    msg2 = b"\x00" * 11 + scale_factor.to_bytes(1, "big") + masked.to_bytes(4, "big")
+    eid_block = AES.new(key_0, AES.MODE_ECB).encrypt(msg2)
+    return int.from_bytes(eid_block[0:8], "big")
+
+
+def decrypt_eax(
+    key: bytes,
+    pkt: AesEaxPacket,
+    scale_factor: int = 0,
+    pool_size: int = 128,
+) -> Optional[DecryptedPacket]:
+    """Decrypt an AES-EAX packet by trying candidate counters.
+
+    Generates candidate EIDs for each counter and matches against
+    the packet's EID. On match, constructs the nonce and decrypts.
+
+    Args:
+        scale_factor: EID rotation scale factor (0-15). Counter values
+            are multiples of 2**scale_factor. Corresponds to rot_exp
+            in device config or log2(period_in_seconds) in the API.
+        pool_size: Number of counters to try (default 128).
+    """
+    step = 1 << scale_factor
+    # key_0 is constant when high counter bytes are 00 00 (counter < 65536)
+    key_0 = _derive_eid_key(key, 0)
+    ecb = AES.new(key_0, AES.MODE_ECB)
+
+    for i in range(pool_size):
+        counter = i * step
+        msg2 = b"\x00" * 11 + scale_factor.to_bytes(1, "big") + counter.to_bytes(4, "big")
+        eid_block = ecb.encrypt(msg2)
+        candidate_eid = int.from_bytes(eid_block[0:8], "big")
+
+        if candidate_eid != pkt.eid:
+            continue
+
+        # EID matched — construct nonce and decrypt
+        nonce = counter.to_bytes(4, "big") + pkt.nonce_salt
+        cipher = AES.new(key, AES.MODE_EAX, mac_len=4, nonce=nonce)
+        try:
+            decrypted = cipher.decrypt_and_verify(
+                pkt.payload, pkt.auth_tag
+            )
+        except ValueError:
+            continue
+
+        return DecryptedPacket(
+            timestamp=pkt.timestamp,
+            device_id="",
+            device_name="",
+            location=pkt.location,
+            tags={},
+            payload=decrypted,
+            rssi=pkt.rssi,
+            counter=counter,
+            sequence=int.from_bytes(pkt.nonce_salt, "big"),
+        )
+
+    return None
 
 
 def _check_tag_matches(
