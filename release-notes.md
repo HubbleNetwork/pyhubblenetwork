@@ -1,5 +1,11 @@
 # Release Notes
 
+## [0.8.0] - 2026-04-14
+
+### Added
+- feat: add AES-EAX encrypted packet support
+- feat(ble): add unencrypted protocol support with auto-detection
+
 ## [0.7.0] - 2026-04-13
 
 ### Added
