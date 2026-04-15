@@ -349,17 +349,29 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         row = [pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"]
 
         if self._column_config["is_decrypted"]:
-            row.extend([pkt.counter, pkt.sequence])
+            if isinstance(pkt, DecryptedPacket):
+                row.extend([pkt.counter, pkt.sequence])
+            else:
+                row.extend(["-", "-"])
 
         if self._column_config["is_unencrypted"]:
-            row.extend([pkt.network_id, pkt.protocol_version])
+            if isinstance(pkt, UnencryptedPacket):
+                row.extend([pkt.network_id, pkt.protocol_version])
+            else:
+                row.extend(["-", "-"])
 
         if self._column_config["is_aes_eax"]:
-            salt_int = int.from_bytes(pkt.nonce_salt, "big")
-            row.extend([pkt.protocol_version, hex(pkt.eid), salt_int])
+            if isinstance(pkt, AesEaxPacket):
+                salt_int = int.from_bytes(pkt.nonce_salt, "big")
+                row.extend([pkt.protocol_version, hex(pkt.eid), salt_int])
+            else:
+                row.extend(["-", "-", "-"])
 
         if self._column_config["is_unknown"]:
-            row.append(pkt.protocol_version)
+            if isinstance(pkt, UnknownPacket):
+                row.append(pkt.protocol_version)
+            else:
+                row.append("-")
 
         if self._column_config["has_real_location"]:
             loc = pkt.location
