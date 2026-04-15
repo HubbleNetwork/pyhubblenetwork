@@ -2631,7 +2631,7 @@ def list_devices(org: Organization) -> None:
     type=str,
     default=None,
     show_default=False,
-    help="Encryption type [AES-256-CTR, AES-128-CTR, NONE]",
+    help="Encryption type [AES-256-CTR, AES-128-CTR, AES-128-EAX, NONE]",
 )
 @click.option(
     "--counter-source",
@@ -2641,15 +2641,26 @@ def list_devices(org: Organization) -> None:
     show_default=False,
     help="EID rotation counter source",
 )
+@click.option(
+    "--period-in-seconds",
+    "-p",
+    type=int,
+    default=None,
+    show_default=False,
+    help="EID rotation period in seconds (AES-128-EAX only, must be power of 2 in [1, 32768])",
+)
 @pass_orgcfg
-def register_device(org: Organization, encryption, counter_source) -> None:
+def register_device(org: Organization, encryption, counter_source, period_in_seconds) -> None:
     if encryption:
         click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
     if counter_source:
         click.secho(f'[INFO] EID rotation counter source: "{counter_source}"')
+    if period_in_seconds is not None:
+        click.secho(f'[INFO] EID rotation period: {period_in_seconds}s')
     click.secho(str(org.register_device(
         encryption=encryption,
         counter_source=counter_source,
+        period_in_seconds=period_in_seconds,
     )))
 
 

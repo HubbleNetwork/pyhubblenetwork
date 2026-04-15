@@ -11,6 +11,7 @@ from .errors import InvalidCredentialsError, ValidationError
 
 
 _VALID_COUNTER_SOURCES = {UNIX_TIME, DEVICE_UPTIME}
+_VALID_PERIOD_VALUES = {2**i for i in range(16)}
 
 
 class Organization:
@@ -50,26 +51,43 @@ class Organization:
         self,
         encryption: Optional[str] = None,
         counter_source: Optional[str] = None,
+        period_in_seconds: Optional[int] = None,
     ) -> Device:
         """
         Register a new device in this organization and return it.
         Returned Device will have an ID and provisioned key.
 
         Args:
-            encryption: Encryption type ("AES-256-CTR", "AES-128-CTR", or "NONE").
+            encryption: Encryption type ("AES-256-CTR", "AES-128-CTR", "AES-128-EAX", or "NONE").
                         Defaults to "AES-256-CTR".
             counter_source: EID rotation counter source ("UNIX_TIME" or "DEVICE_UPTIME").
-                            Pool size is fixed at 128 for counter-based EID modes.
+            period_in_seconds: EID rotation period in seconds. Only valid when
+                               encryption='AES-128-EAX' and counter_source='DEVICE_UPTIME'.
+                               Must be a power of 2 in [1, 32768].
         """
         if counter_source is not None and counter_source not in _VALID_COUNTER_SOURCES:
             raise ValidationError(
                 f"counter_source must be one of {sorted(_VALID_COUNTER_SOURCES)}, got {counter_source!r}"
             )
+        if period_in_seconds is not None:
+            if encryption != "AES-128-EAX":
+                raise ValidationError(
+                    "period_in_seconds requires encryption='AES-128-EAX'"
+                )
+            if counter_source != DEVICE_UPTIME:
+                raise ValidationError(
+                    "period_in_seconds requires counter_source='DEVICE_UPTIME'"
+                )
+            if period_in_seconds not in _VALID_PERIOD_VALUES:
+                raise ValidationError(
+                    f"period_in_seconds must be a power of 2 in [1, 32768], got {period_in_seconds}"
+                )
         resp = cloud.register_device(
             credentials=self.credentials,
             env=self.env,
             encryption=encryption,
             counter_source=counter_source,
+            period_in_seconds=period_in_seconds,
         )
         device = resp["devices"][0]
         key_bytes = base64.b64decode(device["key"]) if device.get("key") else None
