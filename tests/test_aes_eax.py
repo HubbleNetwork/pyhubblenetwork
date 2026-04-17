@@ -371,6 +371,64 @@ class TestCliAesEaxScan:
         assert len(parsed) == 1
         assert parsed[0]["counter"] == 7
 
+    @patch("hubblenetwork.cli.decrypt_eax")
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_scan_aes_eax_auth_fail_skipped_by_default(self, mock_scan, mock_decrypt):
+        """Packets failing AES-EAX auth are skipped when --show-failed-decryption is off."""
+        pkt = _make_dummy_aes_eax_packet()
+        mock_scan.side_effect = [pkt, None]
+        mock_decrypt.return_value = None  # auth failure
+
+        runner = CliRunner()
+        key_b64 = "AAAAAAAAAAAAAAAAAAAAAA=="
+        result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "--key", key_b64, "-o", "json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed == []
+
+    @patch("hubblenetwork.cli.decrypt_eax")
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_scan_aes_eax_auth_fail_shown_when_flag_set(self, mock_scan, mock_decrypt):
+        """With --show-failed-decryption, failing packets are shown with fail status."""
+        pkt = _make_dummy_aes_eax_packet()
+        mock_scan.side_effect = [pkt, None]
+        mock_decrypt.return_value = None  # auth failure
+
+        runner = CliRunner()
+        key_b64 = "AAAAAAAAAAAAAAAAAAAAAA=="
+        result = runner.invoke(
+            cli,
+            ["ble", "scan", "--timeout", "1", "--key", key_b64, "-o", "json", "--show-failed-decryption"],
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert len(parsed) == 1
+        assert parsed[0]["decrypt_status"] == "fail"
+        assert parsed[0]["protocol_version"] == 2
+
+    @patch("hubblenetwork.cli.decrypt_eax")
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_scan_aes_eax_success_shows_ok_when_flag_set(self, mock_scan, mock_decrypt):
+        """With --show-failed-decryption, successful decrypts carry ok status."""
+        pkt = _make_dummy_aes_eax_packet()
+        mock_scan.side_effect = [pkt, None]
+        mock_decrypt.return_value = DecryptedPacket(
+            timestamp=1700000000, device_id="", device_name="",
+            location=Location(lat=90, lon=0, fake=True), tags={},
+            payload=b"decrypted", rssi=-65, counter=7, sequence=None,
+        )
+
+        runner = CliRunner()
+        key_b64 = "AAAAAAAAAAAAAAAAAAAAAA=="
+        result = runner.invoke(
+            cli,
+            ["ble", "scan", "--timeout", "1", "--key", key_b64, "-o", "json", "--show-failed-decryption"],
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert len(parsed) == 1
+        assert parsed[0]["decrypt_status"] == "ok"
+
     @patch("hubblenetwork.cli.ble_mod.scan_single")
     def test_scan_unknown_packet_tabular(self, mock_scan):
         """Unknown version packet shows version in tabular output."""

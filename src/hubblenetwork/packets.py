@@ -22,6 +22,11 @@ class EncryptedPacket:
     location: Optional[Location]  # None if unknown
     payload: bytes  # opaque encrypted bytes
     rssi: int  # received signal strength (dBm)
+    # Fields extracted from the raw advertisement, when present. AES-CTR
+    # carries auth_tag but no EID; None means the field isn't applicable.
+    protocol_version: Optional[int] = None
+    eid: Optional[int] = None
+    auth_tag: Optional[bytes] = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,12 @@ class DecryptedPacket:
     rssi: int  # received signal strength (dBm)
     counter: Optional[int] = None
     sequence: Optional[int] = None
+    # Preserved from the raw packet so the original version / EID / auth tag
+    # can still be displayed alongside the decrypted payload. AES-CTR has no
+    # EID.
+    protocol_version: Optional[int] = None
+    eid: Optional[int] = None
+    auth_tag: Optional[bytes] = None
 
 
 @dataclass(frozen=True)
