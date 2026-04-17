@@ -137,6 +137,9 @@ def decrypt_eax(
             rssi=pkt.rssi,
             counter=i,
             sequence=int.from_bytes(pkt.nonce_salt, "big"),
+            protocol_version=pkt.protocol_version,
+            eid=pkt.eid,
+            auth_tag=pkt.auth_tag,
         )
 
     return None
@@ -194,6 +197,9 @@ def decrypt(
                 rssi=encrypted_pkt.rssi,
                 counter=candidate,
                 sequence=parsed.seq_no,
+                protocol_version=encrypted_pkt.protocol_version,
+                eid=encrypted_pkt.eid,
+                auth_tag=parsed.auth_tag,
             )
     return None
 

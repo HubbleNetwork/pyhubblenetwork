@@ -122,7 +122,11 @@ def _get_org_and_token(org_id, token) -> tuple[str, str]:
     return org_id, token
 
 
-def _packet_to_dict(pkt, payload_format: str = "base64") -> dict:
+def _packet_to_dict(
+    pkt,
+    payload_format: str = "base64",
+    decrypt_status: Optional[str] = None,
+) -> dict:
     """Convert a packet to a dictionary for JSON serialization."""
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
     data = {
@@ -136,21 +140,42 @@ def _packet_to_dict(pkt, payload_format: str = "base64") -> dict:
         data["network_id"] = pkt.network_id
     elif isinstance(pkt, AesEaxPacket):
         data["protocol_version"] = pkt.protocol_version
-        data["eid"] = hex(pkt.eid)
+        data["eid"] = f"{pkt.eid:x}"
+        data["auth_tag"] = pkt.auth_tag.hex()
         data["nonce_salt"] = pkt.nonce_salt.hex()
     elif isinstance(pkt, UnknownPacket):
         data["protocol_version"] = pkt.protocol_version
     elif isinstance(pkt, DecryptedPacket):
         data["counter"] = pkt.counter
         data["sequence"] = pkt.sequence
+        if pkt.protocol_version is not None:
+            data["protocol_version"] = pkt.protocol_version
+        if pkt.eid is not None:
+            data["eid"] = f"{pkt.eid:x}"
+        if pkt.auth_tag is not None:
+            data["auth_tag"] = pkt.auth_tag.hex()
+    elif isinstance(pkt, EncryptedPacket):
+        if pkt.protocol_version is not None:
+            data["protocol_version"] = pkt.protocol_version
+        if pkt.eid is not None:
+            data["eid"] = f"{pkt.eid:x}"
+        if pkt.auth_tag is not None:
+            data["auth_tag"] = pkt.auth_tag.hex()
 
-    data["payload"] = _format_payload(pkt.payload, payload_format)
+    # Strip seq_no/EID/auth_tag header from raw AES-CTR payload for display.
+    payload_bytes = pkt.payload
+    if isinstance(pkt, EncryptedPacket) and len(payload_bytes) >= 10:
+        payload_bytes = payload_bytes[10:]
+    data["payload"] = _format_payload(payload_bytes, payload_format)
 
     if not pkt.location.fake:
         data["location"] = {
             "lat": pkt.location.lat,
             "lon": pkt.location.lon,
         }
+
+    if decrypt_status is not None:
+        data["decrypt_status"] = decrypt_status
 
     return data
 
@@ -238,13 +263,17 @@ def _format_ready_json_error(
     }
 
 
+_DECRYPT_STATUS_DISPLAY = {"ok": "OK", "fail": "FAIL"}
+
+
 class _StreamingPrinterBase:
     """Base class for streaming packet printers."""
 
-    def __init__(self):
+    def __init__(self, show_decrypt_status: bool = False):
         self._packet_count = 0
+        self._show_decrypt_status = show_decrypt_status
 
-    def print_row(self, pkt) -> None:
+    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
         """Print a single packet. Override in subclasses."""
         raise NotImplementedError
 
@@ -268,52 +297,50 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
     # Fixed column widths for consistent alignment
     _COL_WIDTHS = {
         "TIMESTAMP": 12,
-        "TIME": 26,
+        "TIME": 10,
         "RSSI": 6,
         "COUNTER": 8,
-        "SEQ": 6,
         "NET_ID": 12,
         "VERSION": 8,
         "EID": 20,
-        "SALT": 6,
+        "TAG": 10,
+        "SALT/SEQ": 10,
         "COORDINATES": 22,
         "PAYLOAD": 20,
+        "DECRYPT": 8,
     }
 
-    def __init__(self, payload_format: str = "base64"):
-        super().__init__()
+    def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False):
+        super().__init__(show_decrypt_status=show_decrypt_status)
         self._header_printed = False
         self._headers: List[str] = []
         self._column_config: dict = {}
         self._payload_format = payload_format
 
     def _determine_columns(self, pkt) -> tuple[List[str], dict]:
-        """Determine column headers and configuration based on packet type."""
-        is_decrypted = isinstance(pkt, DecryptedPacket)
+        """Determine column headers and configuration based on packet type.
+
+        AES-EAX and AES-CTR packets share a single unified layout — VERSION,
+        EID, TAG, COUNTER, and SALT/SEQ are always present, with "-" shown
+        where a field doesn't apply.
+        """
         is_unencrypted = isinstance(pkt, UnencryptedPacket)
-        is_aes_eax = isinstance(pkt, AesEaxPacket)
-        is_unknown = isinstance(pkt, UnknownPacket)
         has_real_location = not pkt.location.fake
 
-        headers = ["TIMESTAMP", "TIME", "RSSI"]
-        if is_decrypted:
-            headers.extend(["COUNTER", "SALT"])
+        headers = []
+        if self._show_decrypt_status:
+            headers.append("DECRYPT")
+        headers.extend(
+            ["TIMESTAMP", "TIME", "RSSI", "VERSION", "EID", "TAG", "COUNTER", "SALT/SEQ"]
+        )
         if is_unencrypted:
-            headers.extend(["NET_ID", "VERSION"])
-        if is_aes_eax:
-            headers.extend(["VERSION", "EID", "SALT"])
-        if is_unknown:
-            headers.append("VERSION")
+            headers.append("NET_ID")
         if has_real_location:
             headers.append("COORDINATES")
-        if is_decrypted or is_unencrypted or is_aes_eax or is_unknown:
-            headers.append("PAYLOAD")
+        headers.append("PAYLOAD")
 
         return headers, {
-            "is_decrypted": is_decrypted,
             "is_unencrypted": is_unencrypted,
-            "is_aes_eax": is_aes_eax,
-            "is_unknown": is_unknown,
             "has_real_location": has_real_location,
         }
 
@@ -333,7 +360,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             parts.append("-" * width)
         return "+-" + "-+-".join(parts) + "-+"
 
-    def print_row(self, pkt) -> None:
+    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
         """Print a single packet row, printing header first if needed."""
         if not self._header_printed:
             self._headers, self._column_config = self._determine_columns(pkt)
@@ -345,31 +372,38 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             self._header_printed = True
 
         # Build row data matching the column structure
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-        row = [pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"]
+        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%H:%M:%S")
+        row: List = []
+        if self._show_decrypt_status:
+            row.append(_DECRYPT_STATUS_DISPLAY.get(decrypt_status, "-"))
+        row.extend([pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"])
 
-        if self._column_config["is_decrypted"]:
-            if isinstance(pkt, DecryptedPacket):
-                row.extend([pkt.counter, pkt.sequence])
-            else:
-                row.extend(["-", "-"])
+        # Unified packet columns: VERSION / EID / TAG / COUNTER / SALT_SEQ are
+        # always present; "-" is shown when a field doesn't apply to the type.
+        version = getattr(pkt, "protocol_version", None)
+        row.append(version if version is not None else "-")
+
+        eid = getattr(pkt, "eid", None)
+        row.append(f"{eid:x}" if eid is not None else "-")
+
+        auth_tag = getattr(pkt, "auth_tag", None)
+        row.append(auth_tag.hex() if auth_tag is not None else "-")
+
+        if isinstance(pkt, DecryptedPacket) and pkt.counter is not None:
+            row.append(pkt.counter)
+        else:
+            row.append("-")
+
+        if isinstance(pkt, DecryptedPacket):
+            row.append(pkt.sequence if pkt.sequence is not None else "-")
+        elif isinstance(pkt, AesEaxPacket):
+            row.append(int.from_bytes(pkt.nonce_salt, "big"))
+        else:
+            row.append("-")
 
         if self._column_config["is_unencrypted"]:
             if isinstance(pkt, UnencryptedPacket):
-                row.extend([pkt.network_id, pkt.protocol_version])
-            else:
-                row.extend(["-", "-"])
-
-        if self._column_config["is_aes_eax"]:
-            if isinstance(pkt, AesEaxPacket):
-                salt_int = int.from_bytes(pkt.nonce_salt, "big")
-                row.extend([pkt.protocol_version, hex(pkt.eid), salt_int])
-            else:
-                row.extend(["-", "-", "-"])
-
-        if self._column_config["is_unknown"]:
-            if isinstance(pkt, UnknownPacket):
-                row.append(pkt.protocol_version)
+                row.append(pkt.network_id)
             else:
                 row.append("-")
 
@@ -377,8 +411,14 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             loc = pkt.location
             row.append(f"{loc.lat:.6f},{loc.lon:.6f}")
 
-        if self._column_config["is_decrypted"] or self._column_config["is_unencrypted"] or self._column_config["is_aes_eax"] or self._column_config["is_unknown"]:
-            row.append(_format_payload(pkt.payload, self._payload_format))
+        # For raw AES-CTR packets, strip the seq_no/EID/auth_tag header bytes
+        # so the PAYLOAD column shows just the ciphertext (the metadata is
+        # already rendered in the dedicated columns).
+        if isinstance(pkt, EncryptedPacket) and len(pkt.payload) >= 10:
+            display_payload = pkt.payload[10:]
+        else:
+            display_payload = pkt.payload
+        row.append(_format_payload(display_payload, self._payload_format))
 
         # Print the data row
         click.echo(self._format_row(row))
@@ -389,8 +429,13 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
 class _StreamingJsonPrinter(_StreamingPrinterBase):
     """Print packets as a streaming JSON array."""
 
-    def __init__(self, payload_format: str = "base64", to_dict_fn=None):
-        super().__init__()
+    def __init__(
+        self,
+        payload_format: str = "base64",
+        to_dict_fn=None,
+        show_decrypt_status: bool = False,
+    ):
+        super().__init__(show_decrypt_status=show_decrypt_status)
         self._array_started = False
         self._payload_format = payload_format
         self._to_dict_fn = to_dict_fn or _packet_to_dict
@@ -399,9 +444,10 @@ class _StreamingJsonPrinter(_StreamingPrinterBase):
     def suppress_info_messages(self) -> bool:
         return True
 
-    def print_row(self, pkt) -> None:
+    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
         """Print a single packet as JSON."""
-        pkt_dict = self._to_dict_fn(pkt, self._payload_format)
+        status = decrypt_status if self._show_decrypt_status else None
+        pkt_dict = self._to_dict_fn(pkt, self._payload_format, decrypt_status=status)
         if not self._array_started:
             click.echo("[")
             self._array_started = True
@@ -435,8 +481,17 @@ _STREAMING_PRINTERS = {
 # ---------------------------------------------------------------------------
 
 
-def _sat_packet_to_dict(pkt: SatellitePacket, payload_format: str = "base64") -> dict:
-    """Convert a SatellitePacket to a dictionary for JSON serialization."""
+def _sat_packet_to_dict(
+    pkt: SatellitePacket,
+    payload_format: str = "base64",
+    decrypt_status: Optional[str] = None,
+) -> dict:
+    """Convert a SatellitePacket to a dictionary for JSON serialization.
+
+    decrypt_status is accepted for API compatibility with _packet_to_dict but
+    ignored — satellite packets don't go through local decryption.
+    """
+    _ = decrypt_status
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
     return {
         "device_id": pkt.device_id,
@@ -890,6 +945,12 @@ def ble_detect(
     show_default=True,
     help="Encoding format for packet payload",
 )
+@click.option(
+    "--show-failed-decryption",
+    is_flag=True,
+    default=False,
+    help="Show encrypted packets that fail decryption/authentication with the provided key. Adds a DECRYPT column indicating OK/FAIL.",
+)
 @click.pass_context
 def ble_scan(
     ctx,
@@ -903,6 +964,7 @@ def ble_scan(
     scale_factor: int = 0,
     output_format: str = "tabular",
     payload_format: str = "base64",
+    show_failed_decryption: bool = False,
 ) -> None:
     """
     Scan for UUID 0xFCA6 and print packets as they are found.
@@ -929,7 +991,10 @@ def ble_scan(
     printer_class = _STREAMING_PRINTERS.get(
         output_format.lower(), _StreamingTablePrinter
     )
-    printer = printer_class(payload_format=payload_format)
+    printer = printer_class(
+        payload_format=payload_format,
+        show_decrypt_status=show_failed_decryption,
+    )
 
     if not printer.suppress_info_messages:
         click.secho("[INFO] Scanning for Hubble devices... (Press Ctrl+C to stop)")
@@ -978,9 +1043,10 @@ def ble_scan(
                 if decoded_key:
                     decrypted_pkt = decrypt_eax(decoded_key, pkt, scale_factor=scale_factor)
                     if decrypted_pkt:
-                        printer.print_row(decrypted_pkt)
-                    else:
-                        printer.print_row(pkt)
+                        printer.print_row(decrypted_pkt, decrypt_status="ok")
+                    elif show_failed_decryption:
+                        printer.print_row(pkt, decrypt_status="fail")
+                    # else: auth failed, skip the packet
                 else:
                     printer.print_row(pkt)
             # Encrypted packets: optionally decrypt and/or ingest
@@ -990,11 +1056,12 @@ def ble_scan(
                         decoded_key, pkt, days=days, counter_mode=counter_mode
                     )
                     if decrypted_pkt:
-                        printer.print_row(decrypted_pkt)
+                        printer.print_row(decrypted_pkt, decrypt_status="ok")
                         if ingest:
                             org.ingest_packet(pkt)
-                    else:
-                        printer.print_row(pkt)
+                    elif show_failed_decryption:
+                        printer.print_row(pkt, decrypt_status="fail")
+                    # else: decryption failed, skip the packet
                 else:
                     printer.print_row(pkt)
             # Unknown version packets: always show
