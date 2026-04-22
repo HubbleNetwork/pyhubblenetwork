@@ -176,7 +176,7 @@ class Organization:
                             lon=packet["location"]["longitude"],
                         ),
                         tags=packet["device"]["tags"],
-                        payload=packet["device"]["payload"],
+                        payload=base64.b64decode(packet["device"]["payload"]),
                         rssi=packet["device"]["rssi"],
                         counter=packet["device"]["counter"],
                         sequence=packet["device"]["sequence_number"],
