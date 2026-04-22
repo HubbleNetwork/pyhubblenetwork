@@ -1,5 +1,19 @@
 # Release Notes
 
+## [0.9.0] - 2026-04-22
+
+### Added
+- feat(org): add period_exponent for AES-EAX device registration
+- feat(ble): skip failed decrypts by default, add unified packet columns
+- feat: add AES-128-EAX encrypted device registration support
+
+### Fixed
+- fix(org): decode API payload bytes in retrieve_packets
+- fix(cli): rename SEQ column to SALT for AES-EAX packet display
+- fix(crypto): show pre-scale-factor counter in AES-EAX decryption
+- fix(cli): handle mixed packet types in streaming table printer
+- fix(cloud): fix device registration
+
 ## [0.8.0] - 2026-04-14
 
 ### Added
