@@ -34,6 +34,31 @@ _handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logger.addHandler(_handler)
 
 
+def _parse_key(key_str: str) -> bytes:
+    """Parse an encryption key from hex or base64. Returns raw bytes.
+
+    Accepts 128-bit (16 bytes) or 256-bit (32 bytes) keys.
+    Strings of exactly 32 or 64 characters are tried as hex first, then base64.
+    """
+    s = key_str.strip()
+    if len(s) in (32, 64):
+        try:
+            return bytes.fromhex(s)
+        except ValueError:
+            pass
+    try:
+        key_bytes = base64.b64decode(s, validate=True)
+    except binascii.Error as e:
+        raise ValueError(
+            f"Invalid key format: {e}. Provide hex (32 or 64 hex chars) or base64."
+        )
+    if len(key_bytes) not in (16, 32):
+        raise ValueError(
+            f"Key must be 16 bytes (AES-128) or 32 bytes (AES-256), got {len(key_bytes)}."
+        )
+    return key_bytes
+
+
 def _validate_info(msg):
     click.secho("[INFO] ", fg="cyan", bold=True, nl=False)
     click.echo(msg + "... ", nl=False)
@@ -695,7 +720,7 @@ def ble() -> None:
     type=str,
     default=None,
     show_default=False,
-    help="Key to decrypt packets (base64 encoded, required)",
+    help="Key to decrypt packets (hex or base64, 16 or 32 bytes)",
 )
 @click.option(
     "--days",
@@ -753,8 +778,8 @@ def ble_detect(
     The key parameter is required. Check the 'success' field in JSON output.
 
     Example:
-      hubblenetwork ble detect --key "yourBase64Key=" --timeout 20
-      hubblenetwork ble detect -k "key=" -o tabular
+      hubblenetwork ble detect --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 20
+      hubblenetwork ble detect -k "q9vH3u2J4aN8Rw1KpZsO+A==" -o tabular
     """
     use_json = output_format.lower() == "json"
 
@@ -774,13 +799,12 @@ def ble_detect(
         else:
             click.secho(f"[ERROR] {msg}", fg="red", err=True)
 
-    # Try to decode the base64 key
     try:
-        decoded_key = bytearray(base64.b64decode(key))
+        decoded_key = bytearray(_parse_key(key))
         logger.debug("Key decoded successfully")
-    except (binascii.Error, Exception) as e:
-        logger.error(f"Base64 decoding failed: {e}")
-        _output_error("Base64 decoding failed for provided key")
+    except ValueError as e:
+        logger.error(f"Key decoding failed: {e}")
+        _output_error(f"Key decoding failed: {e}")
         return
 
     # Set up timeout tracking
@@ -874,7 +898,7 @@ def ble_detect(
     type=str,
     default=None,
     show_default=False,
-    help="Base64-encoded key to decrypt packets",
+    help="Key to decrypt packets (hex or base64, 16 or 32 bytes)",
 )
 @click.option(
     "--days",
@@ -952,7 +976,7 @@ def ble_scan(
 
     Example:
       hubblenetwork ble scan --timeout 30
-      hubblenetwork ble scan --key "base64key=" --timeout 60
+      hubblenetwork ble scan --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 60
       hubblenetwork ble scan -o json --timeout 10
       hubblenetwork ble scan -n 5              # Stop after 5 packets
       hubblenetwork ble scan --network-id 4378792717
@@ -991,8 +1015,8 @@ def ble_scan(
     decoded_key: Optional[bytearray] = None
     if key:
         try:
-            decoded_key = bytearray(base64.b64decode(key))
-        except (binascii.Error, Exception) as e:
+            decoded_key = bytearray(_parse_key(key))
+        except ValueError as e:
             if printer.suppress_info_messages:
                 click.echo(json.dumps({"error": f"Invalid base64 key: {e}"}))
                 return
@@ -1070,7 +1094,7 @@ def ble_scan(
     "-k",
     required=True,
     type=str,
-    help="Key for checking time counter (base64 encoded)",
+    help="Key for checking time counter (hex or base64, 16 or 32 bytes)",
 )
 @click.option(
     "--json-output",
@@ -1092,20 +1116,15 @@ def ble_check_time(
     A device is considered out of spec if it is more than 2 days off.
 
     Example:
-      hubblenetwork ble check-time --key "yourBase64Key=" --timeout 30
+      hubblenetwork ble check-time --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 30
     """
-    # Decode the key
     try:
-        decoded_key = bytearray(base64.b64decode(key))
-    except (binascii.Error, Exception) as e:
+        decoded_key = bytearray(_parse_key(key))
+    except ValueError as e:
         if json_output:
-            click.echo(json.dumps({"error": f"Base64 decoding failed: {e}"}))
+            click.echo(json.dumps({"error": str(e)}))
         else:
-            click.secho(
-                f"[ERROR] Base64 decoding failed for provided key: {e}",
-                fg="red",
-                err=True,
-            )
+            click.secho(f"[ERROR] {e}", fg="red", err=True)
         return
 
     if not json_output:
@@ -1233,14 +1252,15 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
     # Step 1: Validate inputs
     _validate_info("Validating format of inputs")
     try:
-        decoded_key = base64.b64decode(key, validate=True)
-    except Exception:
+        decoded_key = _parse_key(key)
+    except ValueError as e:
         _validate_error(
-            'Incorrectly formatted device key passed in. Must be a base 64'
-            '\nencoded string such as (fake keys):'
-            '\n 16byte key: "q9vH3u2J4aN8Rw1KpZsO+A=="'
-            '\n 32byte key: "N4e7xq9X1pQ0sVbY2mT3uA6fH9rK2dW5cG8jL1oQ0vU="'
-            '\nNote the "=" characters at the end which must be included.'
+            f'Incorrectly formatted device key: {e}'
+            '\nAccepted formats (fake keys):'
+            '\n Hex 16-byte: "a562a2f7e4c62bed52ab09633878f62b"'
+            '\n Hex 32-byte: "a562a2f7e4c62bed52ab09633878f62ba562a2f7e4c62bed52ab09633878f62b"'
+            '\n Base64 16-byte: "q9vH3u2J4aN8Rw1KpZsO+A=="'
+            '\n Base64 32-byte: "N4e7xq9X1pQ0sVbY2mT3uA6fH9rK2dW5cG8jL1oQ0vU="'
         )
     try:
         uuid.UUID(device_id)
@@ -2071,7 +2091,7 @@ def ready_read_time(
     "--key",
     "-k",
     required=True,
-    help="Base64-encoded encryption key (16 bytes for AES-128-CTR, 32 bytes for AES-256-CTR)",
+    help="Encryption key (hex or base64; 16 bytes = AES-128-CTR, 32 bytes = AES-256-CTR)",
 )
 @click.option(
     "--timeout",
@@ -2101,25 +2121,24 @@ def ready_write_key(
     32 bytes for AES-256-CTR).
 
     Example:
-      hubblenetwork ready write-key --address AA:BB:CC:DD:EE:FF --key <base64-key>
-      hubblenetwork ready write-key -a AA:BB:CC:DD:EE:FF -k <base64-key> --format json
+      hubblenetwork ready write-key --address AA:BB:CC:DD:EE:FF --key a562a2f7e4c62bed52ab09633878f62b
+      hubblenetwork ready write-key -a AA:BB:CC:DD:EE:FF -k "q9vH3u2J4aN8Rw1KpZsO+A==" --format json
     """
     use_json = output_format.lower() == "json"
 
-    # Decode the base64 key
     try:
-        key_bytes = base64.b64decode(key)
-    except Exception as e:
+        key_bytes = _parse_key(key)
+    except ValueError as e:
         if use_json:
             json_output = _format_ready_json_error(
                 command="ready write-key",
                 device_address=address,
-                error=Exception(f"Invalid base64 key: {e}"),
+                error=Exception(str(e)),
                 duration_ms=0,
             )
             click.echo(json.dumps(json_output, indent=2))
         else:
-            click.secho(f"[ERROR] Invalid base64 key: {e}", fg="red", err=True)
+            click.secho(f"[ERROR] {e}", fg="red", err=True)
         sys.exit(1)
 
     if not use_json:
