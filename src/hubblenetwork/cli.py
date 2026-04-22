@@ -892,11 +892,12 @@ def ble_detect(
     help="EID counter mode for AES-CTR packets",
 )
 @click.option(
-    "--scale-factor",
+    "--period-exponent",
+    "-e",
     type=int,
     default=0,
     show_default=True,
-    help="Scale factor for AES-EAX packets (0-15), matches rot_exp in device config",
+    help="EID rotation period exponent for AES-EAX packets (0-15). Period = 2^n seconds. Matches rot_exp in device config.",
 )
 @click.option(
     "--network-id",
@@ -939,7 +940,7 @@ def ble_scan(
     key: Optional[str] = None,
     days: int = 2,
     counter_mode: str = "UNIX_TIME",
-    scale_factor: int = 0,
+    period_exponent: int = 0,
     output_format: str = "tabular",
     payload_format: str = "base64",
     show_failed_decryption: bool = False,
@@ -1019,7 +1020,7 @@ def ble_scan(
             # AES-EAX packets: decrypt if key provided, else show raw fields
             elif isinstance(pkt, AesEaxPacket):
                 if decoded_key:
-                    decrypted_pkt = decrypt_eax(decoded_key, pkt, scale_factor=scale_factor)
+                    decrypted_pkt = decrypt_eax(decoded_key, pkt, period_exponent=period_exponent)
                     if decrypted_pkt:
                         printer.print_row(decrypted_pkt, decrypt_status="ok")
                     elif show_failed_decryption:
