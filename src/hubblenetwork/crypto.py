@@ -77,11 +77,11 @@ def _derive_eid_key(key: bytes, counter: int) -> bytes:
     return AES.new(key, AES.MODE_ECB).encrypt(msg1)
 
 
-def _generate_eid(key: bytes, counter: int, scale_factor: int = 0) -> int:
+def _generate_eid(key: bytes, counter: int, period_exponent: int = 0) -> int:
     """Generate an 8-byte EID for a given counter value using AES-ECB."""
     key_0 = _derive_eid_key(key, counter)
-    masked = counter & ~((1 << scale_factor) - 1)
-    msg2 = b"\x00" * 11 + scale_factor.to_bytes(1, "big") + masked.to_bytes(4, "big")
+    masked = counter & ~((1 << period_exponent) - 1)
+    msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + masked.to_bytes(4, "big")
     eid_block = AES.new(key_0, AES.MODE_ECB).encrypt(msg2)
     return int.from_bytes(eid_block[0:8], "big")
 
@@ -89,7 +89,7 @@ def _generate_eid(key: bytes, counter: int, scale_factor: int = 0) -> int:
 def decrypt_eax(
     key: bytes,
     pkt: AesEaxPacket,
-    scale_factor: int = 0,
+    period_exponent: int = 0,
     pool_size: int = 128,
 ) -> Optional[DecryptedPacket]:
     """Decrypt an AES-EAX packet by trying candidate counters.
@@ -98,19 +98,19 @@ def decrypt_eax(
     the packet's EID. On match, constructs the nonce and decrypts.
 
     Args:
-        scale_factor: EID rotation scale factor (0-15). Counter values
-            are multiples of 2**scale_factor. Corresponds to rot_exp
-            in device config or log2(period_in_seconds) in the API.
+        period_exponent: EID rotation period exponent (0-15). Period = 2^n seconds.
+            Counter values are multiples of 2**period_exponent. Corresponds to
+            rot_exp in device config or log2(period_in_seconds) in the API.
         pool_size: Number of counters to try (default 128).
     """
-    step = 1 << scale_factor
+    step = 1 << period_exponent
     # key_0 is constant when high counter bytes are 00 00 (counter < 65536)
     key_0 = _derive_eid_key(key, 0)
     ecb = AES.new(key_0, AES.MODE_ECB)
 
     for i in range(pool_size):
         counter = i * step
-        msg2 = b"\x00" * 11 + scale_factor.to_bytes(1, "big") + counter.to_bytes(4, "big")
+        msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + counter.to_bytes(4, "big")
         eid_block = ecb.encrypt(msg2)
         candidate_eid = int.from_bytes(eid_block[0:8], "big")
 
