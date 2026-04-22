@@ -2665,6 +2665,24 @@ def list_devices(org: Organization) -> None:
         _print_device(device)
 
 
+_PERIOD_EXPONENT_LABELS = {
+    10: "≈17m",
+    11: "≈34m",
+    12: "≈1.1h",
+    13: "≈2.3h",
+    14: "≈4.6h",
+    15: "≈9h",
+}
+
+
+def _format_period_exponent(n: int) -> str:
+    """Human-readable duration label for a period exponent (period = 2^n seconds)."""
+    label = _PERIOD_EXPONENT_LABELS.get(n)
+    if label is not None:
+        return label
+    return f"{2 ** n}s" if n >= 0 else f"2^{n}s"
+
+
 @org.command("register-device")
 @click.option(
     "--encryption",
@@ -2683,25 +2701,49 @@ def list_devices(org: Organization) -> None:
     help="EID rotation counter source",
 )
 @click.option(
-    "--period-in-seconds",
-    "-p",
+    "--period-seconds",
     type=int,
     default=None,
     show_default=False,
-    help="EID rotation period in seconds (AES-128-EAX only, must be power of 2 in [1, 32768])",
+    help="EID rotation period in seconds (AES-128-EAX + DEVICE_UPTIME only).",
+)
+@click.option(
+    "--period-exponent",
+    type=int,
+    default=None,
+    show_default=False,
+    help="EID rotation period exponent; period = 2^n seconds. Cloud accepts 10-15 (default 15).",
 )
 @pass_orgcfg
-def register_device(org: Organization, encryption, counter_source, period_in_seconds) -> None:
+def register_device(org: Organization, encryption, counter_source, period_seconds, period_exponent) -> None:
+    if period_seconds is not None and period_exponent is not None:
+        raise click.UsageError("provide at most one of --period-seconds / --period-exponent")
+
     if encryption:
         click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
     if counter_source:
         click.secho(f'[INFO] EID rotation counter source: "{counter_source}"')
-    if period_in_seconds is not None:
-        click.secho(f'[INFO] EID rotation period: {period_in_seconds}s')
+    if period_seconds is not None:
+        click.secho(f'[INFO] EID rotation period: {period_seconds}s')
+    if period_exponent is not None:
+        click.secho(
+            f'[INFO] EID rotation period exponent: {period_exponent} ({_format_period_exponent(period_exponent)})'
+        )
+    if (
+        encryption == "AES-128-EAX"
+        and counter_source == DEVICE_UPTIME
+        and period_seconds is None
+        and period_exponent is None
+    ):
+        click.secho(
+            f'[INFO] Using default EID rotation period exponent: 15 ({_format_period_exponent(15)})'
+        )
+
     click.secho(str(org.register_device(
         encryption=encryption,
         counter_source=counter_source,
-        period_in_seconds=period_in_seconds,
+        period_seconds=period_seconds,
+        period_exponent=period_exponent,
     )))
 
 
