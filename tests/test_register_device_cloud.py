@@ -34,7 +34,7 @@ class TestRegisterDeviceRequestBody:
         }
 
     @patch("hubblenetwork.cloud.cloud_request")
-    def test_aes_eax_with_period(self, mock_request, credentials, env):
+    def test_aes_eax_with_period_seconds(self, mock_request, credentials, env):
         mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
         register_device(
             credentials=credentials,
@@ -68,4 +68,24 @@ class TestRegisterDeviceRequestBody:
             "n_devices": 1,
             "encryption": "AES-128-EAX",
             "eid_rotation": {"counter_source": "DEVICE_UPTIME"},
+        }
+
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_aes_eax_with_period_exponent(self, mock_request, credentials, env):
+        mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
+        register_device(
+            credentials=credentials,
+            env=env,
+            encryption="AES-128-EAX",
+            counter_source="DEVICE_UPTIME",
+            period_exponent=15,
+        )
+        body = mock_request.call_args.kwargs["json"]
+        assert body == {
+            "n_devices": 1,
+            "encryption": "AES-128-EAX",
+            "eid_rotation": {
+                "counter_source": "DEVICE_UPTIME",
+                "period_exponent": 15,
+            },
         }
