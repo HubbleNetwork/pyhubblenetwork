@@ -1,5 +1,14 @@
 # Release Notes
 
+## [0.10.0] - 2026-04-27
+
+### Added
+- feat(cli): auto-detect counter_source and period_exponent in `ble scan`
+- feat(cli): accept hex or base64 keys, auto-detect 128/256-bit
+
+### Maintenance
+- chore(ble): rename --scale-factor to --period-exponent / -e
+
 ## [0.9.0] - 2026-04-22
 
 ### Added
