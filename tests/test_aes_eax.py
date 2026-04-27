@@ -455,6 +455,150 @@ class TestCliAesEaxScan:
 
 
 # ---------------------------------------------------------------------------
+# CLI auto-detect tests for AES-EAX packets
+# ---------------------------------------------------------------------------
+
+
+def _build_eax_packet_at_exponent(key: bytes, period_exponent: int, plaintext: bytes) -> AesEaxPacket:
+    """Build a real AES-EAX packet whose EID/tag matches the given exponent."""
+    from hubblenetwork.crypto import _generate_eid as gen_eid
+    # Pick a counter that's a multiple of the step (so it's enumerable
+    # by decrypt_eax with this exponent).
+    step = 1 << period_exponent
+    counter = 3 * step  # 3rd slot
+    eid = gen_eid(key, counter, period_exponent=period_exponent)
+    nonce_salt = b"\x9A\xBC"
+    nonce = counter.to_bytes(4, "big") + nonce_salt
+    cipher = _AES.new(key, _AES.MODE_EAX, mac_len=4, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    return AesEaxPacket(
+        timestamp=1700000000,
+        location=_FAKE_LOCATION,
+        protocol_version=2,
+        nonce_salt=nonce_salt,
+        eid=eid,
+        payload=ciphertext,
+        auth_tag=tag,
+        rssi=-70,
+    )
+
+
+_EAX_KEY_HEX = _EAX_KEY.hex()
+
+
+class TestCliAesEaxAutoDetect:
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_auto_detect_finds_correct_exponent(self, mock_scan):
+        """Without -e, auto-detect resolves period_exponent and decrypts."""
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=12, plaintext=b"hi-eax")
+        mock_scan.side_effect = [pkt, None]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "--key", _EAX_KEY_HEX])
+        assert result.exit_code == 0
+        assert "[WARN]" in result.stderr
+        assert "Auto-detecting" in result.stderr
+        assert "period_exponent=12" in result.stderr
+        assert "period=4096s" in result.stderr
+        # decrypted payload appears in the table
+        assert "hi-eax" in result.stdout or "aGktZWF4" in result.stdout  # raw or base64
+
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_auto_detect_uses_cache_for_same_eid(self, mock_scan):
+        """Second packet with same EID hits cache (no extra detection banner)."""
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=5, plaintext=b"a")
+        mock_scan.side_effect = [pkt, pkt, None]
+
+        from hubblenetwork.crypto import decrypt_eax as real_decrypt_eax
+        from unittest.mock import MagicMock
+        wrapped = MagicMock(side_effect=real_decrypt_eax)
+        with patch("hubblenetwork.cli.decrypt_eax", wrapped):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "--key", _EAX_KEY_HEX])
+
+        assert result.exit_code == 0
+        # First packet: scan candidates 0..5 (6 calls). Second packet: 1 cache hit.
+        assert wrapped.call_count == 7
+        # Detection banner emitted exactly once.
+        assert result.stderr.count("[INFO] Detected:") == 1
+
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_no_warn_when_both_flags_provided(self, mock_scan):
+        """With explicit -e and --counter-mode, no auto-detect warning or banner."""
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=7, plaintext=b"x")
+        mock_scan.side_effect = [pkt, None]
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "ble", "scan", "--timeout", "1",
+                "--key", _EAX_KEY_HEX,
+                "-e", "7",
+                "--counter-mode", "UNIX_TIME",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "[WARN]" not in result.stderr
+        assert "[INFO] Detected:" not in result.stderr
+
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_warn_only_mentions_active_axes(self, mock_scan):
+        """Passing -e but not --counter-mode → warning mentions only CTR axis."""
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=7, plaintext=b"x")
+        mock_scan.side_effect = [pkt, None]
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["ble", "scan", "--timeout", "1", "--key", _EAX_KEY_HEX, "-e", "7"],
+        )
+        assert result.exit_code == 0
+        assert "AES-CTR counter_source" in result.stderr
+        assert "AES-EAX" not in result.stderr  # EAX axis was opted out
+        # No EAX detection banner since EAX is not auto-detecting.
+        assert "[INFO] Detected:" not in result.stderr
+
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_silent_in_json_mode(self, mock_scan):
+        """JSON output stays parse-clean even with auto-detect."""
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=4, plaintext=b"j")
+        mock_scan.side_effect = [pkt, None]
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["ble", "scan", "--timeout", "1", "--key", _EAX_KEY_HEX, "-o", "json"],
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.stdout)
+        assert len(parsed) == 1
+        # Warning + info banner suppressed entirely (JSON mode suppresses info).
+        assert "[WARN]" not in result.stderr
+        assert "[INFO] Detected:" not in result.stderr
+
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_detection_failure_with_show_failed(self, mock_scan):
+        """No exponent matches → no banner, packet shown as fail when flag set."""
+        # Build packet with one key, scan with another → all 16 candidates fail.
+        wrong_key = bytes(range(16, 32))
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=3, plaintext=b"w")
+        mock_scan.side_effect = [pkt, None]
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["ble", "scan", "--timeout", "1", "--key", wrong_key.hex(),
+             "-o", "json", "--show-failed-decryption"],
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.stdout)
+        assert len(parsed) == 1
+        assert parsed[0]["decrypt_status"] == "fail"
+        assert "[INFO] Detected:" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # Public API export tests
 # ---------------------------------------------------------------------------
 
