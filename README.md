@@ -146,6 +146,37 @@ hubblenetwork ble scan --key "base64key=" --counter-mode DEVICE_UPTIME  # counte
 hubblenetwork org get-packets --payload-format string
 ```
 
+### Generate a packet from a key
+
+Produce a well-formed encrypted Hubble BLE packet from a key + payload. Useful
+for matching observed hardware emissions against expected output, or for seeding
+the cloud with deterministic test data.
+
+```bash
+# AES-256-CTR (32-byte key)
+hubblenetwork ble generate \
+    --key "0000000000000000000000000000000000000000000000000000000000000000" \
+    --payload "deadbeef" \
+    --payload-format hex \
+    --counter-mode DEVICE_UPTIME \
+    --counter 5 \
+    --seq-no 42
+
+# AES-128-EAX (16-byte key)
+hubblenetwork ble generate \
+    --key "00000000000000000000000000000000" \
+    --payload "deadbeef" \
+    --payload-format hex \
+    --counter 0 \
+    --nonce-salt 0001
+
+# Pipe the raw bytes for scripting
+hubblenetwork ble generate --key ... --payload ab --payload-format hex --format hex
+
+# Send the generated packet to the cloud (requires HUBBLE_ORG_ID, HUBBLE_API_TOKEN)
+hubblenetwork ble generate --key ... --payload ab --payload-format hex --ingest
+```
+
 ### Payload format option
 
 Commands that output packet data (`ble scan`, `ble detect`, `org get-packets`) support the `--payload-format` flag to control how payloads are displayed:

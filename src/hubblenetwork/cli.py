@@ -59,6 +59,18 @@ def _parse_key(key_str: str) -> bytes:
     return key_bytes
 
 
+def _payload_to_bytes(payload_str: str, payload_format: str) -> bytes:
+    """Decode a payload string into bytes per the chosen format."""
+    fmt = payload_format.lower()
+    if fmt == "hex":
+        return bytes.fromhex(payload_str)
+    if fmt == "base64":
+        return base64.b64decode(payload_str, validate=True)
+    if fmt == "string":
+        return payload_str.encode("utf-8")
+    raise click.UsageError(f"Unknown payload format: {payload_format}")
+
+
 def _validate_info(msg):
     click.secho("[INFO] ", fg="cyan", bold=True, nl=False)
     click.echo(msg + "... ", nl=False)
@@ -1247,6 +1259,200 @@ def ble_scan(
                 f"[INFO] Scanning stopped. {printer.packet_count} packet(s) received.",
                 fg="yellow",
             )
+
+
+@ble.command("generate")
+@click.option("--key", required=True, help="Encryption key (hex or base64). 16 or 32 bytes.")
+@click.option("--payload", required=True, help="Plaintext payload to encrypt.")
+@click.option(
+    "--payload-format",
+    type=click.Choice(["hex", "base64", "string"], case_sensitive=False),
+    default="hex",
+    show_default=True,
+    help="Encoding of --payload.",
+)
+@click.option(
+    "--counter-mode",
+    type=click.Choice([UNIX_TIME, DEVICE_UPTIME], case_sensitive=False),
+    default=UNIX_TIME,
+    show_default=True,
+    help="EID counter mode (AES-CTR only).",
+)
+@click.option("--counter", type=int, default=None, help="time_counter (CTR) or counter index (EAX).")
+@click.option("--seq-no", type=int, default=None, help="10-bit sequence number (AES-CTR only).")
+@click.option("--nonce-salt", default=None, help="2-byte nonce salt as hex (AES-EAX only).")
+@click.option("--period-exponent", type=int, default=0, show_default=True, help="EID rotation period exponent (AES-EAX only). 0..15.")
+@click.option("--ingest", is_flag=True, help="POST the generated packet to the Hubble Cloud (requires HUBBLE_ORG_ID/HUBBLE_API_TOKEN).")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["breakdown", "hex", "json"], case_sensitive=False),
+    default="breakdown",
+    show_default=True,
+    help="Output format.",
+)
+def ble_generate(
+    key: str,
+    payload: str,
+    payload_format: str,
+    counter_mode: str,
+    counter: Optional[int],
+    seq_no: Optional[int],
+    nonce_salt: Optional[str],
+    period_exponent: int,
+    ingest: bool,
+    output_format: str,
+) -> None:
+    """Generate a Hubble BLE encrypted advertisement packet from a key and payload."""
+    from hubblenetwork.crypto import encrypt, encrypt_eax
+
+    try:
+        key_bytes = _parse_key(key)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+    try:
+        payload_bytes = _payload_to_bytes(payload, payload_format)
+    except (ValueError, binascii.Error) as e:
+        raise click.UsageError(f"Invalid payload: {e}")
+
+    if len(key_bytes) == 32:
+        if nonce_salt is not None:
+            raise click.UsageError("--nonce-salt is AES-EAX only; not valid with a 32-byte key.")
+        try:
+            pkt = encrypt(
+                key_bytes,
+                payload_bytes,
+                time_counter=counter,
+                seq_no=seq_no,
+                counter_mode=counter_mode,
+            )
+        except ValueError as e:
+            raise click.UsageError(str(e))
+    elif len(key_bytes) == 16:
+        if seq_no is not None:
+            raise click.UsageError("--seq-no is AES-CTR only; not valid with a 16-byte key.")
+        nonce_salt_bytes: Optional[bytes] = None
+        if nonce_salt is not None:
+            try:
+                nonce_salt_bytes = bytes.fromhex(nonce_salt)
+            except ValueError as e:
+                raise click.UsageError(f"Invalid --nonce-salt hex: {e}")
+        try:
+            pkt = encrypt_eax(
+                key_bytes,
+                payload_bytes,
+                counter=counter,
+                nonce_salt=nonce_salt_bytes,
+                period_exponent=period_exponent,
+            )
+        except ValueError as e:
+            raise click.UsageError(str(e))
+    else:
+        raise click.UsageError(f"Unsupported key length: {len(key_bytes)}")
+
+    fmt = output_format.lower()
+    if fmt == "hex":
+        click.echo(pkt.payload.hex())
+    elif fmt == "json":
+        click.echo(_render_json(pkt, key_bytes, counter, seq_no, nonce_salt, period_exponent, counter_mode))
+    else:  # breakdown — placeholder for now, replaced in Task 7
+        click.echo(_render_breakdown(pkt, key_bytes, counter, seq_no, nonce_salt, period_exponent, counter_mode))
+
+    if ingest:
+        org = Organization(
+            org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
+            api_token=_get_env_or_fail("HUBBLE_API_TOKEN"),
+        )
+        org.ingest_packet(pkt)
+        click.secho("[INFO] Packet ingested.", fg="green")
+
+
+def _render_breakdown(pkt, key_bytes, counter, seq_no, nonce_salt, period_exponent, counter_mode):
+    raw = pkt.payload
+    keylen = len(key_bytes)
+    is_eax = (keylen == 16)
+    lines = []
+
+    if is_eax:
+        # Layout: header(1) | salt(2) | eid(8) | ciphertext | tag(4)
+        salt = raw[1:3]
+        eid_bytes = raw[3:11]
+        tag = raw[-4:]
+        ciphertext = raw[11:-4]
+        period_seconds = 1 << period_exponent
+        lines.append("Protocol:        AES-EAX (v2)")
+        lines.append(f"Key length:      {keylen} bytes")
+        lines.append(f"Counter:         {counter if counter is not None else 0}")
+        lines.append(f"Period exponent: {period_exponent}  (period = {period_seconds}s)")
+        lines.append(f"Nonce salt:      {' '.join(f'0x{b:02x}' for b in salt)}")
+        lines.append(f"EID:             0x{pkt.eid:016x}  (LE bytes: {eid_bytes.hex()})")
+        lines.append(f"Ciphertext:      {' '.join(f'0x{b:02x}' for b in ciphertext) if ciphertext else '(empty)'}")
+        lines.append(f"Auth tag:        {' '.join(f'0x{b:02x}' for b in tag)}")
+    else:
+        # Layout: header(2) | eid(4) | tag(4) | ciphertext
+        header = raw[0:2]
+        eid_bytes = raw[2:6]
+        tag = raw[6:10]
+        ciphertext = raw[10:]
+        used_seq = int.from_bytes(header, "big") & 0x3FF
+        lines.append("Protocol:        AES-CTR (v0)")
+        lines.append(f"Key length:      {keylen} bytes")
+        lines.append(f"Counter mode:    {counter_mode.upper()}")
+        lines.append(f"Time counter:    {counter if counter is not None else '(default)'}")
+        lines.append(f"Seq no:          {used_seq}")
+        lines.append(f"EID:             0x{int.from_bytes(eid_bytes, 'big'):08x}")
+        lines.append(f"Auth tag:        {' '.join(f'0x{b:02x}' for b in tag)}")
+        lines.append(f"Ciphertext:      {' '.join(f'0x{b:02x}' for b in ciphertext) if ciphertext else '(empty)'}")
+
+    lines.append("")
+    lines.append(f"Service data ({len(raw)} bytes):")
+    lines.append(f"  Hex:         {raw.hex()}")
+    lines.append(f"  Spaced:      {' '.join(f'{b:02x}' for b in raw)}")
+    py_repr = "b'" + "".join(f"\\x{b:02x}" for b in raw) + "'"
+    lines.append(f"  Python:      {py_repr}")
+    c_array = "{" + ", ".join(f"0x{b:02x}" for b in raw) + "}"
+    lines.append(f"  C array:     {c_array}")
+    return "\n".join(lines)
+
+
+def _render_json(pkt, key_bytes, counter, seq_no, nonce_salt, period_exponent, counter_mode):
+    raw = pkt.payload
+    keylen = len(key_bytes)
+    if keylen == 16:
+        salt = raw[1:3]
+        eid_bytes = raw[3:11]
+        tag = raw[-4:]
+        ciphertext = raw[11:-4]
+        return json.dumps({
+            "protocol": "aes_eax",
+            "protocol_version": 2,
+            "key_length": keylen,
+            "counter": counter if counter is not None else 0,
+            "period_exponent": period_exponent,
+            "nonce_salt": salt.hex(),
+            "eid": eid_bytes.hex(),
+            "ciphertext": ciphertext.hex(),
+            "auth_tag": tag.hex(),
+            "service_data": raw.hex(),
+        })
+    header = raw[0:2]
+    eid_bytes = raw[2:6]
+    tag = raw[6:10]
+    ciphertext = raw[10:]
+    used_seq = int.from_bytes(header, "big") & 0x3FF
+    return json.dumps({
+        "protocol": "aes_ctr",
+        "protocol_version": 0,
+        "key_length": keylen,
+        "counter_mode": counter_mode.upper(),
+        "time_counter": counter,
+        "seq_no": used_seq,
+        "eid": eid_bytes.hex(),
+        "ciphertext": ciphertext.hex(),
+        "auth_tag": tag.hex(),
+        "service_data": raw.hex(),
+    })
 
 
 @ble.command("check-time")
