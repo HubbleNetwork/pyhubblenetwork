@@ -112,6 +112,22 @@ def _detect_eid_type(
     return (None, None, None, False)
 
 
+def _announce_auto_detect(auto_ctr: bool, auto_eax: bool, *, suppress: bool) -> None:
+    if suppress or not (auto_ctr or auto_eax):
+        return
+    parts = []
+    if auto_ctr:
+        parts.append("AES-CTR counter_source")
+    if auto_eax:
+        parts.append("AES-EAX period_exponent (0..15)")
+    click.secho(
+        f"[WARN] No {' / '.join(parts)} provided. Auto-detecting "
+        f"decryption configuration from incoming packets...",
+        fg="yellow",
+        err=True,
+    )
+
+
 def _decrypt_eax_with_detect(
     key: bytes,
     pkt: AesEaxPacket,
@@ -120,7 +136,7 @@ def _decrypt_eax_with_detect(
     fixed_exponent: int,
     cache: dict,
     announced: list[str],
-    printer,
+    suppress_info: bool,
 ) -> Optional[DecryptedPacket]:
     if not auto_detect:
         return decrypt_eax(key, pkt, period_exponent=fixed_exponent)
@@ -136,7 +152,7 @@ def _decrypt_eax_with_detect(
         if result is None:
             continue
         cache[pkt.eid] = candidate
-        if not announced and not printer.suppress_info_messages:
+        if not announced and not suppress_info:
             announced.append("eax")
             click.secho(
                 f"[INFO] Detected: AES-128-EAX, counter_source=DEVICE_UPTIME, "
@@ -157,7 +173,7 @@ def _decrypt_ctr_with_detect(
     days: int,
     cache: dict,
     announced: list[str],
-    printer,
+    suppress_info: bool,
 ) -> Optional[DecryptedPacket]:
     if not auto_detect:
         return decrypt(key, pkt, days=days, counter_mode=fixed_counter_mode)
@@ -181,7 +197,7 @@ def _decrypt_ctr_with_detect(
             continue
         if pkt.eid is not None:
             cache[pkt.eid] = mode
-        if not announced and not printer.suppress_info_messages:
+        if not announced and not suppress_info:
             announced.append("ctr")
             variant = "AES-128-CTR" if len(key) == 16 else "AES-256-CTR"
             click.secho(
@@ -816,7 +832,15 @@ def ble() -> None:
     type=click.Choice(["UNIX_TIME", "DEVICE_UPTIME"], case_sensitive=False),
     default="UNIX_TIME",
     show_default=True,
-    help="EID counter mode: UNIX_TIME (UTC day-based) or DEVICE_UPTIME (counter 0-127)",
+    help="EID counter mode for AES-CTR packets",
+)
+@click.option(
+    "--period-exponent",
+    "-e",
+    type=int,
+    default=0,
+    show_default=True,
+    help="EID rotation period exponent for AES-EAX packets (0-15). Period = 2^n seconds.",
 )
 @click.option(
     "--format",
@@ -848,6 +872,7 @@ def ble_detect(
     key: str = None,
     days: int = 2,
     counter_mode: str = "UNIX_TIME",
+    period_exponent: int = 0,
     output_format: str = "tabular",
     payload_format: str = "base64",
     debug: bool = False,
@@ -888,6 +913,18 @@ def ble_detect(
         _output_error(f"Key decoding failed: {e}")
         return
 
+    def _explicit(name: str) -> bool:
+        return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
+
+    auto_detect_ctr = not _explicit("counter_mode")
+    auto_detect_eax = not _explicit("period_exponent")
+
+    _announce_auto_detect(auto_detect_ctr, auto_detect_eax, suppress=use_json)
+
+    detected_ctr_modes: dict = {}
+    detected_eax_exponents: dict = {}
+    announced: list[str] = []
+
     # Set up timeout tracking
     start = time.monotonic()
     deadline = None if timeout is None else start + timeout
@@ -918,10 +955,29 @@ def ble_detect(
 
         logger.debug("Packet received, attempting decryption...")
 
-        # Attempt to decrypt the packet
-        decrypted_pkt = decrypt(
-            decoded_key, pkt, days=days, counter_mode=counter_mode
-        )
+        decrypted_pkt = None
+        if isinstance(pkt, AesEaxPacket):
+            decrypted_pkt = _decrypt_eax_with_detect(
+                decoded_key,
+                pkt,
+                auto_detect=auto_detect_eax,
+                fixed_exponent=period_exponent,
+                cache=detected_eax_exponents,
+                announced=announced,
+                suppress_info=use_json,
+            )
+        elif isinstance(pkt, EncryptedPacket):
+            decrypted_pkt = _decrypt_ctr_with_detect(
+                decoded_key,
+                pkt,
+                auto_detect=auto_detect_ctr,
+                fixed_counter_mode=counter_mode,
+                days=days,
+                cache=detected_ctr_modes,
+                announced=announced,
+                suppress_info=use_json,
+            )
+        # UnencryptedPacket and UnknownPacket fall through — keep scanning.
 
         if decrypted_pkt:
             # If we can decrypt it, output success
@@ -1112,18 +1168,9 @@ def ble_scan(
     auto_detect_ctr = decoded_key is not None and not _explicit("counter_mode")
     auto_detect_eax = decoded_key is not None and not _explicit("period_exponent")
 
-    if (auto_detect_ctr or auto_detect_eax) and not printer.suppress_info_messages:
-        parts = []
-        if auto_detect_ctr:
-            parts.append("AES-CTR counter_source")
-        if auto_detect_eax:
-            parts.append("AES-EAX period_exponent (0..15)")
-        click.secho(
-            f"[WARN] No {' / '.join(parts)} provided. Auto-detecting "
-            f"decryption configuration from incoming packets...",
-            fg="yellow",
-            err=True,
-        )
+    _announce_auto_detect(
+        auto_detect_ctr, auto_detect_eax, suppress=printer.suppress_info_messages
+    )
 
     detected_ctr_modes: dict = {}
     detected_eax_exponents: dict = {}
@@ -1158,7 +1205,7 @@ def ble_scan(
                         fixed_exponent=period_exponent,
                         cache=detected_eax_exponents,
                         announced=announced,
-                        printer=printer,
+                        suppress_info=printer.suppress_info_messages,
                     )
                     if decrypted_pkt:
                         printer.print_row(decrypted_pkt, decrypt_status="ok")
@@ -1176,7 +1223,7 @@ def ble_scan(
                         days=days,
                         cache=detected_ctr_modes,
                         announced=announced,
-                        printer=printer,
+                        suppress_info=printer.suppress_info_messages,
                     )
                     if decrypted_pkt:
                         printer.print_row(decrypted_pkt, decrypt_status="ok")
