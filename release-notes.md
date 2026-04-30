@@ -1,5 +1,10 @@
 # Release Notes
 
+## [0.10.1] - 2026-04-30
+
+### Added
+- feat(cli): auto-detect counter_source and period_exponent in `ble detect`
+
 ## [0.10.0] - 2026-04-27
 
 ### Added
