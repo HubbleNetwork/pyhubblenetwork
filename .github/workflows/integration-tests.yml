@@ -31,15 +31,15 @@ jobs:
           HUBBLE_PROD_ORG_ID: ${{ secrets.HUBBLE_PROD_ORG_ID }}
           HUBBLE_PROD_API_TOKEN: ${{ secrets.HUBBLE_PROD_API_TOKEN }}
         run: |
-          pytest tests/test_cloud_integration.py::TestProdEnvironment -v --tb=short
+          pytest -m integration -v --tb=short
 
       - name: Run TESTING integration tests
         env:
           HUBBLE_TESTING_ORG_ID: ${{ secrets.HUBBLE_TESTING_ORG_ID }}
           HUBBLE_TESTING_API_TOKEN: ${{ secrets.HUBBLE_TESTING_API_TOKEN }}
         run: |
-          pytest tests/test_cloud_integration.py::TestTestingEnvironment -v --tb=short
+          pytest -m integration -v --tb=short
 
       - name: Run invalid credentials test
         run: |
-          pytest tests/test_cloud_integration.py::TestInvalidCredentials -v --tb=short
+          pytest -m integration -v --tb=short
