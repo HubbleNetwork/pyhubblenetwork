@@ -94,7 +94,7 @@ class TestAesCtrRoundTripViaCloud:
         )
         assert device.id and device.key and len(device.key) == 32
         try:
-            payload = b"int-uptime-" + os.urandom(4)
+            payload = b"int-up-" + os.urandom(4)
             counter = 5
             seq_no = 42
             pkt = encrypt(
