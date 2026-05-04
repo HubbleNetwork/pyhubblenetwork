@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import click
+import dataclasses
 import os
 import json
 import signal
@@ -3114,6 +3115,32 @@ def sat() -> None:
     """Satellite (PlutoSDR) utilities."""
 
 
+def _maybe_decrypt_sat_pkt(
+    pkt: SatellitePacket,
+    key: Optional[bytes],
+    *,
+    days: int,
+    show_failed: bool,
+) -> Optional[SatellitePacket]:
+    """
+    Return a SatellitePacket suitable for printing.
+
+    - No key: pass through unchanged.
+    - Key and decrypts: return packet with payload replaced by plaintext.
+    - Key but fails: drop (or pass through if show_failed).
+    """
+    if key is None:
+        return pkt
+    encrypted_pkt = sat_mod.to_encrypted_packet(pkt)
+    if encrypted_pkt is None:
+        # Not v1, different protocol, or other issue, return.
+        return pkt
+    decrypted = decrypt(key, encrypted_pkt, days=days, counter_mode=UNIX_TIME)
+    if decrypted is None:
+        return pkt if show_failed else None
+    return dataclasses.replace(pkt, payload=decrypted.payload)
+
+
 def _run_sat_scan(
     *,
     mock: bool,
@@ -3123,6 +3150,9 @@ def _run_sat_scan(
     poll_interval: float,
     payload_format: str,
     debug: bool = False,
+    key: Optional[str] = None,
+    days: int = 2,
+    show_failed_decryption: bool = False,
 ) -> None:
     """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
     mode_label = "mock satellite receiver" if mock else "satellite receiver"
@@ -3131,6 +3161,17 @@ def _run_sat_scan(
         output_format.lower(), _SatStreamingTablePrinter
     )
     printer = printer_class(payload_format=payload_format)
+
+    decoded_key: Optional[bytes] = None
+    if key:
+        try:
+            decoded_key = _parse_key(key)
+        except ValueError as e:
+            if printer.suppress_info_messages:
+                click.echo(json.dumps({"error": f"Invalid key: {e}"}))
+            else:
+                click.secho(f"\n[ERROR] Invalid key: {e}", fg="red", err=True)
+            sys.exit(1)
 
     if debug:
         sat_logger = logging.getLogger("hubblenetwork.sat")
@@ -3174,7 +3215,15 @@ def _run_sat_scan(
             timeout=timeout, poll_interval=poll_interval, mock=mock,
             on_status=_on_status,
         ):
-            printer.print_row(pkt)
+            display_pkt = _maybe_decrypt_sat_pkt(
+                pkt,
+                decoded_key,
+                days=days,
+                show_failed=show_failed_decryption,
+            )
+            if display_pkt is None:
+                continue
+            printer.print_row(display_pkt)
             if count is not None and printer.packet_count >= count:
                 break
     except sat_mod.DockerError as exc:
@@ -3224,6 +3273,12 @@ def _sat_scan_options(fn):
                                        case_sensitive=False),
                      default="base64", show_default=True,
                      help="Encoding format for packet payload"),
+        click.option("--key", default=None, show_default=False,
+                     help="Key to decrypt v1 packets (hex or base64, 16 or 32 bytes)"),
+        click.option("--days", type=int, default=2, show_default=True,
+                     help="Days to search when decrypting"),
+        click.option("--show-failed-decryption", is_flag=True, default=False,
+                     help="Show packets even when decryption fails (default: drop them)"),
         click.option("--debug", is_flag=True, default=False,
                      help="Enable debug logging to stderr"),
     ]):
