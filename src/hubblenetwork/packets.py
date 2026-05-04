@@ -99,3 +99,5 @@ class SatellitePacket:
     channel_num: int
     freq_offset_hz: float
     payload: bytes  # encrypted payload bytes (base64-decoded from API)
+    auth_tag: int  # 32 bits for phy ver 1, pdu ver 0
+    phy_ver: int

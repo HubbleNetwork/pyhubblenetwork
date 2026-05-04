@@ -19,7 +19,7 @@ from typing import Callable, Dict, Generator, List, Optional, Set, Tuple
 import httpx
 
 from .errors import DockerError, SatelliteError
-from .packets import SatellitePacket
+from .packets import EncryptedPacket, SatellitePacket
 
 logger = logging.getLogger(__name__)
 
@@ -181,17 +181,47 @@ def _parse_jsonl(text: str) -> List[SatellitePacket]:
                 SatellitePacket(
                     device_id=obj["device_id"],
                     seq_num=obj["seq_num"],
+                    auth_tag=obj["auth_tag"],
                     device_type=obj["device_type"],
                     timestamp=obj["timestamp"],
                     rssi_dB=obj["rssi_dB"],
                     channel_num=obj["channel_num"],
                     freq_offset_hz=obj["freq_offset_hz"],
                     payload=payload,
+                    phy_ver=obj["phy_ver"],
                 )
             )
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("Skipping malformed packet line: %s (%s)", line, exc)
     return packets
+
+
+def to_encrypted_packet(sat_pkt: SatellitePacket) -> Optional[EncryptedPacket]:
+    """
+    Wrap a sat packet as BLE-shaped EncryptedPacket.
+
+    This is just a workaround to be able to decrypt sat packets without
+    refactoring the crypto.py completely.
+    """
+    if sat_pkt.phy_ver != 1:
+        return None
+        
+    tag_bytes = int(sat_pkt.auth_tag).to_bytes(4, "big")
+    wrapped_payload = (
+        (sat_pkt.seq_num & 0x3FF).to_bytes(2, "big")
+        + b"\x00" * 4
+        + tag_bytes
+        + sat_pkt.payload
+    )
+    return EncryptedPacket(
+        timestamp=int(sat_pkt.timestamp),
+        location=None,
+        payload=wrapped_payload,
+        rssi=int(sat_pkt.rssi_dB),
+        protocol_version=0,
+        eid=None,
+        auth_tag=tag_bytes,
+    )
 
 
 def fetch_packets(port: int = API_PORT) -> List[SatellitePacket]:

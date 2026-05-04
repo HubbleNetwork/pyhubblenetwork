@@ -32,6 +32,8 @@ class TestSatellitePacket:
             channel_num=2,
             freq_offset_hz=21654.5,
             payload=b"\xde\xad\xbe\xef",
+            auth_tag=0xDEADBEEF,
+            phy_ver=1,
         )
         assert pkt.device_id == "0xBB2973BD"
         assert pkt.seq_num == 153
@@ -41,6 +43,8 @@ class TestSatellitePacket:
         assert pkt.channel_num == 2
         assert pkt.freq_offset_hz == 21654.5
         assert pkt.payload == b"\xde\xad\xbe\xef"
+        assert pkt.auth_tag == 0xDEADBEEF
+        assert pkt.phy_ver == 1
 
     def test_frozen(self):
         pkt = SatellitePacket(
@@ -52,6 +56,8 @@ class TestSatellitePacket:
             channel_num=0,
             freq_offset_hz=0.0,
             payload=b"",
+            auth_tag=0,
+            phy_ver=1,
         )
         with pytest.raises(AttributeError):
             pkt.seq_num = 2  # type: ignore[misc]
@@ -64,10 +70,12 @@ class TestSatellitePacket:
 _PAYLOAD_B64 = base64.b64encode(b"\xde\xad\xbe\xef").decode()
 
 SAMPLE_JSONL = (
-    '{"device_id": "0xBB2973BD", "seq_num": 153, "device_type": "silabs", '
+    '{"device_id": "0xBB2973BD", "seq_num": 153, "auth_tag": 3405691582, '
+    '"phy_ver": 1, "device_type": "silabs", '
     '"timestamp": 1774289859.339, "rssi_dB": -42.3, "channel_num": 2, '
     f'"freq_offset_hz": 21654.5, "payload_b64": "{_PAYLOAD_B64}"}}\n'
-    '{"device_id": "0xBB2973BD", "seq_num": 154, "device_type": "silabs", '
+    '{"device_id": "0xBB2973BD", "seq_num": 154, "auth_tag": 3735928559, '
+    '"phy_ver": 1, "device_type": "silabs", '
     '"timestamp": 1774289863.860, "rssi_dB": -42.9, "channel_num": 15, '
     f'"freq_offset_hz": 21588.0, "payload_b64": "{_PAYLOAD_B64}"}}\n'
 )
@@ -103,7 +111,8 @@ class TestParseJsonl:
 
     def test_missing_payload_gives_empty_bytes(self):
         text = (
-            '{"device_id": "0xAA", "seq_num": 1, "device_type": "silabs", '
+            '{"device_id": "0xAA", "seq_num": 1, "auth_tag": 0, "phy_ver": 1, '
+            '"device_type": "silabs", '
             '"timestamp": 0.0, "rssi_dB": 0.0, "channel_num": 0, '
             '"freq_offset_hz": 0.0}\n'
         )
@@ -128,6 +137,8 @@ class TestPacketKey:
             channel_num=0,
             freq_offset_hz=0.0,
             payload=b"",
+            auth_tag=0,
+            phy_ver=1,
         )
         assert sat._packet_key(pkt) == ("0xAA", 10)
 
@@ -355,6 +366,8 @@ def _make_sat_pkt(**overrides) -> SatellitePacket:
         channel_num=2,
         freq_offset_hz=21654.5,
         payload=b"\xde\xad\xbe\xef",
+        auth_tag=0xDEADBEEF,
+        phy_ver=1,
     )
     defaults.update(overrides)
     return SatellitePacket(**defaults)
