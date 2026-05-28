@@ -192,3 +192,56 @@ def test_scan_count_with_unencrypted(mock_scan):
     assert result.exit_code == 0
     parsed = json.loads(result.output)
     assert len(parsed) == 2
+
+
+# A valid 16-byte AES-128 key in base64 (decryption path is never hit for v1).
+_KEY_B64 = "AAAAAAAAAAAAAAAAAAAAAA=="
+
+
+@patch("hubblenetwork.cli.ble_mod.scan_single")
+def test_scan_with_key_hides_unencrypted(mock_scan):
+    """With --key, version-1 (unencrypted) packets are not shown."""
+    pkt = _make_unencrypted_packet()
+    mock_scan.side_effect = [pkt, None]
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["ble", "scan", "--timeout", "1", "--key", _KEY_B64, "-o", "json"]
+    )
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed == []
+
+
+@patch("hubblenetwork.cli.ble_mod.scan_single")
+def test_scan_with_key_hides_unencrypted_even_with_show_failed(mock_scan):
+    """--show-failed-decryption is about encrypted packets; v1 stays hidden with a key."""
+    pkt = _make_unencrypted_packet()
+    mock_scan.side_effect = [pkt, None]
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "ble", "scan", "--timeout", "1", "--key", _KEY_B64,
+            "-o", "json", "--show-failed-decryption",
+        ],
+    )
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert parsed == []
+
+
+@patch("hubblenetwork.cli.ble_mod.scan_single")
+def test_scan_without_key_still_shows_unencrypted(mock_scan):
+    """Without a key, version-1 packets are shown as before."""
+    pkt = _make_unencrypted_packet()
+    mock_scan.side_effect = [pkt, None]
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["ble", "scan", "--timeout", "1", "-o", "json"]
+    )
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert len(parsed) == 1
