@@ -1190,6 +1190,14 @@ def ble_scan(
             if not pkt:
                 break
 
+            # When a key is supplied the user only wants packets the key can
+            # validly decrypt. Version-1 packets are never encrypted and
+            # unknown versions can't be decrypted, so skip both entirely.
+            if decoded_key is not None and isinstance(
+                pkt, (UnencryptedPacket, UnknownPacket)
+            ):
+                continue
+
             # Unencrypted packets: apply network_id filter, print directly
             if isinstance(pkt, UnencryptedPacket):
                 if network_id is not None and pkt.network_id != network_id:

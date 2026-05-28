@@ -453,6 +453,21 @@ class TestCliAesEaxScan:
         assert len(parsed) == 1
         assert parsed[0]["protocol_version"] == 5
 
+    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    def test_scan_unknown_packet_hidden_with_key(self, mock_scan):
+        """With --key, unknown (non-decryptable) packets are not shown."""
+        pkt = _make_dummy_unknown_packet()
+        mock_scan.side_effect = [pkt, None]
+
+        runner = CliRunner()
+        key_b64 = "AAAAAAAAAAAAAAAAAAAAAA=="
+        result = runner.invoke(
+            cli, ["ble", "scan", "--timeout", "1", "--key", key_b64, "-o", "json"]
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed == []
+
 
 # ---------------------------------------------------------------------------
 # CLI auto-detect tests for AES-EAX packets
