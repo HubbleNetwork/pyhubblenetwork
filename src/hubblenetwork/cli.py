@@ -2816,7 +2816,46 @@ def ready_provision(
 pass_orgcfg = click.make_pass_decorator(Organization, ensure=True)
 
 
-@cli.group()
+class _CredAnywhereGroup(click.Group):
+    """Group that accepts its credential options anywhere in the arguments.
+
+    Click normally requires group-level options to precede the subcommand
+    name, so ``org -o ORG -t TOKEN register-device`` works but
+    ``org register-device ... -o ORG -t TOKEN`` does not. This subclass hoists
+    the ``--org-id``/``-o`` and ``--token``/``-t`` options (and their values)
+    to the front of the argument list before parsing, so the user may place
+    them anywhere. Subcommands therefore must not define their own ``-o``/``-t``
+    short options.
+    """
+
+    _CRED_OPTS = ("--org-id", "-o", "--token", "-t")
+
+    def parse_args(self, ctx, args):
+        hoisted: list[str] = []
+        rest: list[str] = []
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg == "--":
+                # Everything after the end-of-options marker is passed through.
+                rest.extend(args[i:])
+                break
+            if arg in self._CRED_OPTS:
+                # Space-separated value: take the following token too.
+                hoisted.append(arg)
+                if i + 1 < len(args):
+                    i += 1
+                    hoisted.append(args[i])
+            elif arg.startswith(("--org-id=", "--token=")) or (arg[:2] in ("-o", "-t") and len(arg) > 2):
+                # Attached value, e.g. --org-id=ORG or -oORG.
+                hoisted.append(arg)
+            else:
+                rest.append(arg)
+            i += 1
+        return super().parse_args(ctx, hoisted + rest)
+
+
+@cli.group(cls=_CredAnywhereGroup)
 @click.option(
     "--org-id",
     "-o",
@@ -2970,12 +3009,12 @@ def set_device_name(org: Organization, device_id: str, name: str) -> None:
 @click.argument("device-id", type=str)
 @click.option(
     "--format",
-    "-o",
+    "-f",
     "output_format",
     type=click.Choice(["tabular", "csv", "json"], case_sensitive=False),
     default="tabular",
     show_default=True,
-    help="Output format for packets",
+    help="Output format for packets (-o is reserved for --org-id)",
 )
 @click.option(
     "--days",
@@ -3002,7 +3041,7 @@ def get_packets(
 
     Example:
       hubblenetwork org get-packets DEVICE_ID
-      hubblenetwork org get-packets DEVICE_ID -o json
+      hubblenetwork org get-packets DEVICE_ID -f json
       hubblenetwork org get-packets DEVICE_ID --format csv --days 30
     """
     device = Device(id=device_id)
