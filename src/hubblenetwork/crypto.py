@@ -1,11 +1,14 @@
 from __future__ import annotations
+import secrets
+import struct
+import time as _time
 from typing import Optional
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
 from datetime import datetime, timezone
 
-from .packets import EncryptedPacket, DecryptedPacket, AesEaxPacket
+from .packets import EncryptedPacket, DecryptedPacket, AesEaxPacket, Location
 
 UNIX_TIME = "UNIX_TIME"
 DEVICE_UPTIME = "DEVICE_UPTIME"
@@ -13,6 +16,11 @@ _VALID_COUNTER_MODES = {UNIX_TIME, DEVICE_UPTIME}
 
 _HUBBLE_AES_NONCE_SIZE = 12
 _HUBBLE_AES_TAG_SIZE = 4
+
+# Maximum customer payload sizes (matches firmware HUBBLE_BLE_MAX_DATA_LEN
+# and the AES-EAX 0-9 byte ciphertext cap documented in packets.py).
+MAX_CTR_PAYLOAD = 13
+MAX_EAX_PAYLOAD = 9
 
 
 class ParsedPacket:
@@ -58,6 +66,17 @@ def _get_auth_tag(key: bytes, ciphertext: bytes) -> bytes:
     computed_cmac = CMAC.new(key, ciphertext, AES).digest()
 
     return computed_cmac[:_HUBBLE_AES_TAG_SIZE]
+
+
+def _generate_ctr_eid(key: bytes, time_counter: int, keylen: int) -> bytes:
+    """Generate the 4-byte AES-CTR EID embedded at offset 2-6 of v0 service data.
+
+    Mirrors firmware `hubble_internal_device_id_get`: a two-step KBKDF chain.
+    First derives a per-period DeviceKey from the master key, then derives the
+    4-byte DeviceID with seq_no hardcoded to 0.
+    """
+    device_key = _generate_kdf_key(key, keylen, "DeviceKey", time_counter)
+    return _generate_kdf_key(device_key, 4, "DeviceID", 0)
 
 
 def _aes_decrypt(key: bytes, session_nonce: bytes, ciphertext: bytes) -> bytes:
@@ -202,6 +221,134 @@ def decrypt(
                 auth_tag=parsed.auth_tag,
             )
     return None
+
+
+def encrypt(
+    key: bytes,
+    payload: bytes,
+    *,
+    time_counter: Optional[int] = None,
+    seq_no: Optional[int] = None,
+    counter_mode: str = UNIX_TIME,
+) -> EncryptedPacket:
+    """Generate an AES-CTR (protocol v0) encrypted Hubble BLE packet.
+
+    The returned EncryptedPacket's `.payload` field holds the full BLE
+    service-data byte string: header(2) | EID(4) | auth_tag(4) | ciphertext.
+    """
+    counter_mode = counter_mode.upper()
+    if counter_mode not in _VALID_COUNTER_MODES:
+        raise ValueError(
+            f"counter_mode must be one of {sorted(_VALID_COUNTER_MODES)}, got {counter_mode!r}"
+        )
+
+    keylen = len(key)
+    if keylen not in (16, 32):
+        raise ValueError(f"key must be 16 or 32 bytes, got {keylen}")
+
+    if len(payload) > MAX_CTR_PAYLOAD:
+        raise ValueError(
+            f"payload too long for AES-CTR: {len(payload)} > {MAX_CTR_PAYLOAD}"
+        )
+
+    if seq_no is None:
+        seq_no = secrets.randbelow(1 << 10)
+    if not (0 <= seq_no < (1 << 10)):
+        raise ValueError(f"seq_no must be in 0..1023, got {seq_no}")
+
+    if time_counter is None:
+        if counter_mode == UNIX_TIME:
+            time_counter = int(_time.time()) // 86400
+        else:
+            time_counter = 0
+
+    enc_key = _get_encryption_key(key, time_counter, seq_no, keylen=keylen)
+    nonce = _get_nonce(key, time_counter, seq_no, keylen=keylen)
+    ciphertext = AES.new(enc_key, AES.MODE_CTR, nonce=nonce).encrypt(payload)
+    auth_tag = _get_auth_tag(enc_key, ciphertext)
+    eid_bytes = _generate_ctr_eid(key, time_counter, keylen=keylen)
+
+    # Header: top 6 bits = version (0 for v0), bottom 10 bits = seq_no
+    header_int = (0 << 10) | (seq_no & 0x3FF)
+    header = header_int.to_bytes(2, "big")
+
+    service_data = header + eid_bytes + auth_tag + ciphertext
+
+    return EncryptedPacket(
+        timestamp=int(datetime.now(timezone.utc).timestamp()),
+        location=Location(lat=90, lon=0, fake=True),
+        payload=service_data,
+        rssi=0,
+        protocol_version=0,
+        eid=int.from_bytes(eid_bytes, "big"),
+        auth_tag=auth_tag,
+    )
+
+
+def encrypt_eax(
+    key: bytes,
+    payload: bytes,
+    *,
+    counter: Optional[int] = None,
+    nonce_salt: Optional[bytes] = None,
+    period_exponent: int = 0,
+) -> EncryptedPacket:
+    """Generate an AES-EAX (protocol v2) encrypted Hubble BLE packet.
+
+    Returns an EncryptedPacket whose `.payload` is the full BLE service-data
+    byte string: header(1) | nonce_salt(2) | eid_le(8) | ciphertext | tag(4).
+    Returning EncryptedPacket (not AesEaxPacket) keeps Organization.ingest_packet
+    working without modification.
+    """
+    if len(key) != 16:
+        raise ValueError(f"AES-EAX requires a 16-byte key, got {len(key)}")
+    if len(payload) > MAX_EAX_PAYLOAD:
+        raise ValueError(
+            f"payload too long for AES-EAX: {len(payload)} > {MAX_EAX_PAYLOAD}"
+        )
+    if not (0 <= period_exponent <= 15):
+        raise ValueError(f"period_exponent must be 0..15, got {period_exponent}")
+
+    if counter is None:
+        counter = 0
+    if nonce_salt is None:
+        nonce_salt = secrets.token_bytes(2)
+    elif len(nonce_salt) != 2:
+        raise ValueError(f"nonce_salt must be exactly 2 bytes, got {len(nonce_salt)}")
+
+    effective_counter = counter * (1 << period_exponent)
+
+    # Compute EID using the SAME formula decrypt_eax uses (key_0 derived from
+    # counter=0). Inlined to guarantee byte-for-byte round-trip even when
+    # effective_counter ≥ 65536, where _generate_eid would diverge.
+    key_0 = _derive_eid_key(key, 0)
+    msg2 = (
+        b"\x00" * 11
+        + period_exponent.to_bytes(1, "big")
+        + effective_counter.to_bytes(4, "big")
+    )
+    eid_block = AES.new(key_0, AES.MODE_ECB).encrypt(msg2)
+    eid_int = int.from_bytes(eid_block[0:8], "big")
+
+    # AES-EAX nonce: counter (BE 4 bytes) || nonce_salt (2 bytes)
+    nonce = effective_counter.to_bytes(4, "big") + nonce_salt
+    cipher = AES.new(key, AES.MODE_EAX, mac_len=4, nonce=nonce)
+    ciphertext, auth_tag = cipher.encrypt_and_digest(payload)
+
+    # Header byte: version (top 6 bits) shifted up; bottom 2 bits unused for v2
+    header = bytes([2 << 2])
+    eid_le = struct.pack("<Q", eid_int)
+    service_data = header + nonce_salt + eid_le + ciphertext + auth_tag
+
+    return EncryptedPacket(
+        timestamp=int(datetime.now(timezone.utc).timestamp()),
+        location=Location(lat=90, lon=0, fake=True),
+        payload=service_data,
+        rssi=0,
+        protocol_version=2,
+        eid=eid_int,
+        auth_tag=auth_tag,
+    )
 
 
 def find_time_counter_delta(
