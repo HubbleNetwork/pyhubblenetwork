@@ -14,6 +14,7 @@
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [CLI usage](#cli-usage)
+- [Validating a device end-to-end](#validating-a-device-end-to-end)
 - [Satellite scanning (PlutoSDR)](#satellite-scanning-plutosdr)
 - [Configuration](#configuration)
 - [Public API (summary)](#public-api-summary)
@@ -155,6 +156,46 @@ Commands that output packet data (`ble scan`, `ble detect`, `org get-packets`) s
 * `string` — decode payloads as UTF-8 text (falls back to `<invalid UTF-8>` if bytes are not valid UTF-8)
 
 This applies to all output formats (tabular, json, csv).
+
+## Validating a device end-to-end
+
+The `ble validate` command runs a full end-to-end health check on a single Hubble
+device, confirming that everything from your credentials to the cloud backend is
+wired up correctly. It is the quickest way to answer "is my device working?"
+
+```bash
+hubblenetwork ble validate \
+  --key "a562a2f7e4c62bed52ab09633878f62b" \
+  --device-id "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"
+```
+
+The command performs these steps in order, stopping at the first failure:
+
+1. **Validates input formats** — the device key (hex or base64, 16- or 32-byte)
+   and the device ID (standard 8-4-4-4-12 UUID).
+2. **Loads credentials** — from `--org-id`/`--token` or the `HUBBLE_ORG_ID` and
+   `HUBBLE_API_TOKEN` environment variables.
+3. **Validates the organization credentials** against the backend.
+4. **Confirms the device is registered** in your organization.
+5. **Scans for BLE advertisements** from Hubble-compatible devices.
+6. **Decrypts a received packet** with the provided key and reports the detected
+   EID type (`UNIX_TIME` or `DEVICE_UPTIME`).
+7. **Ingests the packet** into the backend and **reads it back** to confirm the
+   full round trip succeeded.
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--key`, `-k` | Device key, used to test packet encryption (required). Accepts hex or base64, 16- or 32-byte. |
+| `--device-id`, `-d` | Device UUID, used to test the backend (required). |
+| `--org-id` | Organization ID (defaults to the `HUBBLE_ORG_ID` env var). |
+| `--token` | API token (defaults to the `HUBBLE_API_TOKEN` env var). |
+| `--timeout`, `-t` | BLE scan timeout in seconds (default: 30). |
+
+If a step fails, the command prints targeted debugging tips. A common cause of a
+failed scan is a slow advertising interval combined with OS-level BLE scan
+optimizations — simply running the command again often resolves it.
 
 ## Satellite scanning (PlutoSDR)
 
