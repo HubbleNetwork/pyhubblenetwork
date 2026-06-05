@@ -39,6 +39,14 @@ _handler = logging.StreamHandler(sys.stderr)
 _handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 logger.addHandler(_handler)
 
+# Symbol time length in ms
+SYMBOL_TIME = 8.0
+
+# Symbol time tolerance. With our envelope detection, we can expect the symbol 
+# to be off by 1/2 of the length of the symbol before that envelope
+# reads the adjacent symbol, Any deviation from the nominal 8ms will see a dB 
+# loss, but the frequency will be correct
+TIMING_TOLERANCE = 4.0
 
 def _parse_key(key_str: str) -> bytes:
     """Parse an encryption key from hex or base64. Returns raw bytes.
@@ -513,6 +521,10 @@ def _sat_packet_to_dict(
         "rssi_dB": pkt.rssi_dB,
         "channel_num": pkt.channel_num,
         "freq_offset_hz": pkt.freq_offset_hz,
+        "pdu_n_corr": pkt.pdu_n_corr,
+        "header_n_corr": pkt.header_n_corr,
+        "sym_mean_ms": pkt.sym_mean_ms,
+        "gap_mean_ms": pkt.gap_mean_ms,
         "payload": _format_payload(pkt.payload, payload_format),
     }
     if pkt.auth_tag is not None:
@@ -534,20 +546,22 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         "RSSI_DB": 8,
         "CHANNEL": 8,
         "FREQ_OFFSET": 12,
+        "RS_CORR": 8,
+        "SYM_MS": 10,
+        "GAP_MS": 10,
         "PAYLOAD": 20,
     }
 
     _BASE_HEADERS = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
+    _DEBUG_HEADERS = ["RS_CORR", "SYM_MS", "GAP_MS"]
 
-    def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False):
+    def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False, show_debug_cols: bool = False):
         super().__init__(show_decrypt_status=show_decrypt_status)
         self._header_printed = False
         self._payload_format = payload_format
-        self._headers = (
-            ["DECRYPT", *self._BASE_HEADERS]
-            if show_decrypt_status
-            else list(self._BASE_HEADERS)
-        )
+        self._show_debug_cols = show_debug_cols
+        headers = list(self._BASE_HEADERS) + (self._DEBUG_HEADERS if show_debug_cols else [])
+        self._headers = ["DECRYPT", *headers] if show_decrypt_status else headers
 
     def _format_row(self, values: List) -> str:
         parts = []
@@ -562,6 +576,11 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
             width = self._COL_WIDTHS.get(header, 10)
             parts.append("-" * width)
         return "+-" + "-+-".join(parts) + "-+"
+
+    def _make_warning_row(self, msg: str) -> str:
+        inner_width = len(self._make_separator()) - 4  # subtract "+-" and "-+"
+        text = f"! {msg}"
+        return "| " + text.ljust(inner_width) + " |"
 
     def print_row(self, pkt: SatellitePacket, decrypt_status: Optional[str] = None) -> None:
         if not self._header_printed:
@@ -585,7 +604,21 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
             f"{pkt.freq_offset_hz:.1f}",
             _format_payload(pkt.payload, self._payload_format),
         ])
+        if self._show_debug_cols:
+            rs = "-"
+            if pkt.pdu_n_corr is not None and pkt.header_n_corr is not None:
+                rs = str(pkt.pdu_n_corr + pkt.header_n_corr)
+            row.append(rs)
+            row.append(f"{pkt.sym_mean_ms:.2f}" if pkt.sym_mean_ms is not None else "-")
+            row.append(f"{pkt.gap_mean_ms:.2f}" if pkt.gap_mean_ms is not None else "-")
         click.echo(self._format_row(row))
+        if self._show_debug_cols:
+            warnings = []
+            if pkt.sym_mean_ms is not None and abs(pkt.sym_mean_ms - SYMBOL_TIME) > TIMING_TOLERANCE:
+                warnings.append(f"sym {pkt.sym_mean_ms:.2f} ms (expected {SYMBOL_TIME:.2f} ms)")
+            if warnings:
+                click.echo(self._make_separator())
+                click.secho(self._make_warning_row(f"WARNING: timing off — {', '.join(warnings)}"), fg="yellow")
         click.echo(self._make_separator())
         self._packet_count += 1
 
@@ -3061,9 +3094,10 @@ def _run_sat_scan(
     output_format: str,
     poll_interval: float,
     payload_format: str,
-    debug: bool = False,
     key: Optional[str] = None,
     days: int = 2,
+    pluto_uri: Optional[str] = None,
+    debug: bool = False,
     counter_mode: str = UNIX_TIME,
     auto_detect_ctr: bool = False,
     show_failed_decryption: bool = False,
@@ -3077,6 +3111,7 @@ def _run_sat_scan(
     printer = printer_class(
         payload_format=payload_format,
         show_decrypt_status=show_failed_decryption,
+        **( {"show_debug_cols": debug} if output_format.lower() == "tabular" else {}),
     )
 
     # Pre-decode the key if provided.
@@ -3145,7 +3180,7 @@ def _run_sat_scan(
     try:
         for pkt in sat_mod.scan(
             timeout=timeout, poll_interval=poll_interval, mock=mock,
-            on_status=_on_status,
+            pluto_uri=pluto_uri, on_status=_on_status,
         ):
             if decoded_key is not None:
                 # With a key, the user wants only packets the key can decrypt.
@@ -3224,6 +3259,8 @@ def _sat_scan_options(fn):
                                        case_sensitive=False),
                      default="base64", show_default=True,
                      help="Encoding format for packet payload"),
+        click.option("--pluto-uri", "pluto_uri", type=str, default=None,
+                     help="PlutoSDR URI passed to the container (e.g. usb:, ip:192.168.2.1)"),
         click.option("--debug", is_flag=True, default=False,
                      help="Enable debug logging to stderr"),
     ]):

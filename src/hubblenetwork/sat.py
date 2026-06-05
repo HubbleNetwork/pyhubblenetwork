@@ -43,6 +43,10 @@ def _status_url(port: int = API_PORT) -> str:
     return f"http://localhost:{port}/api/status"
 
 
+def _timedomain_url(port: int = API_PORT) -> str:
+    return f"http://localhost:{port}/api/timedomain"
+
+
 # ---------------------------------------------------------------------------
 # Docker helpers
 # ---------------------------------------------------------------------------
@@ -243,11 +247,25 @@ def _parse_jsonl(text: str) -> List[SatellitePacket]:
                     freq_offset_hz=obj["freq_offset_hz"],
                     payload=payload,
                     auth_tag=auth_tag,
+                    pdu_n_corr=obj.get("pdu_n_corr"),
+                    header_n_corr=obj.get("header_n_corr"),
+                    sym_mean_ms=obj.get("sym_mean_ms"),
+                    gap_mean_ms=obj.get("gap_mean_ms"),
                 )
             )
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("Skipping malformed packet line: %s (%s)", line, exc)
     return packets
+
+
+def start_timedomain(device_id: int, port: int = API_PORT) -> None:
+    """Enable time-domain capture for *device_id* on the running container."""
+    url = _timedomain_url(port)
+    try:
+        resp = httpx.post(url, json={"action": "start", "device_id": device_id}, timeout=5)
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SatelliteError(f"Failed to start time-domain capture: {exc}")
 
 
 def fetch_packets(port: int = API_PORT) -> List[SatellitePacket]:
@@ -278,6 +296,7 @@ def scan(
     image: str = DOCKER_IMAGE,
     *,
     mock: bool = False,
+    pluto_uri: Optional[str] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> Generator[SatellitePacket, None, None]:
     """Scan for satellite packets, managing the Docker container lifecycle.
@@ -302,7 +321,11 @@ def scan(
 
     _emit("Starting container...")
     container_name = MOCK_CONTAINER_NAME if mock else CONTAINER_NAME
-    environment: Optional[Dict[str, str]] = {"SDR_TYPE": "mock"} if mock else None
+    environment: Dict[str, str] = {}
+    if mock:
+        environment["SDR_TYPE"] = "mock"
+    if pluto_uri is not None:
+        environment["PLUTO_URI"] = pluto_uri
 
     container_id = start_container(
         image=image,
