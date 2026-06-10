@@ -204,6 +204,43 @@ def decrypt(
     return None
 
 
+def decrypt_satellite(
+    key: bytes,
+    seq_no: int,
+    auth_tag: bytes,
+    encrypted_payload: bytes,
+    timestamp: Optional[float] = None,
+    days: int = 2,
+) -> Optional[bytes]:
+    """Decrypt a satellite packet's encrypted customer payload.
+
+    Satellite packets deliver the sequence number, 4-byte auth tag, and
+    encrypted customer payload as separate fields, unlike BLE where they are
+    packed into one advertisement. The underlying AES-256/128-CTR + CMAC
+    scheme is identical to BLE (see :func:`decrypt`), and satellite always
+    uses the UNIX_TIME (day-based) counter.
+
+    The day counter is swept +/-``days`` around the packet's ``timestamp``
+    (or the current UTC day when ``timestamp`` is None), returning the
+    decrypted payload for the first day whose derived auth tag matches.
+
+    Returns the decrypted payload bytes, or None if no day matches (wrong
+    key or outside the search window).
+    """
+    keylen = len(key)
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc).timestamp()
+    base = int(timestamp) // 86400
+
+    for delta in range(-days, days + 1):
+        time_counter = base + delta
+        daily_key = _get_encryption_key(key, time_counter, seq_no, keylen=keylen)
+        if _get_auth_tag(daily_key, encrypted_payload) == auth_tag:
+            nonce = _get_nonce(key, time_counter, seq_no, keylen=keylen)
+            return _aes_decrypt(daily_key, nonce, encrypted_payload)
+    return None
+
+
 def find_time_counter_delta(
     key: bytes, encrypted_pkt: EncryptedPacket, max_days_back: int = 365
 ) -> Optional[int]:

@@ -177,6 +177,15 @@ def _parse_jsonl(text: str) -> List[SatellitePacket]:
             obj = json.loads(line)
             payload_b64 = obj.get("payload_b64", "")
             payload = base64.b64decode(payload_b64) if payload_b64 else b""
+            # The receiver reports the 4-byte CMAC auth tag as a big-endian
+            # integer. It's required to locally decrypt the payload; absent for
+            # mock packets and older receivers.
+            auth_tag_val = obj.get("auth_tag")
+            auth_tag = (
+                int(auth_tag_val).to_bytes(4, "big")
+                if isinstance(auth_tag_val, int)
+                else None
+            )
             packets.append(
                 SatellitePacket(
                     device_id=obj["device_id"],
@@ -187,6 +196,7 @@ def _parse_jsonl(text: str) -> List[SatellitePacket]:
                     channel_num=obj["channel_num"],
                     freq_offset_hz=obj["freq_offset_hz"],
                     payload=payload,
+                    auth_tag=auth_tag,
                 )
             )
         except (KeyError, TypeError, json.JSONDecodeError) as exc:

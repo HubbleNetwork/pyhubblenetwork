@@ -99,3 +99,6 @@ class SatellitePacket:
     channel_num: int
     freq_offset_hz: float
     payload: bytes  # encrypted payload bytes (base64-decoded from API)
+    # 4-byte CMAC auth tag, when reported by the receiver. Needed to locally
+    # decrypt the payload (identifies the day counter); None if unavailable.
+    auth_tag: Optional[bytes] = None
