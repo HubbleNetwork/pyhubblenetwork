@@ -11,6 +11,7 @@ import base64
 import binascii
 import logging
 import uuid
+from dataclasses import replace
 from datetime import datetime
 from functools import partial
 from typing import Optional, List
@@ -21,7 +22,7 @@ from hubblenetwork.packets import SatellitePacket, UnencryptedPacket, AesEaxPack
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
-from hubblenetwork import decrypt, UNIX_TIME, DEVICE_UPTIME
+from hubblenetwork import decrypt, decrypt_satellite, UNIX_TIME, DEVICE_UPTIME
 from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
@@ -388,6 +389,11 @@ def _format_ready_json_error(
     }
 
 
+def _decrypt_status_cell(decrypt_status: Optional[str]) -> str:
+    """Render a decrypt status as a table cell ("OK"/"FAIL"/"-")."""
+    return {"ok": "OK", "fail": "FAIL"}.get(decrypt_status, "-")
+
+
 class _StreamingPrinterBase:
     """Base class for streaming packet printers."""
 
@@ -493,7 +499,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         ts = datetime.fromtimestamp(pkt.timestamp).strftime("%H:%M:%S")
         row: List = []
         if self._show_decrypt_status:
-            row.append("OK" if decrypt_status == "ok" else "FAIL" if decrypt_status == "fail" else "-")
+            row.append(_decrypt_status_cell(decrypt_status))
         row.extend([pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"])
 
         version = getattr(pkt, "protocol_version", None)
@@ -589,11 +595,12 @@ _STREAMING_PRINTERS = {
 def _sat_packet_to_dict(
     pkt: SatellitePacket,
     payload_format: str = "base64",
+    decrypt_status: Optional[str] = None,
     **_: object,
 ) -> dict:
     """Convert a SatellitePacket to a dictionary for JSON serialization."""
     ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-    return {
+    data = {
         "device_id": pkt.device_id,
         "seq_num": pkt.seq_num,
         "device_type": pkt.device_type,
@@ -604,12 +611,18 @@ def _sat_packet_to_dict(
         "freq_offset_hz": pkt.freq_offset_hz,
         "payload": _format_payload(pkt.payload, payload_format),
     }
+    if pkt.auth_tag is not None:
+        data["auth_tag"] = pkt.auth_tag.hex()
+    if decrypt_status is not None:
+        data["decrypt_status"] = decrypt_status
+    return data
 
 
 class _SatStreamingTablePrinter(_StreamingPrinterBase):
     """Print satellite packet rows as they arrive."""
 
     _COL_WIDTHS = {
+        "DECRYPT": 8,
         "DEVICE_ID": 12,
         "SEQ": 6,
         "TYPE": 8,
@@ -620,37 +633,45 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         "PAYLOAD": 20,
     }
 
-    _HEADERS = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
+    _BASE_HEADERS = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
 
-    def __init__(self, payload_format: str = "base64"):
-        super().__init__()
+    def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False):
+        super().__init__(show_decrypt_status=show_decrypt_status)
         self._header_printed = False
         self._payload_format = payload_format
+        self._headers = (
+            ["DECRYPT", *self._BASE_HEADERS]
+            if show_decrypt_status
+            else list(self._BASE_HEADERS)
+        )
 
     def _format_row(self, values: List) -> str:
         parts = []
         for i, val in enumerate(values):
-            width = self._COL_WIDTHS.get(self._HEADERS[i], 10)
+            width = self._COL_WIDTHS.get(self._headers[i], 10)
             parts.append(f"{str(val):<{width}}")
         return "| " + " | ".join(parts) + " |"
 
     def _make_separator(self) -> str:
         parts = []
-        for header in self._HEADERS:
+        for header in self._headers:
             width = self._COL_WIDTHS.get(header, 10)
             parts.append("-" * width)
         return "+-" + "-+-".join(parts) + "-+"
 
-    def print_row(self, pkt: SatellitePacket) -> None:
+    def print_row(self, pkt: SatellitePacket, decrypt_status: Optional[str] = None) -> None:
         if not self._header_printed:
             click.echo("")
             click.echo(self._make_separator())
-            click.secho(self._format_row(self._HEADERS), bold=True)
+            click.secho(self._format_row(self._headers), bold=True)
             click.echo(self._make_separator())
             self._header_printed = True
 
         ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-        row = [
+        row: List = []
+        if self._show_decrypt_status:
+            row.append(_decrypt_status_cell(decrypt_status))
+        row.extend([
             pkt.device_id,
             pkt.seq_num,
             pkt.device_type,
@@ -659,7 +680,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
             pkt.channel_num,
             f"{pkt.freq_offset_hz:.1f}",
             _format_payload(pkt.payload, self._payload_format),
-        ]
+        ])
         click.echo(self._format_row(row))
         click.echo(self._make_separator())
         self._packet_count += 1
@@ -3131,6 +3152,9 @@ def _run_sat_scan(
     poll_interval: float,
     payload_format: str,
     debug: bool = False,
+    key: Optional[str] = None,
+    days: int = 2,
+    show_failed_decryption: bool = False,
 ) -> None:
     """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
     mode_label = "mock satellite receiver" if mock else "satellite receiver"
@@ -3138,7 +3162,22 @@ def _run_sat_scan(
     printer_class = _SAT_STREAMING_PRINTERS.get(
         output_format.lower(), _SatStreamingTablePrinter
     )
-    printer = printer_class(payload_format=payload_format)
+    printer = printer_class(
+        payload_format=payload_format,
+        show_decrypt_status=show_failed_decryption,
+    )
+
+    # Pre-decode the key if provided. Satellite packets always use the
+    # UNIX_TIME (day-based) counter, so only --days is relevant.
+    decoded_key: Optional[bytes] = None
+    if key:
+        try:
+            decoded_key = _parse_key(key)
+        except ValueError as e:
+            if printer.suppress_info_messages:
+                click.echo(json.dumps({"error": f"Invalid key: {e}"}))
+                return
+            raise click.ClickException(f"Invalid key: {e}")
 
     if debug:
         sat_logger = logging.getLogger("hubblenetwork.sat")
@@ -3182,7 +3221,26 @@ def _run_sat_scan(
             timeout=timeout, poll_interval=poll_interval, mock=mock,
             on_status=_on_status,
         ):
-            printer.print_row(pkt)
+            if decoded_key is not None:
+                # With a key, the user wants only packets the key can decrypt.
+                decrypted = None
+                if pkt.auth_tag is not None:
+                    decrypted = decrypt_satellite(
+                        decoded_key,
+                        seq_no=pkt.seq_num,
+                        auth_tag=pkt.auth_tag,
+                        encrypted_payload=pkt.payload,
+                        timestamp=pkt.timestamp,
+                        days=days,
+                    )
+                if decrypted is not None:
+                    printer.print_row(
+                        replace(pkt, payload=decrypted), decrypt_status="ok"
+                    )
+                elif show_failed_decryption:
+                    printer.print_row(pkt, decrypt_status="fail")
+            else:
+                printer.print_row(pkt)
             if count is not None and printer.packet_count >= count:
                 break
     except sat_mod.DockerError as exc:
@@ -3241,16 +3299,44 @@ def _sat_scan_options(fn):
 
 @sat.command("scan")
 @_sat_scan_options
+@click.option(
+    "--key",
+    "-k",
+    type=str,
+    default=None,
+    show_default=False,
+    help="Key to decrypt packet payloads (hex or base64, 16 or 32 bytes). "
+         "Satellite packets always use the UNIX_TIME counter.",
+)
+@click.option(
+    "--days",
+    "-d",
+    type=int,
+    default=2,
+    show_default=True,
+    help="Days to search around each packet's timestamp when decrypting",
+)
+@click.option(
+    "--show-failed-decryption",
+    is_flag=True,
+    default=False,
+    help="Show packets that fail decryption/authentication with the provided "
+         "key. Adds a DECRYPT column indicating OK/FAIL.",
+)
 def sat_scan(**kwargs) -> None:
     """
     Start the satellite receiver and stream decoded packets.
 
     Requires Docker and a PlutoSDR device connected via USB.
 
+    Pass --key to decrypt packet payloads locally; packets the key cannot
+    decrypt are hidden unless --show-failed-decryption is given.
+
     Example:
       hubblenetwork sat scan --timeout 30
       hubblenetwork sat scan -o json --timeout 10
       hubblenetwork sat scan -n 5
+      hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 60
     """
     _run_sat_scan(mock=False, **kwargs)
 

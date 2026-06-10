@@ -223,7 +223,19 @@ hubblenetwork sat scan -o json
 
 # Combine options
 hubblenetwork sat scan -o json --timeout 60 -n 20
+
+# Decrypt payloads locally with a device key (hex or base64, 16 or 32 bytes)
+hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b"
+
+# Show packets the key can't decrypt too (adds a DECRYPT OK/FAIL column)
+hubblenetwork sat scan --key "<key>" --show-failed-decryption
 ```
+
+When `--key` is supplied, each packet's payload is decrypted locally using the
+same AES-CTR scheme as BLE. Satellite packets always use the UNIX_TIME (day-based)
+counter; `--days` controls how many days around each packet's timestamp are
+searched (default 2). Packets the key cannot decrypt are hidden unless
+`--show-failed-decryption` is given.
 
 The command automatically:
 1. Verifies Docker is available
@@ -244,9 +256,21 @@ for pkt in sat.scan(timeout=60.0, poll_interval=2.0):
 
 # Or fetch the current packet buffer without managing the container yourself
 packets: list[SatellitePacket] = sat.fetch_packets()
+
+# Decrypt a packet's payload locally (UNIX_TIME counter)
+from hubblenetwork import decrypt_satellite
+
+for pkt in sat.scan(timeout=60.0):
+    if pkt.auth_tag is not None:
+        plaintext = decrypt_satellite(
+            key, seq_no=pkt.seq_num, auth_tag=pkt.auth_tag,
+            encrypted_payload=pkt.payload, timestamp=pkt.timestamp,
+        )
+        if plaintext is not None:
+            print(pkt.device_id, plaintext)
 ```
 
-`SatellitePacket` fields: `device_id`, `seq_num`, `device_type`, `timestamp`, `rssi_dB`, `channel_num`, `freq_offset_hz`, `payload` (bytes).
+`SatellitePacket` fields: `device_id`, `seq_num`, `device_type`, `timestamp`, `rssi_dB`, `channel_num`, `freq_offset_hz`, `payload` (bytes), `auth_tag` (bytes or `None`).
 
 ### Errors
 
