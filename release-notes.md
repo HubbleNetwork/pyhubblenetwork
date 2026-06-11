@@ -1,5 +1,16 @@
 # Release Notes
 
+## [0.11.0] - 2026-06-11
+
+### Added
+- feat(sat): decrypt scan payloads with --key
+
+### Fixed
+- fix(cli): hide non-decryptable packets when scanning with a key
+
+### Documentation
+- docs: add ble validate CLI section to README
+
 ## [0.10.1] - 2026-04-30
 
 ### Added
