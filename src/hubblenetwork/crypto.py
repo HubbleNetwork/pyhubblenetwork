@@ -157,12 +157,13 @@ def _check_tag_matches(
     return tag == parsed.auth_tag
 
 
-def decrypt(
-    key: bytes,
-    encrypted_pkt: EncryptedPacket,
-    days: int = 2,
-    counter_mode: str = UNIX_TIME,
-) -> Optional[DecryptedPacket]:
+def _normalize_counter_mode(counter_mode: str, days: int) -> str:
+    """Validate and upper-case ``counter_mode``, enforcing the DEVICE_UPTIME rule.
+
+    Shared by :func:`decrypt` and :func:`decrypt_satellite`. Returns the
+    normalized mode; raises ``ValueError`` for an unknown mode or for
+    ``DEVICE_UPTIME`` combined with a non-default ``days``.
+    """
     counter_mode = counter_mode.upper()
     if counter_mode not in _VALID_COUNTER_MODES:
         raise ValueError(
@@ -170,6 +171,16 @@ def decrypt(
         )
     if counter_mode == DEVICE_UPTIME and days != 2:
         raise ValueError("Cannot specify both counter_mode=DEVICE_UPTIME and days")
+    return counter_mode
+
+
+def decrypt(
+    key: bytes,
+    encrypted_pkt: EncryptedPacket,
+    days: int = 2,
+    counter_mode: str = UNIX_TIME,
+) -> Optional[DecryptedPacket]:
+    counter_mode = _normalize_counter_mode(counter_mode, days)
 
     parsed = ParsedPacket(encrypted_pkt)
     keylen = len(key)
@@ -211,29 +222,38 @@ def decrypt_satellite(
     encrypted_payload: bytes,
     timestamp: Optional[float] = None,
     days: int = 2,
+    counter_mode: str = UNIX_TIME,
 ) -> Optional[bytes]:
     """Decrypt a satellite packet's encrypted customer payload.
 
     Satellite packets deliver the sequence number, 4-byte auth tag, and
     encrypted customer payload as separate fields, unlike BLE where they are
     packed into one advertisement. The underlying AES-256/128-CTR + CMAC
-    scheme is identical to BLE (see :func:`decrypt`), and satellite always
-    uses the UNIX_TIME (day-based) counter.
+    scheme is identical to BLE (see :func:`decrypt`).
 
-    The day counter is swept +/-``days`` around the packet's ``timestamp``
-    (or the current UTC day when ``timestamp`` is None), returning the
-    decrypted payload for the first day whose derived auth tag matches.
+    The counter swept to find a matching auth tag depends on ``counter_mode``:
 
-    Returns the decrypted payload bytes, or None if no day matches (wrong
-    key or outside the search window).
+    - ``UNIX_TIME`` (default): the day counter is swept +/-``days`` around the
+      packet's ``timestamp`` (or the current UTC day when ``timestamp`` is None).
+    - ``DEVICE_UPTIME``: the device-uptime counter is swept over the fixed pool
+      0-127. ``timestamp`` and ``days`` are unused in this mode.
+
+    Returns the decrypted payload bytes for the first counter whose derived
+    auth tag matches, or None if none match (wrong key, wrong mode, or outside
+    the search window).
     """
-    keylen = len(key)
-    if timestamp is None:
-        timestamp = datetime.now(timezone.utc).timestamp()
-    base = int(timestamp) // 86400
+    counter_mode = _normalize_counter_mode(counter_mode, days)
 
-    for delta in range(-days, days + 1):
-        time_counter = base + delta
+    keylen = len(key)
+    if counter_mode == DEVICE_UPTIME:
+        candidates = range(128)
+    else:
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).timestamp()
+        base = int(timestamp) // 86400
+        candidates = (base + delta for delta in range(-days, days + 1))
+
+    for time_counter in candidates:
         daily_key = _get_encryption_key(key, time_counter, seq_no, keylen=keylen)
         if _get_auth_tag(daily_key, encrypted_payload) == auth_tag:
             nonce = _get_nonce(key, time_counter, seq_no, keylen=keylen)

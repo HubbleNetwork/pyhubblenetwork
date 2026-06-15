@@ -210,6 +210,63 @@ def _decrypt_ctr_with_detect(
     return None
 
 
+def _decrypt_satellite_with_detect(
+    key: bytes,
+    pkt,
+    *,
+    auto_detect: bool,
+    fixed_counter_mode: str,
+    days: int,
+    state: dict,
+    announced: list[str],
+    suppress_info: bool,
+) -> Optional[bytes]:
+    """Decrypt a satellite packet, auto-detecting the counter source if asked.
+
+    Mirrors :func:`_decrypt_ctr_with_detect` for the satellite scan path.
+    Satellite packets carry no EID to key a cache on, so the detected mode is
+    cached for the whole stream in ``state['mode']``.
+    """
+
+    def _try(mode: str) -> Optional[bytes]:
+        kwargs = {"counter_mode": mode}
+        if mode == UNIX_TIME:
+            kwargs["days"] = days
+        return decrypt_satellite(
+            key,
+            seq_no=pkt.seq_num,
+            auth_tag=pkt.auth_tag,
+            encrypted_payload=pkt.payload,
+            timestamp=pkt.timestamp,
+            **kwargs,
+        )
+
+    if not auto_detect:
+        return _try(fixed_counter_mode)
+
+    detected = state.get("mode")
+    if detected is not None:
+        result = _try(detected)
+        if result is not None:
+            return result
+
+    for mode in (UNIX_TIME, DEVICE_UPTIME):
+        result = _try(mode)
+        if result is None:
+            continue
+        state["mode"] = mode
+        if not announced and not suppress_info:
+            announced.append("ctr")
+            variant = "AES-128-CTR" if len(key) == 16 else "AES-256-CTR"
+            click.secho(
+                f"[INFO] Detected: {variant}, counter_source={mode}",
+                fg="green",
+                err=True,
+            )
+        return result
+    return None
+
+
 def _format_payload(payload, fmt: str) -> str:
     """Format packet payload bytes for display."""
     if not isinstance(payload, bytes):
@@ -3154,6 +3211,8 @@ def _run_sat_scan(
     debug: bool = False,
     key: Optional[str] = None,
     days: int = 2,
+    counter_mode: str = UNIX_TIME,
+    auto_detect_ctr: bool = False,
     show_failed_decryption: bool = False,
 ) -> None:
     """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
@@ -3167,8 +3226,7 @@ def _run_sat_scan(
         show_decrypt_status=show_failed_decryption,
     )
 
-    # Pre-decode the key if provided. Satellite packets always use the
-    # UNIX_TIME (day-based) counter, so only --days is relevant.
+    # Pre-decode the key if provided.
     decoded_key: Optional[bytes] = None
     if key:
         try:
@@ -3178,6 +3236,14 @@ def _run_sat_scan(
                 click.echo(json.dumps({"error": f"Invalid key: {e}"}))
                 return
             raise click.ClickException(f"Invalid key: {e}")
+
+    if decoded_key is not None and auto_detect_ctr:
+        _announce_auto_detect(
+            auto_ctr=True, auto_eax=False, suppress=printer.suppress_info_messages
+        )
+
+    detected_ctr_state: dict = {}
+    announced: list[str] = []
 
     if debug:
         sat_logger = logging.getLogger("hubblenetwork.sat")
@@ -3225,13 +3291,15 @@ def _run_sat_scan(
                 # With a key, the user wants only packets the key can decrypt.
                 decrypted = None
                 if pkt.auth_tag is not None:
-                    decrypted = decrypt_satellite(
+                    decrypted = _decrypt_satellite_with_detect(
                         decoded_key,
-                        seq_no=pkt.seq_num,
-                        auth_tag=pkt.auth_tag,
-                        encrypted_payload=pkt.payload,
-                        timestamp=pkt.timestamp,
+                        pkt,
+                        auto_detect=auto_detect_ctr,
+                        fixed_counter_mode=counter_mode,
                         days=days,
+                        state=detected_ctr_state,
+                        announced=announced,
+                        suppress_info=printer.suppress_info_messages,
                     )
                 if decrypted is not None:
                     printer.print_row(
@@ -3306,7 +3374,8 @@ def _sat_scan_options(fn):
     default=None,
     show_default=False,
     help="Key to decrypt packet payloads (hex or base64, 16 or 32 bytes). "
-         "Satellite packets always use the UNIX_TIME counter.",
+         "The counter source (UNIX_TIME / DEVICE_UPTIME) is auto-detected "
+         "unless --counter-mode is given.",
 )
 @click.option(
     "--days",
@@ -3314,7 +3383,15 @@ def _sat_scan_options(fn):
     type=int,
     default=2,
     show_default=True,
-    help="Days to search around each packet's timestamp when decrypting",
+    help="Days to search around each packet's timestamp when decrypting "
+         "with the UNIX_TIME counter",
+)
+@click.option(
+    "--counter-mode",
+    type=click.Choice([UNIX_TIME, DEVICE_UPTIME], case_sensitive=False),
+    default=UNIX_TIME,
+    show_default=False,
+    help="EID counter source for decryption. Omit to auto-detect from packets.",
 )
 @click.option(
     "--show-failed-decryption",
@@ -3323,14 +3400,17 @@ def _sat_scan_options(fn):
     help="Show packets that fail decryption/authentication with the provided "
          "key. Adds a DECRYPT column indicating OK/FAIL.",
 )
-def sat_scan(**kwargs) -> None:
+@click.pass_context
+def sat_scan(ctx, **kwargs) -> None:
     """
     Start the satellite receiver and stream decoded packets.
 
     Requires Docker and a PlutoSDR device connected via USB.
 
     Pass --key to decrypt packet payloads locally; packets the key cannot
-    decrypt are hidden unless --show-failed-decryption is given.
+    decrypt are hidden unless --show-failed-decryption is given. The counter
+    source is auto-detected (UNIX_TIME or DEVICE_UPTIME) unless --counter-mode
+    is given explicitly.
 
     Example:
       hubblenetwork sat scan --timeout 30
@@ -3338,6 +3418,21 @@ def sat_scan(**kwargs) -> None:
       hubblenetwork sat scan -n 5
       hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 60
     """
+    key = kwargs.get("key")
+    counter_mode = kwargs["counter_mode"]
+
+    def _explicit(name: str) -> bool:
+        return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
+
+    if _explicit("counter_mode") and counter_mode == DEVICE_UPTIME:
+        if not key:
+            raise click.UsageError("--counter-mode DEVICE_UPTIME requires --key")
+        if _explicit("days"):
+            raise click.UsageError(
+                "--counter-mode DEVICE_UPTIME and --days are mutually exclusive"
+            )
+
+    kwargs["auto_detect_ctr"] = key is not None and not _explicit("counter_mode")
     _run_sat_scan(mock=False, **kwargs)
 
 
