@@ -10,7 +10,6 @@ from hubblenetwork.cli import (
     _validate_info,
     _validate_success,
     _validate_error,
-    _detect_eid_type,
     cli,
 )
 class TestValidateHelpers:
@@ -118,7 +117,7 @@ class TestBleValidateErrorPaths:
         device_id = str(uuid.uuid4())
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \
-             patch("hubblenetwork.cli.decrypt") as mock_decrypt:
+             patch("hubblenetwork.detect.decrypt") as mock_decrypt:
             mock_org = mock_org_cls.return_value
             mock_org.list_devices.return_value = [MagicMock(id=device_id)]
             mock_ble.scan.return_value = [object()]
@@ -158,106 +157,6 @@ class TestGetPktFromBeWithTimestamp:
         assert result is None
 
 
-class TestDetectEidType:
-    """Unit tests for the _detect_eid_type helper."""
-
-    def test_epoch_only(self):
-        pkt = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
-
-        with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is mock_dec
-        assert label == "UNIX_TIME"
-        assert ambiguous is False
-
-    def test_counter_only(self):
-        pkt = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return mock_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else None
-
-        with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is mock_dec
-        assert label == "DEVICE_UPTIME"
-        assert ambiguous is False
-
-    def test_ambiguous(self):
-        pkt = MagicMock()
-        epoch_dec = MagicMock()
-        counter_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return counter_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else epoch_dec
-
-        with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is epoch_dec  # epoch preferred
-        assert label == "AMBIGUOUS"
-        assert ambiguous is True
-
-    def test_neither(self):
-        pkt = MagicMock()
-
-        with patch("hubblenetwork.cli.decrypt", return_value=None):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is None
-        assert dec is None
-        assert label is None
-        assert ambiguous is False
-
-    def test_stops_early_when_both_found(self):
-        """Helper stops after pkts[0] resolves both modes; pkts[1] is never processed."""
-        pkt0 = MagicMock()
-        pkt1 = MagicMock()
-
-        with patch("hubblenetwork.cli.decrypt", return_value=MagicMock()) as mock_decrypt:
-            enc, dec, label, ambiguous = _detect_eid_type(
-                b"k" * 16, [pkt0, pkt1]
-            )
-
-        # Both modes resolved on pkt0: 1 epoch call + 1 counter call = 2 total
-        assert mock_decrypt.call_count == 2
-        assert enc is pkt0
-        assert label == "AMBIGUOUS"
-        assert ambiguous is True
-
-    def test_advances_to_next_packet_when_first_fails(self):
-        """Loop continues past pkts[0] when it fails both modes."""
-        pkt0 = MagicMock()
-        pkt1 = MagicMock()
-        mock_dec = MagicMock()
-
-        call_count = {"n": 0}
-
-        def side_effect(*args, **kwargs):
-            call_count["n"] += 1
-            # pkt0 always fails; pkt1 succeeds epoch only
-            if args[1] is pkt0:
-                return None
-            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
-
-        with patch("hubblenetwork.cli.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = _detect_eid_type(b"k" * 16, [pkt0, pkt1])
-
-        assert enc is pkt1
-        assert dec is mock_dec
-        assert label == "UNIX_TIME"
-        assert ambiguous is False
-
-
 class TestBleValidateEidOutput:
     """Integration tests verifying EID type is echoed in Step 6 output."""
 
@@ -271,7 +170,7 @@ class TestBleValidateEidOutput:
 
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \
-             patch("hubblenetwork.cli.decrypt", side_effect=decrypt_side_effect), \
+             patch("hubblenetwork.detect.decrypt", side_effect=decrypt_side_effect), \
              patch("hubblenetwork.cli.time.sleep"), \
              patch("hubblenetwork.cli._get_pkt_from_be_with_timestamp",
                    return_value=MagicMock(device_name="n", payload=b"p", sequence=1)):
@@ -299,7 +198,7 @@ class TestBleValidateEidOutput:
 
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \
-             patch("hubblenetwork.cli.decrypt", side_effect=decrypt_side_effect), \
+             patch("hubblenetwork.detect.decrypt", side_effect=decrypt_side_effect), \
              patch("hubblenetwork.cli.time.sleep"), \
              patch("hubblenetwork.cli._get_pkt_from_be_with_timestamp",
                    return_value=MagicMock(device_name="n", payload=b"p", sequence=1)):

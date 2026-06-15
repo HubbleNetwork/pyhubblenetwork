@@ -14,7 +14,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
-from typing import Callable, Optional, List, TypeVar
+from typing import Optional, List
 from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket, decrypt_eax
@@ -24,6 +24,11 @@ from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
 from hubblenetwork import decrypt, decrypt_satellite, UNIX_TIME, DEVICE_UPTIME
 from hubblenetwork.crypto import find_time_counter_delta
+from hubblenetwork.detect import (
+    CtrCounterModeDetector,
+    EaxExponentDetector,
+    detect_eid_type,
+)
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
 from hubblenetwork.errors import BackendError
@@ -83,36 +88,6 @@ def _get_pkt_from_be_with_timestamp(org, device, timestamp):
     return None
 
 
-def _detect_eid_type(
-    key: bytes,
-    pkts: List[EncryptedPacket],
-) -> tuple[Optional[EncryptedPacket], Optional[DecryptedPacket], Optional[str], bool]:
-    epoch_pkt = None
-    epoch_dec = None
-    counter_pkt = None
-    counter_dec = None
-    for pkt in pkts:
-        if epoch_pkt is None:
-            result = decrypt(key, pkt)
-            if result:
-                epoch_pkt = pkt
-                epoch_dec = result
-        if counter_pkt is None:
-            result = decrypt(key, pkt, counter_mode=DEVICE_UPTIME)
-            if result:
-                counter_pkt = pkt
-                counter_dec = result
-        if epoch_pkt and counter_pkt:
-            break
-    if epoch_pkt and counter_pkt:
-        return (epoch_pkt, epoch_dec, "AMBIGUOUS", True)
-    if epoch_pkt:
-        return (epoch_pkt, epoch_dec, UNIX_TIME, False)
-    if counter_pkt:
-        return (counter_pkt, counter_dec, DEVICE_UPTIME, False)
-    return (None, None, None, False)
-
-
 def _announce_auto_detect(auto_ctr: bool, auto_eax: bool, *, suppress: bool) -> None:
     if suppress or not (auto_ctr or auto_eax):
         return
@@ -129,161 +104,14 @@ def _announce_auto_detect(auto_ctr: bool, auto_eax: bool, *, suppress: bool) -> 
     )
 
 
-def _decrypt_eax_with_detect(
-    key: bytes,
-    pkt: AesEaxPacket,
-    *,
-    auto_detect: bool,
-    fixed_exponent: int,
-    cache: dict,
-    announced: list[str],
-    suppress_info: bool,
-) -> Optional[DecryptedPacket]:
-    if not auto_detect:
-        return decrypt_eax(key, pkt, period_exponent=fixed_exponent)
+def _announce_detection(label: Optional[str], *, suppress: bool) -> None:
+    """Print the one-shot ``[INFO] Detected:`` line for a fresh detection.
 
-    cached = cache.get(pkt.eid)
-    if cached is not None:
-        result = decrypt_eax(key, pkt, period_exponent=cached)
-        if result:
-            return result
-
-    for candidate in range(16):
-        result = decrypt_eax(key, pkt, period_exponent=candidate)
-        if result is None:
-            continue
-        cache[pkt.eid] = candidate
-        if not announced and not suppress_info:
-            announced.append("eax")
-            click.secho(
-                f"[INFO] Detected: AES-128-EAX, counter_source=DEVICE_UPTIME, "
-                f"period_exponent={candidate} (period={1 << candidate}s)",
-                fg="green",
-                err=True,
-            )
-        return result
-    return None
-
-
-_T = TypeVar("_T")
-
-# Satellite streams have no per-packet EID to key the counter-mode cache on, so
-# the detected mode lives in a single shared slot for the whole scan.
-_SAT_CTR_CACHE_KEY = "mode"
-
-
-def _detect_ctr_counter_mode(
-    *,
-    decrypt_fn: Callable[..., Optional[_T]],
-    days: int,
-    auto_detect: bool,
-    fixed_counter_mode: str,
-    key_len: int,
-    cache: dict,
-    cache_key: object,
-    announced: list[str],
-    suppress_info: bool,
-) -> Optional[_T]:
-    """Decrypt an AES-CTR packet, auto-detecting the counter source if asked.
-
-    Shared by the BLE and satellite scan paths. ``decrypt_fn`` is a packet-bound
-    adapter accepting ``counter_mode`` (and, for UNIX_TIME, ``days``) and
-    returning the decrypted result or None.
-
-    When ``auto_detect`` is False the ``fixed_counter_mode`` is used directly.
-    Otherwise the mode cached under ``cache_key`` (a BLE EID, or a per-stream
-    sentinel for satellite) is tried first, then UNIX_TIME and DEVICE_UPTIME are
-    swept; the first that succeeds is cached and announced once via ``announced``.
-    A ``cache_key`` of None disables caching (BLE packets without an EID).
+    ``label`` is set by the detector only on the first successful detection of a
+    scan, so a no-op when it is None or output is suppressed (JSON mode).
     """
-
-    def _try(mode: str) -> Optional[_T]:
-        kwargs = {"counter_mode": mode}
-        if mode == UNIX_TIME:
-            kwargs["days"] = days
-        return decrypt_fn(**kwargs)
-
-    if not auto_detect:
-        return _try(fixed_counter_mode)
-
-    if cache_key is not None:
-        cached = cache.get(cache_key)
-        if cached is not None:
-            result = _try(cached)
-            if result is not None:
-                return result
-
-    for mode in (UNIX_TIME, DEVICE_UPTIME):
-        result = _try(mode)
-        if result is None:
-            continue
-        if cache_key is not None:
-            cache[cache_key] = mode
-        if not announced and not suppress_info:
-            announced.append("ctr")
-            variant = "AES-128-CTR" if key_len == 16 else "AES-256-CTR"
-            click.secho(
-                f"[INFO] Detected: {variant}, counter_source={mode}",
-                fg="green",
-                err=True,
-            )
-        return result
-    return None
-
-
-def _decrypt_ctr_with_detect(
-    key: bytes,
-    pkt: EncryptedPacket,
-    *,
-    auto_detect: bool,
-    fixed_counter_mode: str,
-    days: int,
-    cache: dict,
-    announced: list[str],
-    suppress_info: bool,
-) -> Optional[DecryptedPacket]:
-    return _detect_ctr_counter_mode(
-        decrypt_fn=lambda **kw: decrypt(key, pkt, **kw),
-        days=days,
-        auto_detect=auto_detect,
-        fixed_counter_mode=fixed_counter_mode,
-        key_len=len(key),
-        cache=cache,
-        cache_key=pkt.eid,
-        announced=announced,
-        suppress_info=suppress_info,
-    )
-
-
-def _decrypt_satellite_with_detect(
-    key: bytes,
-    pkt,
-    *,
-    auto_detect: bool,
-    fixed_counter_mode: str,
-    days: int,
-    state: dict,
-    announced: list[str],
-    suppress_info: bool,
-) -> Optional[bytes]:
-    return _detect_ctr_counter_mode(
-        decrypt_fn=lambda **kw: decrypt_satellite(
-            key,
-            seq_no=pkt.seq_num,
-            auth_tag=pkt.auth_tag,
-            encrypted_payload=pkt.payload,
-            timestamp=pkt.timestamp,
-            **kw,
-        ),
-        days=days,
-        auto_detect=auto_detect,
-        fixed_counter_mode=fixed_counter_mode,
-        key_len=len(key),
-        cache=state,
-        cache_key=_SAT_CTR_CACHE_KEY,
-        announced=announced,
-        suppress_info=suppress_info,
-    )
+    if label and not suppress:
+        click.secho(f"[INFO] Detected: {label}", fg="green", err=True)
 
 
 def _format_payload(payload, fmt: str) -> str:
@@ -1018,9 +846,15 @@ def ble_detect(
 
     _announce_auto_detect(auto_detect_ctr, auto_detect_eax, suppress=use_json)
 
-    detected_ctr_modes: dict = {}
-    detected_eax_exponents: dict = {}
-    announced: list[str] = []
+    ctr_detector = CtrCounterModeDetector(
+        auto_detect=auto_detect_ctr,
+        fixed_counter_mode=counter_mode,
+        days=days,
+        key_len=len(decoded_key),
+    )
+    eax_detector = EaxExponentDetector(
+        auto_detect=auto_detect_eax, fixed_exponent=period_exponent
+    )
 
     # Set up timeout tracking
     start = time.monotonic()
@@ -1054,26 +888,21 @@ def ble_detect(
 
         decrypted_pkt = None
         if isinstance(pkt, AesEaxPacket):
-            decrypted_pkt = _decrypt_eax_with_detect(
-                decoded_key,
-                pkt,
-                auto_detect=auto_detect_eax,
-                fixed_exponent=period_exponent,
-                cache=detected_eax_exponents,
-                announced=announced,
-                suppress_info=use_json,
+            d = eax_detector.decrypt(
+                decrypt_fn=lambda exp: decrypt_eax(
+                    decoded_key, pkt, period_exponent=exp
+                ),
+                cache_key=pkt.eid,
             )
+            _announce_detection(d.label, suppress=use_json)
+            decrypted_pkt = d.result
         elif isinstance(pkt, EncryptedPacket):
-            decrypted_pkt = _decrypt_ctr_with_detect(
-                decoded_key,
-                pkt,
-                auto_detect=auto_detect_ctr,
-                fixed_counter_mode=counter_mode,
-                days=days,
-                cache=detected_ctr_modes,
-                announced=announced,
-                suppress_info=use_json,
+            d = ctr_detector.decrypt(
+                decrypt_fn=lambda **kw: decrypt(decoded_key, pkt, **kw),
+                cache_key=pkt.eid,
             )
+            _announce_detection(d.label, suppress=use_json)
+            decrypted_pkt = d.result
         # UnencryptedPacket and UnknownPacket fall through — keep scanning.
 
         if decrypted_pkt:
@@ -1269,9 +1098,15 @@ def ble_scan(
         auto_detect_ctr, auto_detect_eax, suppress=printer.suppress_info_messages
     )
 
-    detected_ctr_modes: dict = {}
-    detected_eax_exponents: dict = {}
-    announced: list[str] = []
+    ctr_detector = CtrCounterModeDetector(
+        auto_detect=auto_detect_ctr,
+        fixed_counter_mode=counter_mode,
+        days=days,
+        key_len=len(decoded_key) if decoded_key is not None else 0,
+    )
+    eax_detector = EaxExponentDetector(
+        auto_detect=auto_detect_eax, fixed_exponent=period_exponent
+    )
 
     try:
         while deadline is None or time.monotonic() < deadline:
@@ -1303,15 +1138,16 @@ def ble_scan(
             # AES-EAX packets: decrypt if key provided, else show raw fields
             elif isinstance(pkt, AesEaxPacket):
                 if decoded_key:
-                    decrypted_pkt = _decrypt_eax_with_detect(
-                        decoded_key,
-                        pkt,
-                        auto_detect=auto_detect_eax,
-                        fixed_exponent=period_exponent,
-                        cache=detected_eax_exponents,
-                        announced=announced,
-                        suppress_info=printer.suppress_info_messages,
+                    d = eax_detector.decrypt(
+                        decrypt_fn=lambda exp: decrypt_eax(
+                            decoded_key, pkt, period_exponent=exp
+                        ),
+                        cache_key=pkt.eid,
                     )
+                    _announce_detection(
+                        d.label, suppress=printer.suppress_info_messages
+                    )
+                    decrypted_pkt = d.result
                     if decrypted_pkt:
                         printer.print_row(decrypted_pkt, decrypt_status="ok")
                     elif show_failed_decryption:
@@ -1320,16 +1156,14 @@ def ble_scan(
                     printer.print_row(pkt)
             elif isinstance(pkt, EncryptedPacket):
                 if decoded_key:
-                    decrypted_pkt = _decrypt_ctr_with_detect(
-                        decoded_key,
-                        pkt,
-                        auto_detect=auto_detect_ctr,
-                        fixed_counter_mode=counter_mode,
-                        days=days,
-                        cache=detected_ctr_modes,
-                        announced=announced,
-                        suppress_info=printer.suppress_info_messages,
+                    d = ctr_detector.decrypt(
+                        decrypt_fn=lambda **kw: decrypt(decoded_key, pkt, **kw),
+                        cache_key=pkt.eid,
                     )
+                    _announce_detection(
+                        d.label, suppress=printer.suppress_info_messages
+                    )
+                    decrypted_pkt = d.result
                     if decrypted_pkt:
                         printer.print_row(decrypted_pkt, decrypt_status="ok")
                         if ingest:
@@ -1594,7 +1428,7 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
 
     # Step 6: Validate encryption and detect EID type
     _validate_info("Validating encryption of received packets")
-    pkt_to_ingest, dec_result, eid_label, _ = _detect_eid_type(decoded_key, pkts)
+    pkt_to_ingest, dec_result, eid_label, _ = detect_eid_type(decoded_key, pkts)
     if not pkt_to_ingest:
         _validate_error(
             'Unable to decrypt packet with given device key.'
@@ -3261,8 +3095,12 @@ def _run_sat_scan(
             auto_ctr=True, auto_eax=False, suppress=printer.suppress_info_messages
         )
 
-    detected_ctr_state: dict = {}
-    announced: list[str] = []
+    ctr_detector = CtrCounterModeDetector(
+        auto_detect=auto_detect_ctr,
+        fixed_counter_mode=counter_mode,
+        days=days,
+        key_len=len(decoded_key) if decoded_key is not None else 0,
+    )
 
     if debug:
         sat_logger = logging.getLogger("hubblenetwork.sat")
@@ -3310,16 +3148,22 @@ def _run_sat_scan(
                 # With a key, the user wants only packets the key can decrypt.
                 decrypted = None
                 if pkt.auth_tag is not None:
-                    decrypted = _decrypt_satellite_with_detect(
-                        decoded_key,
-                        pkt,
-                        auto_detect=auto_detect_ctr,
-                        fixed_counter_mode=counter_mode,
-                        days=days,
-                        state=detected_ctr_state,
-                        announced=announced,
-                        suppress_info=printer.suppress_info_messages,
+                    # Satellite streams have no per-packet EID; omitting cache_key
+                    # lets the detector share one per-stream slot for the scan.
+                    d = ctr_detector.decrypt(
+                        decrypt_fn=lambda **kw: decrypt_satellite(
+                            decoded_key,
+                            seq_no=pkt.seq_num,
+                            auth_tag=pkt.auth_tag,
+                            encrypted_payload=pkt.payload,
+                            timestamp=pkt.timestamp,
+                            **kw,
+                        ),
                     )
+                    _announce_detection(
+                        d.label, suppress=printer.suppress_info_messages
+                    )
+                    decrypted = d.result
                 if decrypted is not None:
                     printer.print_row(
                         replace(pkt, payload=decrypted), decrypt_status="ok"
