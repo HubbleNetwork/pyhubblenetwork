@@ -39,6 +39,10 @@ def web_ui_url(port: int = API_PORT) -> str:
     return f"http://localhost:{port}/"
 
 
+def _status_url(port: int = API_PORT) -> str:
+    return f"http://localhost:{port}/api/status"
+
+
 # ---------------------------------------------------------------------------
 # Docker helpers
 # ---------------------------------------------------------------------------
@@ -171,6 +175,43 @@ def _wait_for_api(port: int = API_PORT, timeout: float = 30) -> None:
     )
 
 
+def _wait_for_sdr(port: int = API_PORT, timeout: float = 15) -> None:
+    """Block until the receiver reports the SDR hardware is connected.
+
+    The receiver's ``/api/status`` endpoint exposes ``sdr_connected``, which
+    is ``True`` only once the PlutoSDR has been opened.  When no Pluto is
+    attached the container still serves its API and silently retries the
+    open forever, so without this check ``scan`` would just yield nothing.
+
+    The SDR is not opened instantly even when present, so this polls for up
+    to *timeout* seconds.  If ``sdr_connected`` stays ``False`` for the whole
+    window a ``SatelliteError`` is raised.
+
+    For backward compatibility with receiver images that predate the
+    ``sdr_connected`` field, the check is skipped when the field is absent.
+    """
+    deadline = time.monotonic() + timeout
+    url = _status_url(port)
+    while time.monotonic() < deadline:
+        try:
+            resp = httpx.get(url, timeout=2)
+            resp.raise_for_status()
+            status = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            time.sleep(0.5)
+            continue
+        if "sdr_connected" not in status:
+            # Older receiver image without hardware reporting — can't tell.
+            return
+        if status["sdr_connected"]:
+            return
+        time.sleep(0.5)
+    raise SatelliteError(
+        "No PlutoSDR detected — check that the device is plugged in "
+        f"(receiver reported no SDR connection within {timeout}s)."
+    )
+
+
 def _parse_jsonl(text: str) -> List[SatellitePacket]:
     """Parse a JSONL response body into a list of ``SatellitePacket``."""
     packets: List[SatellitePacket] = []
@@ -273,6 +314,9 @@ def scan(
     try:
         _emit("Waiting for receiver API to be ready...")
         _wait_for_api(port=port)
+        if not mock:
+            _emit("Waiting for PlutoSDR to connect...")
+            _wait_for_sdr(port=port)
         _emit("Receiver ready, listening for packets...")
 
         seen: Set[Tuple[str, int]] = set()

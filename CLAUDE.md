@@ -75,7 +75,7 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **`cli.py`** - Click-based CLI. Command groups: `ble` (scan, detect, check-time, validate), `ready` (scan, info, read-status, read-key-info, read-config, read-time, write-key, write-config, write-time, provision), `org` (info, list-devices, get-packets, register-device, delete-device, set-device-name), `sat` (scan, mock-scan; `scan` accepts `--key`/`--days`/`--counter-mode`/`--show-failed-decryption` to decrypt payloads locally — when `--key` is given without `--counter-mode`, the counter source is auto-detected (UNIX_TIME vs DEVICE_UPTIME) and announced, mirroring `ble scan`). Top-level: `validate-credentials`.
 
-- **`sat.py`** - Satellite packet scanning via PlutoSDR. Manages Docker container lifecycle (pull, start, stop) and polls the container's HTTP API for decoded packets. Requires Docker daemon running. Image: `ghcr.io/hubblenetwork/sdr-docker:latest`.
+- **`sat.py`** - Satellite packet scanning via PlutoSDR. Manages Docker container lifecycle (pull, start, stop) and polls the container's HTTP API for decoded packets. Requires Docker daemon running. Image: `ghcr.io/hubblenetwork/sdr-docker:latest`. For real (non-mock) scans, after the receiver API is up `scan()` calls `_wait_for_sdr()`, which polls the container's `/api/status` `sdr_connected` field and raises `SatelliteError("No PlutoSDR detected …")` if the SDR never connects within the grace period — so a missing/unplugged Pluto fails fast instead of silently yielding nothing. The check is skipped for older receiver images that don't report `sdr_connected`.
 
 ### Key Patterns
 

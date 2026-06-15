@@ -113,6 +113,50 @@ class TestParseJsonl:
 
 
 # ---------------------------------------------------------------------------
+# SDR connection readiness
+# ---------------------------------------------------------------------------
+
+
+def _status_response(payload: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = payload
+    return resp
+
+
+class TestWaitForSdr:
+    @patch("hubblenetwork.sat.httpx.get")
+    def test_returns_when_connected(self, mock_get):
+        mock_get.return_value = _status_response({"sdr_connected": True})
+        # Should return promptly without raising.
+        sat._wait_for_sdr(timeout=5)
+
+    @patch("hubblenetwork.sat.httpx.get")
+    def test_skips_when_field_absent(self, mock_get):
+        # Older receiver image without hardware reporting.
+        mock_get.return_value = _status_response({"devices": []})
+        sat._wait_for_sdr(timeout=5)
+
+    @patch("hubblenetwork.sat.time.sleep", lambda _s: None)
+    @patch("hubblenetwork.sat.httpx.get")
+    def test_raises_when_never_connected(self, mock_get):
+        mock_get.return_value = _status_response({"sdr_connected": False})
+        with pytest.raises(SatelliteError, match="No PlutoSDR detected"):
+            sat._wait_for_sdr(timeout=0.05)
+
+    @patch("hubblenetwork.sat.time.sleep", lambda _s: None)
+    @patch("hubblenetwork.sat.httpx.get")
+    def test_connects_after_a_few_polls(self, mock_get):
+        mock_get.side_effect = [
+            _status_response({"sdr_connected": False}),
+            _status_response({"sdr_connected": False}),
+            _status_response({"sdr_connected": True}),
+        ]
+        sat._wait_for_sdr(timeout=5)
+        assert mock_get.call_count == 3
+
+
+# ---------------------------------------------------------------------------
 # Deduplication key
 # ---------------------------------------------------------------------------
 
@@ -319,12 +363,20 @@ class TestScanMockMode:
 
     @patch("hubblenetwork.sat.stop_container")
     @patch("hubblenetwork.sat.fetch_packets")
+    @patch("hubblenetwork.sat._wait_for_sdr")
     @patch("hubblenetwork.sat._wait_for_api")
     @patch("hubblenetwork.sat.start_container")
     @patch("hubblenetwork.sat.pull_image")
     @patch("hubblenetwork.sat.ensure_docker_available")
     def test_scan_real_passes_correct_params(
-        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_fetch, mock_stop
+        self,
+        mock_ensure,
+        mock_pull,
+        mock_start,
+        mock_wait,
+        mock_wait_sdr,
+        mock_fetch,
+        mock_stop,
     ):
         mock_start.return_value = "container456"
         mock_fetch.return_value = []
@@ -338,6 +390,33 @@ class TestScanMockMode:
             privileged=True,
             name=sat.CONTAINER_NAME,
         )
+        # Real scans must verify the SDR is actually connected.
+        mock_wait_sdr.assert_called_once_with(port=sat.API_PORT)
+
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat.fetch_packets")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_scan_mock_skips_sdr_check(
+        self,
+        mock_ensure,
+        mock_pull,
+        mock_start,
+        mock_wait,
+        mock_wait_sdr,
+        mock_fetch,
+        mock_stop,
+    ):
+        mock_start.return_value = "container123"
+        mock_fetch.return_value = []
+
+        list(sat.scan(timeout=0.1, mock=True))
+
+        # Mock mode has no hardware to wait for.
+        mock_wait_sdr.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
