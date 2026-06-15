@@ -14,7 +14,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
-from typing import Optional, List
+from typing import Callable, Optional, List, TypeVar
 from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket, decrypt_eax
@@ -165,6 +165,72 @@ def _decrypt_eax_with_detect(
     return None
 
 
+_T = TypeVar("_T")
+
+# Satellite streams have no per-packet EID to key the counter-mode cache on, so
+# the detected mode lives in a single shared slot for the whole scan.
+_SAT_CTR_CACHE_KEY = "mode"
+
+
+def _detect_ctr_counter_mode(
+    *,
+    decrypt_fn: Callable[..., Optional[_T]],
+    days: int,
+    auto_detect: bool,
+    fixed_counter_mode: str,
+    key_len: int,
+    cache: dict,
+    cache_key: object,
+    announced: list[str],
+    suppress_info: bool,
+) -> Optional[_T]:
+    """Decrypt an AES-CTR packet, auto-detecting the counter source if asked.
+
+    Shared by the BLE and satellite scan paths. ``decrypt_fn`` is a packet-bound
+    adapter accepting ``counter_mode`` (and, for UNIX_TIME, ``days``) and
+    returning the decrypted result or None.
+
+    When ``auto_detect`` is False the ``fixed_counter_mode`` is used directly.
+    Otherwise the mode cached under ``cache_key`` (a BLE EID, or a per-stream
+    sentinel for satellite) is tried first, then UNIX_TIME and DEVICE_UPTIME are
+    swept; the first that succeeds is cached and announced once via ``announced``.
+    A ``cache_key`` of None disables caching (BLE packets without an EID).
+    """
+
+    def _try(mode: str) -> Optional[_T]:
+        kwargs = {"counter_mode": mode}
+        if mode == UNIX_TIME:
+            kwargs["days"] = days
+        return decrypt_fn(**kwargs)
+
+    if not auto_detect:
+        return _try(fixed_counter_mode)
+
+    if cache_key is not None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            result = _try(cached)
+            if result is not None:
+                return result
+
+    for mode in (UNIX_TIME, DEVICE_UPTIME):
+        result = _try(mode)
+        if result is None:
+            continue
+        if cache_key is not None:
+            cache[cache_key] = mode
+        if not announced and not suppress_info:
+            announced.append("ctr")
+            variant = "AES-128-CTR" if key_len == 16 else "AES-256-CTR"
+            click.secho(
+                f"[INFO] Detected: {variant}, counter_source={mode}",
+                fg="green",
+                err=True,
+            )
+        return result
+    return None
+
+
 def _decrypt_ctr_with_detect(
     key: bytes,
     pkt: EncryptedPacket,
@@ -176,38 +242,17 @@ def _decrypt_ctr_with_detect(
     announced: list[str],
     suppress_info: bool,
 ) -> Optional[DecryptedPacket]:
-    if not auto_detect:
-        return decrypt(key, pkt, days=days, counter_mode=fixed_counter_mode)
-
-    def _try(mode: str) -> Optional[DecryptedPacket]:
-        kwargs = {"counter_mode": mode}
-        if mode == UNIX_TIME:
-            kwargs["days"] = days
-        return decrypt(key, pkt, **kwargs)
-
-    if pkt.eid is not None:
-        cached = cache.get(pkt.eid)
-        if cached is not None:
-            result = _try(cached)
-            if result:
-                return result
-
-    for mode in (UNIX_TIME, DEVICE_UPTIME):
-        result = _try(mode)
-        if result is None:
-            continue
-        if pkt.eid is not None:
-            cache[pkt.eid] = mode
-        if not announced and not suppress_info:
-            announced.append("ctr")
-            variant = "AES-128-CTR" if len(key) == 16 else "AES-256-CTR"
-            click.secho(
-                f"[INFO] Detected: {variant}, counter_source={mode}",
-                fg="green",
-                err=True,
-            )
-        return result
-    return None
+    return _detect_ctr_counter_mode(
+        decrypt_fn=lambda **kw: decrypt(key, pkt, **kw),
+        days=days,
+        auto_detect=auto_detect,
+        fixed_counter_mode=fixed_counter_mode,
+        key_len=len(key),
+        cache=cache,
+        cache_key=pkt.eid,
+        announced=announced,
+        suppress_info=suppress_info,
+    )
 
 
 def _decrypt_satellite_with_detect(
@@ -221,50 +266,24 @@ def _decrypt_satellite_with_detect(
     announced: list[str],
     suppress_info: bool,
 ) -> Optional[bytes]:
-    """Decrypt a satellite packet, auto-detecting the counter source if asked.
-
-    Mirrors :func:`_decrypt_ctr_with_detect` for the satellite scan path.
-    Satellite packets carry no EID to key a cache on, so the detected mode is
-    cached for the whole stream in ``state['mode']``.
-    """
-
-    def _try(mode: str) -> Optional[bytes]:
-        kwargs = {"counter_mode": mode}
-        if mode == UNIX_TIME:
-            kwargs["days"] = days
-        return decrypt_satellite(
+    return _detect_ctr_counter_mode(
+        decrypt_fn=lambda **kw: decrypt_satellite(
             key,
             seq_no=pkt.seq_num,
             auth_tag=pkt.auth_tag,
             encrypted_payload=pkt.payload,
             timestamp=pkt.timestamp,
-            **kwargs,
-        )
-
-    if not auto_detect:
-        return _try(fixed_counter_mode)
-
-    detected = state.get("mode")
-    if detected is not None:
-        result = _try(detected)
-        if result is not None:
-            return result
-
-    for mode in (UNIX_TIME, DEVICE_UPTIME):
-        result = _try(mode)
-        if result is None:
-            continue
-        state["mode"] = mode
-        if not announced and not suppress_info:
-            announced.append("ctr")
-            variant = "AES-128-CTR" if len(key) == 16 else "AES-256-CTR"
-            click.secho(
-                f"[INFO] Detected: {variant}, counter_source={mode}",
-                fg="green",
-                err=True,
-            )
-        return result
-    return None
+            **kw,
+        ),
+        days=days,
+        auto_detect=auto_detect,
+        fixed_counter_mode=fixed_counter_mode,
+        key_len=len(key),
+        cache=state,
+        cache_key=_SAT_CTR_CACHE_KEY,
+        announced=announced,
+        suppress_info=suppress_info,
+    )
 
 
 def _format_payload(payload, fmt: str) -> str:
