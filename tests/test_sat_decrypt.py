@@ -11,7 +11,7 @@ from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
 
-from hubblenetwork import decrypt_satellite
+from hubblenetwork import DEVICE_UPTIME, UNIX_TIME, decrypt_satellite
 from hubblenetwork.cli import cli
 from hubblenetwork.errors import DockerError, SatelliteError
 from hubblenetwork.packets import SatellitePacket
@@ -127,6 +127,59 @@ class TestDecryptSatellite:
         )
         assert out == plaintext
 
+    def test_device_uptime_roundtrip(self):
+        # Device-uptime packets encode the counter (0-127) as time_counter.
+        plaintext = b"uptime!"
+        ct, tag = make_encrypted_sat_payload(_MASTER_256, 11, plaintext, 5)
+        out = decrypt_satellite(
+            _MASTER_256, seq_no=11, auth_tag=tag, encrypted_payload=ct,
+            counter_mode=DEVICE_UPTIME,
+        )
+        assert out == plaintext
+
+    def test_device_uptime_aes128(self):
+        plaintext = b"u128"
+        ct, tag = make_encrypted_sat_payload(_MASTER_128, 3, plaintext, 120)
+        out = decrypt_satellite(
+            _MASTER_128, seq_no=3, auth_tag=tag, encrypted_payload=ct,
+            counter_mode=DEVICE_UPTIME,
+        )
+        assert out == plaintext
+
+    def test_device_uptime_out_of_pool_returns_none(self):
+        # Counter 200 is outside the fixed 0-127 pool.
+        ct, tag = make_encrypted_sat_payload(_MASTER_256, 1, b"far", 200)
+        out = decrypt_satellite(
+            _MASTER_256, seq_no=1, auth_tag=tag, encrypted_payload=ct,
+            counter_mode=DEVICE_UPTIME,
+        )
+        assert out is None
+
+    def test_unix_time_does_not_match_uptime_packet(self):
+        # A device-uptime packet (small counter) must not resolve under UNIX_TIME.
+        ct, tag = make_encrypted_sat_payload(_MASTER_256, 4, b"nope", 5)
+        out = decrypt_satellite(
+            _MASTER_256, seq_no=4, auth_tag=tag, encrypted_payload=ct,
+            timestamp=_TODAY_TC * 86400, counter_mode=UNIX_TIME,
+        )
+        assert out is None
+
+    def test_invalid_counter_mode_raises(self):
+        ct, tag = make_encrypted_sat_payload(_MASTER_256, 1, b"x", _TODAY_TC)
+        with pytest.raises(ValueError):
+            decrypt_satellite(
+                _MASTER_256, seq_no=1, auth_tag=tag, encrypted_payload=ct,
+                counter_mode="BOGUS",
+            )
+
+    def test_device_uptime_with_days_raises(self):
+        ct, tag = make_encrypted_sat_payload(_MASTER_256, 1, b"x", 5)
+        with pytest.raises(ValueError):
+            decrypt_satellite(
+                _MASTER_256, seq_no=1, auth_tag=tag, encrypted_payload=ct,
+                counter_mode=DEVICE_UPTIME, days=5,
+            )
+
 
 # ---------------------------------------------------------------------------
 # JSONL parsing of auth_tag
@@ -162,8 +215,10 @@ class TestAuthTagParsing:
 # ---------------------------------------------------------------------------
 
 
-def _make_encrypted_sat_pkt(seq_no=42, plaintext=b"data_42") -> SatellitePacket:
-    ct, tag = make_encrypted_sat_payload(_MASTER_256, seq_no, plaintext, _TODAY_TC)
+def _make_encrypted_sat_pkt(
+    seq_no=42, plaintext=b"data_42", time_counter=_TODAY_TC
+) -> SatellitePacket:
+    ct, tag = make_encrypted_sat_payload(_MASTER_256, seq_no, plaintext, time_counter)
     return SatellitePacket(
         device_id="0xBB2973BD",
         seq_num=seq_no,
@@ -279,3 +334,75 @@ class TestSatScanKeyCli:
         assert result.exit_code == 0
         assert "hello" in result.output
         assert "decrypt_status" not in result.output
+
+    def test_autodetect_device_uptime(self, runner, monkeypatch):
+        # No --counter-mode: a device-uptime packet should auto-detect and decrypt.
+        pkt = _make_encrypted_sat_pkt(seq_no=42, plaintext=b"up_data", time_counter=5)
+        import hubblenetwork.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod.sat_mod, "scan", lambda **kw: iter([pkt]))
+        monkeypatch.setattr(cli_mod.sat_mod, "ensure_docker_available", lambda: None)
+
+        result = runner.invoke(
+            cli,
+            ["sat", "scan", "--key", _MASTER_256.hex(), "--timeout", "1",
+             "--poll-interval", "0.1", "--payload-format", "string"],
+        )
+        assert result.exit_code == 0
+        assert "up_data" in result.output
+        assert "Detected: AES-256-CTR, counter_source=DEVICE_UPTIME" in result.output
+
+    def test_autodetect_unix_time_announced(self, runner, monkeypatch):
+        pkt = _make_encrypted_sat_pkt(seq_no=42, plaintext=b"day_data")
+        import hubblenetwork.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod.sat_mod, "scan", lambda **kw: iter([pkt]))
+        monkeypatch.setattr(cli_mod.sat_mod, "ensure_docker_available", lambda: None)
+
+        result = runner.invoke(
+            cli,
+            ["sat", "scan", "--key", _MASTER_256.hex(), "--timeout", "1",
+             "--poll-interval", "0.1", "--payload-format", "string"],
+        )
+        assert result.exit_code == 0
+        assert "day_data" in result.output
+        assert "Detected: AES-256-CTR, counter_source=UNIX_TIME" in result.output
+
+    def test_explicit_counter_mode_device_uptime(self, runner, monkeypatch):
+        pkt = _make_encrypted_sat_pkt(seq_no=42, plaintext=b"up_data", time_counter=5)
+        import hubblenetwork.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod.sat_mod, "scan", lambda **kw: iter([pkt]))
+        monkeypatch.setattr(cli_mod.sat_mod, "ensure_docker_available", lambda: None)
+
+        result = runner.invoke(
+            cli,
+            ["sat", "scan", "--key", _MASTER_256.hex(), "--counter-mode",
+             "DEVICE_UPTIME", "--timeout", "1", "--poll-interval", "0.1",
+             "--payload-format", "string"],
+        )
+        assert result.exit_code == 0
+        assert "up_data" in result.output
+        # Explicit mode skips auto-detect, so no "Detected:" line.
+        assert "Detected:" not in result.output
+
+    def test_device_uptime_requires_key(self, runner):
+        result = runner.invoke(
+            cli, ["sat", "scan", "--counter-mode", "DEVICE_UPTIME", "--timeout", "1"]
+        )
+        assert result.exit_code != 0
+        assert "DEVICE_UPTIME requires --key" in result.output
+
+    def test_device_uptime_days_mutually_exclusive(self, runner):
+        result = runner.invoke(
+            cli,
+            ["sat", "scan", "--key", _MASTER_256.hex(), "--counter-mode",
+             "DEVICE_UPTIME", "--days", "3", "--timeout", "1"],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    def test_counter_mode_in_help(self, runner):
+        result = runner.invoke(cli, ["sat", "scan", "--help"])
+        assert result.exit_code == 0
+        assert "--counter-mode" in result.output
