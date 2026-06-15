@@ -3120,6 +3120,9 @@ def _run_sat_scan(
 
     if not printer.suppress_info_messages:
         click.secho(
+            f"[INFO] Web GUI: {sat_mod.web_ui_url()}", fg="green"
+        )
+        click.secho(
             f"[INFO] Starting {mode_label}... (Press Ctrl+C to stop)"
         )
 
