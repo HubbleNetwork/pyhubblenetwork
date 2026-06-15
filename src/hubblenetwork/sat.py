@@ -34,6 +34,11 @@ def _packets_url(port: int = API_PORT) -> str:
     return f"http://localhost:{port}/api/packets"
 
 
+def web_ui_url(port: int = API_PORT) -> str:
+    """URL of the SDR container's web GUI for viewing decoded packets."""
+    return f"http://localhost:{port}/"
+
+
 # ---------------------------------------------------------------------------
 # Docker helpers
 # ---------------------------------------------------------------------------
