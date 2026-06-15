@@ -3443,7 +3443,9 @@ def sat_scan(ctx, **kwargs) -> None:
     def _explicit(name: str) -> bool:
         return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
 
-    if _explicit("counter_mode") and counter_mode == DEVICE_UPTIME:
+    # counter_mode defaults to UNIX_TIME, so a DEVICE_UPTIME value here always
+    # means the user passed it explicitly (matches the ble scan/detect guards).
+    if counter_mode == DEVICE_UPTIME:
         if not key:
             raise click.UsageError("--counter-mode DEVICE_UPTIME requires --key")
         if _explicit("days"):
