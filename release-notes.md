@@ -1,5 +1,17 @@
 # Release Notes
 
+## [0.12.0] - 2026-06-17
+
+### Added
+- feat(sat): error when no PlutoSDR is connected
+- feat(sat): print web GUI URL at top of sat scan output
+- feat(sat): decrypt device-uptime payloads and auto-detect counter mode
+
+### Maintenance
+- refactor: extract decryption auto-detection into detect.py
+- refactor(cli): drop redundant explicit check in sat_scan device-uptime guard
+- refactor(cli): share CTR counter-mode auto-detection across BLE and satellite
+
 ## [0.11.0] - 2026-06-11
 
 ### Added
