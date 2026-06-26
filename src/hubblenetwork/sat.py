@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Callable, Dict, Generator, List, Optional, Set, Tuple
@@ -23,7 +24,7 @@ from .packets import SatellitePacket
 
 logger = logging.getLogger(__name__)
 
-DOCKER_IMAGE = "ghcr.io/hubblenetwork/sdr-docker:latest"
+DOCKER_IMAGE = os.environ.get("SDR_DOCKER_IMAGE", "ghcr.io/hubblenetwork/sdr-docker:latest")
 CONTAINER_NAME = "hubble-pluto-sdr"
 MOCK_CONTAINER_NAME = "hubble-pluto-sdr-mock"
 API_PORT = 8050
@@ -103,8 +104,17 @@ def ensure_docker_available() -> None:
         raise DockerError("Docker daemon is not responding")
 
 
+def _image_exists_locally(image: str) -> bool:
+    try:
+        _get_client().images.get(image)
+        return True
+    except Exception:
+        return False
+
+
 def pull_image(image: str = DOCKER_IMAGE) -> None:
-    """Pull *image*, ensuring the latest version is fetched."""
+    """Pull *image*, ensuring the latest version is fetched.
+    """
     logger.info("Pulling %s …", image)
     client = _get_client()
     try:
@@ -297,8 +307,11 @@ def scan(
 
     ensure_docker_available()
 
-    _emit("Pulling Docker image...")
-    pull_image(image)
+    if _image_exists_locally(image):
+        _emit(f"Using local image {image}...")
+    else:
+        _emit("Pulling Docker image...")
+        pull_image(image)
 
     _emit("Starting container...")
     container_name = MOCK_CONTAINER_NAME if mock else CONTAINER_NAME
