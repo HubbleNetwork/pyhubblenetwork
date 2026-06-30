@@ -102,3 +102,7 @@ class SatellitePacket:
     # 4-byte CMAC auth tag, when reported by the receiver. Needed to locally
     # decrypt the payload (identifies the day counter); None if unavailable.
     auth_tag: Optional[bytes] = None
+    pdu_n_corr: Optional[int] = None   # Reed-Solomon corrections on PDU (None for OOK/v-1)
+    header_n_corr: Optional[int] = None  # Reed-Solomon corrections on header
+    sym_mean_ms: Optional[float] = None  # average symbol duration from envelope analysis
+    gap_mean_ms: Optional[float] = None  # average inter-symbol gap duration
