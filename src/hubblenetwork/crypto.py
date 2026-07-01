@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Tuple
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
@@ -242,10 +242,36 @@ def decrypt_satellite(
     auth tag matches, or None if none match (wrong key, wrong mode, or outside
     the search window).
     """
+    result = decrypt_satellite_with_offset(
+        key, seq_no, auth_tag, encrypted_payload,
+        timestamp=timestamp, days=days, counter_mode=counter_mode,
+    )
+    return result[0] if result is not None else None
+
+
+def decrypt_satellite_with_offset(
+    key: bytes,
+    seq_no: int,
+    auth_tag: bytes,
+    encrypted_payload: bytes,
+    timestamp: Optional[float] = None,
+    days: int = 2,
+    counter_mode: str = UNIX_TIME,
+) -> Optional[Tuple[bytes, Optional[int]]]:
+    """Like :func:`decrypt_satellite` but also report the matched day offset.
+
+    Returns ``(payload, day_offset)`` for the first counter whose derived auth
+    tag matches, or ``None`` if none match. ``day_offset`` is the signed number
+    of days the matching counter sits forward (+) or back (-) from the packet's
+    timestamp day under ``UNIX_TIME`` (0 = the packet's own day), and ``None``
+    under ``DEVICE_UPTIME`` (where the counter is a device-uptime index, not a
+    day).
+    """
     counter_mode = _normalize_counter_mode(counter_mode, days)
 
     keylen = len(key)
     if counter_mode == DEVICE_UPTIME:
+        base = None
         candidates = range(128)
     else:
         if timestamp is None:
@@ -257,7 +283,9 @@ def decrypt_satellite(
         daily_key = _get_encryption_key(key, time_counter, seq_no, keylen=keylen)
         if _get_auth_tag(daily_key, encrypted_payload) == auth_tag:
             nonce = _get_nonce(key, time_counter, seq_no, keylen=keylen)
-            return _aes_decrypt(daily_key, nonce, encrypted_payload)
+            payload = _aes_decrypt(daily_key, nonce, encrypted_payload)
+            day_offset = None if base is None else time_counter - base
+            return payload, day_offset
     return None
 
 

@@ -14,7 +14,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
-from typing import Optional, List
+from typing import Optional, List, NamedTuple
 from tabulate import tabulate
 from hubblenetwork import Organization
 from hubblenetwork import Device, DecryptedPacket, EncryptedPacket, decrypt_eax
@@ -22,8 +22,11 @@ from hubblenetwork.packets import SatellitePacket, UnencryptedPacket, AesEaxPack
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
-from hubblenetwork import decrypt, decrypt_satellite, UNIX_TIME, DEVICE_UPTIME
-from hubblenetwork.crypto import find_time_counter_delta
+from hubblenetwork import decrypt, UNIX_TIME, DEVICE_UPTIME
+from hubblenetwork.crypto import (
+    find_time_counter_delta,
+    decrypt_satellite_with_offset,
+)
 from hubblenetwork.detect import (
     CtrCounterModeDetector,
     EaxExponentDetector,
@@ -104,14 +107,35 @@ def _announce_auto_detect(auto_ctr: bool, auto_eax: bool, *, suppress: bool) -> 
     )
 
 
-def _announce_detection(label: Optional[str], *, suppress: bool) -> None:
+def _announce_detection(
+    label: Optional[str], *, suppress: bool, key_prefix: Optional[str] = None
+) -> None:
     """Print the one-shot ``[INFO] Detected:`` line for a fresh detection.
 
     ``label`` is set by the detector only on the first successful detection of a
     scan, so a no-op when it is None or output is suppressed (JSON mode).
+    ``key_prefix`` (e.g. ``"a562a2f7…"``) names which key the detection belongs
+    to; passed only when several keys are in play, omitted for a single key.
     """
     if label and not suppress:
-        click.secho(f"[INFO] Detected: {label}", fg="green", err=True)
+        prefix = f"key {key_prefix} → " if key_prefix else ""
+        click.secho(f"[INFO] Detected: {prefix}{label}", fg="green", err=True)
+
+
+def _key_prefix(key: str) -> str:
+    """Short identifier for a key in output: the first 8 characters of the key
+    exactly as the user supplied it (hex or base64) + ellipsis, so it matches
+    their input rather than re-rendering the decoded bytes as hex."""
+    return f"{key[:8]}…"
+
+
+def _format_day_offset(offset: Optional[int]) -> str:
+    """Render a UNIX_TIME day offset for the table: ``0`` for the packet's own
+    day, ``+N``/``-N`` for days forward/back, and ``n/a`` when it does not apply
+    (DEVICE_UPTIME packets, or rows that did not decrypt)."""
+    if offset is None:
+        return "n/a"
+    return "0" if offset == 0 else f"{offset:+d}"
 
 
 def _format_payload(payload, fmt: str) -> str:
@@ -305,7 +329,13 @@ class _StreamingPrinterBase:
         self._packet_count = 0
         self._show_decrypt_status = show_decrypt_status
 
-    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
+    def print_row(
+        self,
+        pkt,
+        decrypt_status: Optional[str] = None,
+        key: Optional[str] = None,
+        day_offset: Optional[int] = None,
+    ) -> None:
         """Print a single packet. Override in subclasses."""
         raise NotImplementedError
 
@@ -390,7 +420,13 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             parts.append("-" * width)
         return "+-" + "-+-".join(parts) + "-+"
 
-    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
+    def print_row(
+        self,
+        pkt,
+        decrypt_status: Optional[str] = None,
+        key: Optional[str] = None,
+        day_offset: Optional[int] = None,
+    ) -> None:
         """Print a single packet row, printing header first if needed."""
         if not self._header_printed:
             self._headers = self._determine_columns(pkt)
@@ -449,20 +485,40 @@ class _StreamingJsonPrinter(_StreamingPrinterBase):
         payload_format: str = "base64",
         to_dict_fn=None,
         show_decrypt_status: bool = False,
+        show_key: bool = False,
+        show_day_offset: bool = False,
     ):
         super().__init__(show_decrypt_status=show_decrypt_status)
         self._array_started = False
         self._payload_format = payload_format
         self._to_dict_fn = to_dict_fn or _packet_to_dict
+        self._show_key = show_key
+        self._show_day_offset = show_day_offset
 
     @property
     def suppress_info_messages(self) -> bool:
         return True
 
-    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
+    def print_row(
+        self,
+        pkt,
+        decrypt_status: Optional[str] = None,
+        key: Optional[str] = None,
+        day_offset: Optional[int] = None,
+    ) -> None:
         """Print a single packet as JSON."""
         status = decrypt_status if self._show_decrypt_status else None
-        pkt_dict = self._to_dict_fn(pkt, self._payload_format, decrypt_status=status)
+        # key/day_offset are forwarded only when this printer tracks them
+        # (satellite decryption), so converters that don't take them never see
+        # the kwarg.
+        extra = {}
+        if self._show_key:
+            extra["key"] = key
+        if self._show_day_offset:
+            extra["day_offset"] = day_offset
+        pkt_dict = self._to_dict_fn(
+            pkt, self._payload_format, decrypt_status=status, **extra
+        )
         if not self._array_started:
             click.echo("[")
             self._array_started = True
@@ -500,6 +556,8 @@ def _sat_packet_to_dict(
     pkt: SatellitePacket,
     payload_format: str = "base64",
     decrypt_status: Optional[str] = None,
+    key: Optional[str] = None,
+    day_offset: Optional[int] = None,
     **_: object,
 ) -> dict:
     """Convert a SatellitePacket to a dictionary for JSON serialization."""
@@ -519,6 +577,13 @@ def _sat_packet_to_dict(
         data["auth_tag"] = pkt.auth_tag.hex()
     if decrypt_status is not None:
         data["decrypt_status"] = decrypt_status
+    if key is not None:
+        # The key as the user supplied it (hex or base64), not re-encoded.
+        data["key"] = key
+    if day_offset is not None:
+        # Signed day delta used to decode (UNIX_TIME only); omitted for
+        # DEVICE_UPTIME and undecrypted rows.
+        data["day_offset"] = day_offset
     return data
 
 
@@ -527,6 +592,8 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
 
     _COL_WIDTHS = {
         "DECRYPT": 8,
+        "KEY": 10,
+        "DAY_OFFSET": 10,
         "DEVICE_ID": 12,
         "SEQ": 6,
         "TYPE": 8,
@@ -539,15 +606,27 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
 
     _BASE_HEADERS = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
 
-    def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False):
+    def __init__(
+        self,
+        payload_format: str = "base64",
+        show_decrypt_status: bool = False,
+        show_key: bool = False,
+        show_day_offset: bool = False,
+    ):
         super().__init__(show_decrypt_status=show_decrypt_status)
         self._header_printed = False
         self._payload_format = payload_format
-        self._headers = (
-            ["DECRYPT", *self._BASE_HEADERS]
-            if show_decrypt_status
-            else list(self._BASE_HEADERS)
-        )
+        self._show_key = show_key
+        self._show_day_offset = show_day_offset
+        headers: List[str] = []
+        if show_decrypt_status:
+            headers.append("DECRYPT")
+        if show_key:
+            headers.append("KEY")
+        if show_day_offset:
+            headers.append("DAY_OFFSET")
+        headers.extend(self._BASE_HEADERS)
+        self._headers = headers
 
     def _format_row(self, values: List) -> str:
         parts = []
@@ -563,7 +642,13 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
             parts.append("-" * width)
         return "+-" + "-+-".join(parts) + "-+"
 
-    def print_row(self, pkt: SatellitePacket, decrypt_status: Optional[str] = None) -> None:
+    def print_row(
+        self,
+        pkt: SatellitePacket,
+        decrypt_status: Optional[str] = None,
+        key: Optional[str] = None,
+        day_offset: Optional[int] = None,
+    ) -> None:
         if not self._header_printed:
             click.echo("")
             click.echo(self._make_separator())
@@ -575,6 +660,10 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         row: List = []
         if self._show_decrypt_status:
             row.append(_decrypt_status_cell(decrypt_status))
+        if self._show_key:
+            row.append(_key_prefix(key) if key is not None else "-")
+        if self._show_day_offset:
+            row.append(_format_day_offset(day_offset))
         row.extend([
             pkt.device_id,
             pkt.seq_num,
@@ -3053,6 +3142,52 @@ def sat() -> None:
     """Satellite (PlutoSDR) utilities."""
 
 
+class _KeyDecryptor(NamedTuple):
+    """One satellite-scan key: the token as supplied (for display), its decoded
+    bytes, and the per-key counter-mode detector."""
+
+    token: str
+    key_bytes: bytes
+    detector: CtrCounterModeDetector
+
+
+def _decrypt_sat_packet(pkt, key_decryptors, *, show_key, suppress):
+    """Decrypt ``pkt`` with the first of ``key_decryptors`` that succeeds.
+
+    Returns ``(payload, token, day_offset)`` for the matching key, or
+    ``(None, None, None)`` if no key decrypts it. ``day_offset`` is the signed
+    day delta used to decode (UNIX_TIME), or None for DEVICE_UPTIME. Keys are
+    tried in order, so the leftmost wins. A non-matching key is re-swept for
+    every packet (its detector only caches on success), but at the typical 1-3
+    keys that cost is modest. The detected configuration is announced once per
+    key.
+    """
+    if pkt.auth_tag is None:
+        return None, None, None
+    for kd in key_decryptors:
+        # Satellite streams have no per-packet EID, so each detector shares one
+        # per-stream slot for the whole scan.
+        d = kd.detector.decrypt(
+            decrypt_fn=lambda _k=kd.key_bytes, **kw: decrypt_satellite_with_offset(
+                _k,
+                seq_no=pkt.seq_num,
+                auth_tag=pkt.auth_tag,
+                encrypted_payload=pkt.payload,
+                timestamp=pkt.timestamp,
+                **kw,
+            ),
+        )
+        if d.result is not None:
+            _announce_detection(
+                d.label,
+                suppress=suppress,
+                key_prefix=_key_prefix(kd.token) if show_key else None,
+            )
+            payload, day_offset = d.result
+            return payload, kd.token, day_offset
+    return None, None, None
+
+
 def _run_sat_scan(
     *,
     mock: bool,
@@ -3074,33 +3209,51 @@ def _run_sat_scan(
     printer_class = _SAT_STREAMING_PRINTERS.get(
         output_format.lower(), _SatStreamingTablePrinter
     )
+    json_output = output_format.lower() == "json"
+
+    # Pre-decode the key(s). --key accepts a comma-separated list; each entry is
+    # parsed independently (lengths may differ) and gets its own detector, since
+    # the counter source is detected and cached per key. The original token is
+    # kept so output echoes the key in the format the user supplied (hex/base64).
+    key_decryptors: List[_KeyDecryptor] = []
+    if key:
+        for raw in key.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                kbytes = _parse_key(raw)
+            except ValueError as e:
+                msg = f"Invalid key '{raw}': {e}"
+                if json_output:
+                    click.echo(json.dumps({"error": msg}))
+                    return
+                raise click.ClickException(msg)
+            key_decryptors.append(_KeyDecryptor(
+                token=raw,
+                key_bytes=kbytes,
+                detector=CtrCounterModeDetector(
+                    auto_detect=auto_detect_ctr,
+                    fixed_counter_mode=counter_mode,
+                    days=days,
+                    key_len=len(kbytes),
+                ),
+            ))
+
+    # The KEY column is informative only when more than one key is in play; the
+    # DAY_OFFSET column applies whenever we're decrypting (any key given).
+    show_key = len(key_decryptors) > 1
     printer = printer_class(
         payload_format=payload_format,
         show_decrypt_status=show_failed_decryption,
+        show_key=show_key,
+        show_day_offset=bool(key_decryptors),
     )
 
-    # Pre-decode the key if provided.
-    decoded_key: Optional[bytes] = None
-    if key:
-        try:
-            decoded_key = _parse_key(key)
-        except ValueError as e:
-            if printer.suppress_info_messages:
-                click.echo(json.dumps({"error": f"Invalid key: {e}"}))
-                return
-            raise click.ClickException(f"Invalid key: {e}")
-
-    if decoded_key is not None and auto_detect_ctr:
+    if key_decryptors and auto_detect_ctr:
         _announce_auto_detect(
             auto_ctr=True, auto_eax=False, suppress=printer.suppress_info_messages
         )
-
-    ctr_detector = CtrCounterModeDetector(
-        auto_detect=auto_detect_ctr,
-        fixed_counter_mode=counter_mode,
-        days=days,
-        key_len=len(decoded_key) if decoded_key is not None else 0,
-    )
 
     if debug:
         sat_logger = logging.getLogger("hubblenetwork.sat")
@@ -3147,29 +3300,19 @@ def _run_sat_scan(
             timeout=timeout, poll_interval=poll_interval, mock=mock,
             on_status=_on_status,
         ):
-            if decoded_key is not None:
-                # With a key, the user wants only packets the key can decrypt.
-                decrypted = None
-                if pkt.auth_tag is not None:
-                    # Satellite streams have no per-packet EID; omitting cache_key
-                    # lets the detector share one per-stream slot for the scan.
-                    d = ctr_detector.decrypt(
-                        decrypt_fn=lambda **kw: decrypt_satellite(
-                            decoded_key,
-                            seq_no=pkt.seq_num,
-                            auth_tag=pkt.auth_tag,
-                            encrypted_payload=pkt.payload,
-                            timestamp=pkt.timestamp,
-                            **kw,
-                        ),
-                    )
-                    _announce_detection(
-                        d.label, suppress=printer.suppress_info_messages
-                    )
-                    decrypted = d.result
+            if key_decryptors:
+                # With a key, the user wants only packets a key can decrypt.
+                decrypted, matched_key, day_offset = _decrypt_sat_packet(
+                    pkt, key_decryptors,
+                    show_key=show_key,
+                    suppress=printer.suppress_info_messages,
+                )
                 if decrypted is not None:
                     printer.print_row(
-                        replace(pkt, payload=decrypted), decrypt_status="ok"
+                        replace(pkt, payload=decrypted),
+                        decrypt_status="ok",
+                        key=matched_key,
+                        day_offset=day_offset,
                     )
                 elif show_failed_decryption:
                     printer.print_row(pkt, decrypt_status="fail")
@@ -3239,9 +3382,11 @@ def _sat_scan_options(fn):
     type=str,
     default=None,
     show_default=False,
-    help="Key to decrypt packet payloads (hex or base64, 16 or 32 bytes). "
+    help="Key(s) to decrypt packet payloads (hex or base64, 16 or 32 bytes). "
+         "Pass several comma-separated keys to try each in turn; the first that "
+         "decrypts a packet wins, and a KEY column shows which key was used. "
          "The counter source (UNIX_TIME / DEVICE_UPTIME) is auto-detected "
-         "unless --counter-mode is given.",
+         "per key unless --counter-mode is given.",
 )
 @click.option(
     "--days",
@@ -3273,16 +3418,21 @@ def sat_scan(ctx, **kwargs) -> None:
 
     Requires Docker and a PlutoSDR device connected via USB.
 
-    Pass --key to decrypt packet payloads locally; packets the key cannot
-    decrypt are hidden unless --show-failed-decryption is given. The counter
-    source is auto-detected (UNIX_TIME or DEVICE_UPTIME) unless --counter-mode
-    is given explicitly.
+    Pass --key to decrypt packet payloads locally; packets no key can decrypt
+    are hidden unless --show-failed-decryption is given. Several comma-separated
+    keys may be passed -- each packet is tried against every key in order and a
+    KEY column shows which one decrypted it. The counter source (UNIX_TIME or
+    DEVICE_UPTIME) is auto-detected per key unless --counter-mode is given. When
+    decrypting, a DAY_OFFSET column shows the signed number of days forward/back
+    used to decode each UNIX_TIME packet (0 = the packet's own day); it reads
+    n/a for DEVICE_UPTIME packets and rows that did not decrypt.
 
     Example:
       hubblenetwork sat scan --timeout 30
       hubblenetwork sat scan -o json --timeout 10
       hubblenetwork sat scan -n 5
       hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 60
+      hubblenetwork sat scan --key "<key1>,<key2>" --timeout 60
     """
     key = kwargs.get("key")
     counter_mode = kwargs["counter_mode"]
