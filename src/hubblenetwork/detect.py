@@ -16,10 +16,10 @@ configuration, set once per scan so the caller can announce it exactly once.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Generic, List, Optional, Tuple, TypeVar
+from typing import Callable, Generic, Optional, TypeVar
 
-from .crypto import DEVICE_UPTIME, UNIX_TIME, decrypt
-from .packets import DecryptedPacket, EncryptedPacket
+from .crypto import DEVICE_UPTIME, UNIX_TIME, decrypt, decrypt_eax
+from .packets import AesEaxPacket, EncryptedPacket
 
 T = TypeVar("T")
 
@@ -47,40 +47,9 @@ class Detection(Generic[T]):
     label: Optional[str] = None
 
 
-def detect_eid_type(
-    key: bytes,
-    pkts: List[EncryptedPacket],
-) -> Tuple[Optional[EncryptedPacket], Optional[DecryptedPacket], Optional[str], bool]:
-    """Classify a key's EID rotation mode from sample packets.
-
-    Returns ``(packet, decrypted, label, ambiguous)`` where ``label`` is
-    ``UNIX_TIME``, ``DEVICE_UPTIME``, ``"AMBIGUOUS"`` (both modes decrypt
-    something), or ``None`` (neither decrypts any packet).
-    """
-    epoch_pkt = None
-    epoch_dec = None
-    counter_pkt = None
-    counter_dec = None
-    for pkt in pkts:
-        if epoch_pkt is None:
-            result = decrypt(key, pkt)
-            if result:
-                epoch_pkt = pkt
-                epoch_dec = result
-        if counter_pkt is None:
-            result = decrypt(key, pkt, counter_mode=DEVICE_UPTIME)
-            if result:
-                counter_pkt = pkt
-                counter_dec = result
-        if epoch_pkt and counter_pkt:
-            break
-    if epoch_pkt and counter_pkt:
-        return (epoch_pkt, epoch_dec, "AMBIGUOUS", True)
-    if epoch_pkt:
-        return (epoch_pkt, epoch_dec, UNIX_TIME, False)
-    if counter_pkt:
-        return (counter_pkt, counter_dec, DEVICE_UPTIME, False)
-    return (None, None, None, False)
+def _ctr_variant(key_len: int) -> str:
+    """AES-CTR encryption name for a key length (16 bytes -> 128-bit)."""
+    return "AES-128-CTR" if key_len == 16 else "AES-256-CTR"
 
 
 class CtrCounterModeDetector:
@@ -145,7 +114,7 @@ class CtrCounterModeDetector:
             label = None
             if not self._announced:
                 self._announced = True
-                variant = "AES-128-CTR" if self._key_len == 16 else "AES-256-CTR"
+                variant = _ctr_variant(self._key_len)
                 label = f"{variant}, counter_source={mode}"
             return Detection(result, label)
         return Detection(None)
@@ -194,3 +163,109 @@ class EaxExponentDetector:
                 )
             return Detection(result, label)
         return Detection(None)
+
+
+@dataclass
+class LocalKeyConfig:
+    """Key configuration detected from a device's live packets.
+
+    ``counter_source`` is the resolved CTR mode, or ``None`` when detection was
+    ambiguous (both UNIX_TIME and DEVICE_UPTIME decrypt) — exposed as
+    ``counter_source_ambiguous``. ``period_exponent`` is set only for AES-128-EAX.
+    """
+
+    encryption: str
+    counter_source: Optional[str]
+    period_exponent: Optional[int]
+
+    @property
+    def counter_source_ambiguous(self) -> bool:
+        return self.counter_source is None
+
+
+@dataclass
+class FieldResult:
+    """One field's local-vs-backend comparison outcome."""
+
+    field: str
+    local: object
+    backend: object
+    status: str  # "ok" | "fail" | "skipped"
+    note: Optional[str] = None
+
+
+def detect_key_config(key, pkts):
+    """Detect the full key configuration from sample packets.
+
+    Returns ``(LocalKeyConfig, packet, decrypted)`` for the first packet that
+    decrypts, or ``(None, None, None)`` if none do. ``EncryptedPacket`` is AES-CTR
+    (128 vs 256 by key length); a packet that decrypts under both UNIX_TIME and
+    DEVICE_UPTIME marks the config ambiguous. ``AesEaxPacket`` is AES-128-EAX,
+    always DEVICE_UPTIME, with the period exponent swept over 0-15.
+
+    A zero-length decrypted payload is a success, so results are tested with
+    ``is not None`` rather than truthiness.
+    """
+    ctr_variant = _ctr_variant(len(key))
+    for pkt in pkts:
+        if isinstance(pkt, EncryptedPacket):
+            epoch = decrypt(key, pkt)
+            counter = decrypt(key, pkt, counter_mode=DEVICE_UPTIME)
+            if epoch is not None and counter is not None:
+                # Both modes decrypt: counter_source unresolved (None => ambiguous).
+                return LocalKeyConfig(ctr_variant, None, None), pkt, epoch
+            if epoch is not None:
+                return LocalKeyConfig(ctr_variant, UNIX_TIME, None), pkt, epoch
+            if counter is not None:
+                return LocalKeyConfig(ctr_variant, DEVICE_UPTIME, None), pkt, counter
+        elif isinstance(pkt, AesEaxPacket):
+            for exponent in range(16):
+                result = decrypt_eax(key, pkt, period_exponent=exponent)
+                if result is not None:
+                    return (
+                        LocalKeyConfig("AES-128-EAX", DEVICE_UPTIME, exponent),
+                        pkt,
+                        result,
+                    )
+    return None, None, None
+
+
+def compare_key_config(local, *, encryption, counter_source, period_exponent):
+    """Diff a detected LocalKeyConfig against backend-registered values.
+
+    A backend value of ``None`` (field absent from the response) is ``skipped``,
+    never a failure. ``period_exponent`` is compared only for AES-128-EAX. An
+    ambiguous local counter_source is ``skipped`` with an explanatory note.
+    """
+    results = [
+        _compare_field("encryption", local.encryption, encryption),
+    ]
+
+    if local.counter_source_ambiguous:
+        results.append(
+            FieldResult(
+                "counter_source",
+                "AMBIGUOUS",
+                counter_source,
+                "skipped",
+                note="local detection ambiguous (both UNIX_TIME and DEVICE_UPTIME decrypt)",
+            )
+        )
+    else:
+        results.append(
+            _compare_field("counter_source", local.counter_source, counter_source)
+        )
+
+    if local.encryption == "AES-128-EAX":
+        results.append(
+            _compare_field("period_exponent", local.period_exponent, period_exponent)
+        )
+
+    return results
+
+
+def _compare_field(field, local_value, backend_value):
+    if backend_value is None:
+        return FieldResult(field, local_value, None, "skipped")
+    status = "ok" if local_value == backend_value else "fail"
+    return FieldResult(field, local_value, backend_value, status)

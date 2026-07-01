@@ -6,6 +6,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
+from hubblenetwork import Device
+from hubblenetwork.packets import AesEaxPacket, EncryptedPacket
 from hubblenetwork.cli import (
     _validate_info,
     _validate_success,
@@ -70,67 +72,143 @@ class TestBleValidateInputs:
 
 
 class TestBleValidateErrorPaths:
-    """Test error handling for validation steps 4-6 using mocks."""
+    """Steps 4-6 error handling."""
 
     def test_unregistered_device_error(self):
-        """Step 4: device ID absent from list_devices response."""
         runner = CliRunner()
         key = base64.b64encode(b"a" * 16).decode()
         device_id = str(uuid.uuid4())
         with patch("hubblenetwork.cli.Organization") as mock_org_cls:
             mock_org = mock_org_cls.return_value
-            mock_org.list_devices.return_value = []
+            mock_org.get_device.return_value = None
             result = runner.invoke(cli, [
-                "ble", "validate",
-                "--key", key,
-                "--device-id", device_id,
-                "--org-id", "fake-org",
-                "--token", "fake-token",
+                "ble", "validate", "--key", key, "--device-id", device_id,
+                "--org-id", "fake-org", "--token", "fake-token",
             ])
         assert result.exit_code != 0
         assert "Device ID not found" in result.output
 
     def test_no_ble_packets_error(self):
-        """Step 5: Error when BLE scan returns no packets."""
         runner = CliRunner()
         key = base64.b64encode(b"a" * 16).decode()
         device_id = str(uuid.uuid4())
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble:
             mock_org = mock_org_cls.return_value
-            mock_org.list_devices.return_value = [MagicMock(id=device_id)]
+            mock_org.get_device.return_value = Device(id=device_id)
             mock_ble.scan.return_value = []
             result = runner.invoke(cli, [
-                "ble", "validate",
-                "--key", key,
-                "--device-id", device_id,
-                "--org-id", "fake-org",
-                "--token", "fake-token",
+                "ble", "validate", "--key", key, "--device-id", device_id,
+                "--org-id", "fake-org", "--token", "fake-token",
             ])
         assert result.exit_code != 0
         assert "No Hubble advertisements found" in result.output
 
     def test_decryption_failure_error(self):
-        """Step 6: Error when no packet can be decrypted."""
         runner = CliRunner()
         key = base64.b64encode(b"a" * 16).decode()
         device_id = str(uuid.uuid4())
         with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
              patch("hubblenetwork.cli.ble_mod") as mock_ble, \
-             patch("hubblenetwork.detect.decrypt") as mock_decrypt:
+             patch("hubblenetwork.detect.decrypt", return_value=None):
             mock_org = mock_org_cls.return_value
-            mock_org.list_devices.return_value = [MagicMock(id=device_id)]
-            mock_ble.scan.return_value = [object()]
-            mock_decrypt.return_value = None
+            mock_org.get_device.return_value = Device(id=device_id)
+            mock_ble.scan.return_value = [MagicMock(spec=EncryptedPacket)]
             result = runner.invoke(cli, [
-                "ble", "validate",
-                "--key", key,
-                "--device-id", device_id,
-                "--org-id", "fake-org",
-                "--token", "fake-token",
+                "ble", "validate", "--key", key, "--device-id", device_id,
+                "--org-id", "fake-org", "--token", "fake-token",
             ])
         assert result.exit_code != 0
         assert "Unable to decrypt packet" in result.output
+
+
+class TestBleValidateConfigCheck:
+    """Step 7: detected-config vs backend-config comparison."""
+
+    def _run(self, *, device, decrypt_side_effect, key_bytes=b"a" * 16):
+        runner = CliRunner()
+        key = base64.b64encode(key_bytes).decode()
+        with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
+             patch("hubblenetwork.cli.ble_mod") as mock_ble, \
+             patch("hubblenetwork.detect.decrypt", side_effect=decrypt_side_effect), \
+             patch("hubblenetwork.cli.time.sleep"), \
+             patch("hubblenetwork.cli._get_pkt_from_be_with_timestamp",
+                   return_value=MagicMock(device_name="n", payload=b"p", sequence=1)):
+            mock_org = mock_org_cls.return_value
+            mock_org.get_device.return_value = device
+            pkt_mock = MagicMock(spec=EncryptedPacket)
+            # EncryptedPacket is a frozen dataclass, so its fields aren't in the class dir():
+            # a spec'd MagicMock won't auto-create `timestamp`, which the retrieve step reads
+            # from pkt_to_ingest. Set it explicitly.
+            pkt_mock.timestamp = 12345
+            mock_ble.scan.return_value = [pkt_mock]
+            return mock_org, runner.invoke(cli, [
+                "ble", "validate", "--key", key, "--device-id", device.id,
+                "--org-id", "fake-org", "--token", "fake-token",
+            ])
+
+    def test_config_match_passes_and_ingests(self):
+        device = Device(id=str(uuid.uuid4()), encryption="AES-128-CTR",
+                        counter_source="UNIX_TIME")
+
+        def unix(*a, **kw):
+            return None if kw.get("counter_mode") == "DEVICE_UPTIME" else MagicMock(counter=20172)
+
+        mock_org, result = self._run(device=device, decrypt_side_effect=unix)
+        assert result.exit_code == 0
+        assert "counter_source: OK" in result.output
+        assert "encryption: OK" in result.output
+        assert "All validation steps passed" in result.output
+        assert mock_org.ingest_packet.called
+
+    def test_counter_source_mismatch_fails(self):
+        device = Device(id=str(uuid.uuid4()), encryption="AES-128-CTR",
+                        counter_source="DEVICE_UPTIME")
+
+        def unix(*a, **kw):
+            return None if kw.get("counter_mode") == "DEVICE_UPTIME" else MagicMock(counter=1)
+
+        mock_org, result = self._run(device=device, decrypt_side_effect=unix)
+        assert result.exit_code != 0
+        assert "does not match the backend" in result.output
+        assert "counter_source: FAIL" in result.output
+        assert not mock_org.ingest_packet.called
+
+    def test_backend_omits_config_skips_and_continues(self):
+        device = Device(id=str(uuid.uuid4()))  # encryption/counter_source None
+
+        def unix(*a, **kw):
+            return None if kw.get("counter_mode") == "DEVICE_UPTIME" else MagicMock(counter=1)
+
+        mock_org, result = self._run(device=device, decrypt_side_effect=unix)
+        assert result.exit_code == 0
+        assert "comparison skipped" in result.output
+        assert mock_org.ingest_packet.called
+
+    def test_eax_device_validates_config_then_skips_ingest(self):
+        runner = CliRunner()
+        key = base64.b64encode(b"a" * 16).decode()
+        device = Device(id=str(uuid.uuid4()), encryption="AES-128-EAX",
+                        counter_source="DEVICE_UPTIME", period_exponent=5)
+
+        def eax(key_arg, pkt, period_exponent=0):
+            return MagicMock(counter=3) if period_exponent == 5 else None
+
+        with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
+             patch("hubblenetwork.cli.ble_mod") as mock_ble, \
+             patch("hubblenetwork.detect.decrypt_eax", side_effect=eax):
+            mock_org = mock_org_cls.return_value
+            mock_org.get_device.return_value = device
+            mock_ble.scan.return_value = [MagicMock(spec=AesEaxPacket)]
+            result = runner.invoke(cli, [
+                "ble", "validate", "--key", key, "--device-id", device.id,
+                "--org-id", "fake-org", "--token", "fake-token",
+            ])
+
+        assert result.exit_code == 0
+        assert "period_exponent: OK" in result.output
+        assert "Config validation passed (EAX" in result.output
+        assert not mock_org.ingest_packet.called
 
 
 class TestGetPktFromBeWithTimestamp:
@@ -155,63 +233,3 @@ class TestGetPktFromBeWithTimestamp:
 
         result = _get_pkt_from_be_with_timestamp(mock_org, mock_device, 999)
         assert result is None
-
-
-class TestBleValidateEidOutput:
-    """Integration tests verifying EID type is echoed in Step 6 output."""
-
-    def test_epoch_eid_reported(self):
-        runner = CliRunner()
-        key = base64.b64encode(b"a" * 16).decode()
-        device_id = str(uuid.uuid4())
-
-        def decrypt_side_effect(*args, **kwargs):
-            return MagicMock(counter=20172) if kwargs.get("counter_mode") != "DEVICE_UPTIME" else None
-
-        with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
-             patch("hubblenetwork.cli.ble_mod") as mock_ble, \
-             patch("hubblenetwork.detect.decrypt", side_effect=decrypt_side_effect), \
-             patch("hubblenetwork.cli.time.sleep"), \
-             patch("hubblenetwork.cli._get_pkt_from_be_with_timestamp",
-                   return_value=MagicMock(device_name="n", payload=b"p", sequence=1)):
-            mock_org = mock_org_cls.return_value
-            mock_org.list_devices.return_value = [MagicMock(id=device_id)]
-            mock_ble.scan.return_value = [MagicMock()]
-            result = runner.invoke(cli, [
-                "ble", "validate",
-                "--key", key,
-                "--device-id", device_id,
-                "--org-id", "fake-org",
-                "--token", "fake-token",
-            ])
-
-        assert "EID type: UNIX_TIME" in result.output
-        assert "20172" in result.output
-
-    def test_counter_eid_reported(self):
-        runner = CliRunner()
-        key = base64.b64encode(b"a" * 16).decode()
-        device_id = str(uuid.uuid4())
-
-        def decrypt_side_effect(*args, **kwargs):
-            return MagicMock(counter=42) if kwargs.get("counter_mode") == "DEVICE_UPTIME" else None
-
-        with patch("hubblenetwork.cli.Organization") as mock_org_cls, \
-             patch("hubblenetwork.cli.ble_mod") as mock_ble, \
-             patch("hubblenetwork.detect.decrypt", side_effect=decrypt_side_effect), \
-             patch("hubblenetwork.cli.time.sleep"), \
-             patch("hubblenetwork.cli._get_pkt_from_be_with_timestamp",
-                   return_value=MagicMock(device_name="n", payload=b"p", sequence=1)):
-            mock_org = mock_org_cls.return_value
-            mock_org.list_devices.return_value = [MagicMock(id=device_id)]
-            mock_ble.scan.return_value = [MagicMock()]
-            result = runner.invoke(cli, [
-                "ble", "validate",
-                "--key", key,
-                "--device-id", device_id,
-                "--org-id", "fake-org",
-                "--token", "fake-token",
-            ])
-
-        assert "EID type: DEVICE_UPTIME" in result.output
-        assert "counter=42" in result.output

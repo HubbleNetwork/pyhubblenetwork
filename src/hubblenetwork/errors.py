@@ -49,6 +49,10 @@ class ValidationError(BackendError):
     """The request was invalid (schema/semantics)."""
 
 
+class NotFoundError(BackendError):
+    """The requested resource was not found (HTTP 404)."""
+
+
 # Local/host-side errors
 class ScanError(HubbleError):
     """BLE scanning failed locally (adapter/permissions/OS/driver)."""
@@ -158,6 +162,7 @@ __all__ = [
     "APITimeout",
     "InvalidCredentialsError",
     "ValidationError",
+    "NotFoundError",
     "ScanError",
     "DecryptionError",
     "DockerError",
@@ -191,6 +196,8 @@ def map_http_status(status_code: int, detail: Optional[str] = None) -> BackendEr
 
     if status_code == 400:
         return RequestError(msg)
+    if status_code == 404:
+        return NotFoundError(msg)
     if status_code == 500:
         return InternalServerError(msg)
     return BackendError(msg)

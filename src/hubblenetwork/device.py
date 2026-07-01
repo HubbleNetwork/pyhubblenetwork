@@ -18,6 +18,9 @@ class Device:
     tags: Optional[Dict[str, str]] = None
     created_ts: Optional[int] = None
     active: Optional[bool] = False
+    encryption: Optional[str] = None
+    counter_source: Optional[str] = None
+    period_exponent: Optional[int] = None
 
     def __str__(self) -> str:
         key_str = (
@@ -32,10 +35,14 @@ class Device:
 
     @classmethod
     def from_json(cls, json):
+        eid_rotation = json.get("eid_rotation") or {}
         return cls(
             id=str(json.get("id")),
             name=json.get("name"),
             tags=json.get("tags"),
             created_ts=json.get("created_ts"),
             active=json.get("active"),
+            encryption=json.get("encryption"),
+            counter_source=eid_rotation.get("counter_source"),
+            period_exponent=eid_rotation.get("period_exponent"),
         )

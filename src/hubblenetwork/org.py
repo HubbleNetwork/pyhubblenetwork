@@ -7,7 +7,7 @@ from . import cloud
 from .packets import DecryptedPacket, EncryptedPacket, Location
 from .device import Device
 from .crypto import UNIX_TIME, DEVICE_UPTIME
-from .errors import InvalidCredentialsError, ValidationError
+from .errors import InvalidCredentialsError, NotFoundError, ValidationError
 
 
 _VALID_COUNTER_SOURCES = {UNIX_TIME, DEVICE_UPTIME}
@@ -147,6 +147,21 @@ class Organization:
                 break
 
         return devices
+
+    def get_device(self, device_id: str) -> Optional[Device]:
+        """
+        Fetch a single registered device by ID.
+
+        Returns the Device (including its backend key configuration), or None if
+        the backend reports the device does not exist.
+        """
+        try:
+            resp = cloud.get_device(
+                credentials=self.credentials, env=self.env, device_id=device_id
+            )
+        except NotFoundError:
+            return None
+        return Device.from_json(resp)
 
     def retrieve_packets(self, device: Device, days: int = 7) -> List[DecryptedPacket]:
         """

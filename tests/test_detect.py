@@ -15,8 +15,12 @@ from hubblenetwork.detect import (
     CtrCounterModeDetector,
     Detection,
     EaxExponentDetector,
-    detect_eid_type,
+    FieldResult,
+    LocalKeyConfig,
+    compare_key_config,
+    detect_key_config,
 )
+from hubblenetwork.packets import AesEaxPacket, EncryptedPacket
 
 
 # ---------------------------------------------------------------------------
@@ -221,103 +225,6 @@ class TestEaxExponentDetector:
 
 
 # ---------------------------------------------------------------------------
-# detect_eid_type
-# ---------------------------------------------------------------------------
-
-
-class TestDetectEidType:
-    def test_epoch_only(self):
-        pkt = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is mock_dec
-        assert label == "UNIX_TIME"
-        assert ambiguous is False
-
-    def test_counter_only(self):
-        pkt = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return mock_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else None
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is mock_dec
-        assert label == "DEVICE_UPTIME"
-        assert ambiguous is False
-
-    def test_ambiguous(self):
-        pkt = MagicMock()
-        epoch_dec = MagicMock()
-        counter_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return counter_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else epoch_dec
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is epoch_dec  # epoch preferred
-        assert label == "AMBIGUOUS"
-        assert ambiguous is True
-
-    def test_neither(self):
-        pkt = MagicMock()
-
-        with patch("hubblenetwork.detect.decrypt", return_value=None):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is None
-        assert dec is None
-        assert label is None
-        assert ambiguous is False
-
-    def test_stops_early_when_both_found(self):
-        """Stops after pkts[0] resolves both modes; pkts[1] is never processed."""
-        pkt0 = MagicMock()
-        pkt1 = MagicMock()
-
-        with patch("hubblenetwork.detect.decrypt", return_value=MagicMock()) as mock_decrypt:
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt0, pkt1])
-
-        # Both modes resolved on pkt0: 1 epoch call + 1 counter call = 2 total.
-        assert mock_decrypt.call_count == 2
-        assert enc is pkt0
-        assert label == "AMBIGUOUS"
-        assert ambiguous is True
-
-    def test_advances_to_next_packet_when_first_fails(self):
-        """Loop continues past pkts[0] when it fails both modes."""
-        pkt0 = MagicMock()
-        pkt1 = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            if args[1] is pkt0:
-                return None
-            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt0, pkt1])
-
-        assert enc is pkt1
-        assert dec is mock_dec
-        assert label == "UNIX_TIME"
-        assert ambiguous is False
-
-
-# ---------------------------------------------------------------------------
 # Decoupling guard — the whole point of this module
 # ---------------------------------------------------------------------------
 
@@ -347,3 +254,120 @@ class TestDetection:
         d = Detection(result="x")
         assert d.result == "x"
         assert d.label is None
+
+
+class TestDetectKeyConfig:
+    def test_ctr_unix_time(self):
+        pkt = MagicMock(spec=EncryptedPacket)
+        dec = MagicMock()
+
+        def side_effect(*a, **kw):
+            return None if kw.get("counter_mode") == DEVICE_UPTIME else dec
+
+        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
+            cfg, ingest_pkt, decrypted = detect_key_config(b"k" * 32, [pkt])
+
+        assert cfg == LocalKeyConfig("AES-256-CTR", UNIX_TIME, None)
+        assert ingest_pkt is pkt
+        assert decrypted is dec
+
+    def test_ctr_device_uptime_128(self):
+        pkt = MagicMock(spec=EncryptedPacket)
+        dec = MagicMock()
+
+        def side_effect(*a, **kw):
+            return dec if kw.get("counter_mode") == DEVICE_UPTIME else None
+
+        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
+            cfg, ingest_pkt, decrypted = detect_key_config(b"k" * 16, [pkt])
+
+        assert cfg == LocalKeyConfig("AES-128-CTR", DEVICE_UPTIME, None)
+
+    def test_ctr_ambiguous(self):
+        pkt = MagicMock(spec=EncryptedPacket)
+        with patch("hubblenetwork.detect.decrypt", return_value=MagicMock()):
+            cfg, ingest_pkt, decrypted = detect_key_config(b"k" * 32, [pkt])
+        assert cfg.encryption == "AES-256-CTR"
+        assert cfg.counter_source is None
+        assert cfg.counter_source_ambiguous is True
+
+    def test_eax_detects_exponent(self):
+        pkt = MagicMock(spec=AesEaxPacket)
+        dec = MagicMock()
+
+        def side_effect(key, p, period_exponent=0):
+            return dec if period_exponent == 7 else None
+
+        with patch("hubblenetwork.detect.decrypt_eax", side_effect=side_effect):
+            cfg, ingest_pkt, decrypted = detect_key_config(b"k" * 16, [pkt])
+
+        assert cfg == LocalKeyConfig("AES-128-EAX", DEVICE_UPTIME, 7)
+        assert ingest_pkt is pkt
+        assert decrypted is dec
+
+    def test_nothing_decrypts(self):
+        pkt = MagicMock(spec=EncryptedPacket)
+        with patch("hubblenetwork.detect.decrypt", return_value=None):
+            cfg, ingest_pkt, decrypted = detect_key_config(b"k" * 32, [pkt])
+        assert cfg is None
+        assert ingest_pkt is None
+        assert decrypted is None
+
+
+class TestCompareKeyConfig:
+    CTR = LocalKeyConfig("AES-256-CTR", UNIX_TIME, None)
+
+    def _status(self, results, field):
+        return next(r.status for r in results if r.field == field)
+
+    def test_all_match(self):
+        results = compare_key_config(
+            self.CTR, encryption="AES-256-CTR", counter_source=UNIX_TIME, period_exponent=None
+        )
+        assert self._status(results, "encryption") == "ok"
+        assert self._status(results, "counter_source") == "ok"
+        # period_exponent not compared for CTR
+        assert all(r.field != "period_exponent" for r in results)
+
+    def test_encryption_mismatch_fails(self):
+        results = compare_key_config(
+            self.CTR, encryption="AES-128-CTR", counter_source=UNIX_TIME, period_exponent=None
+        )
+        assert self._status(results, "encryption") == "fail"
+
+    def test_counter_source_mismatch_fails(self):
+        results = compare_key_config(
+            self.CTR, encryption="AES-256-CTR", counter_source=DEVICE_UPTIME, period_exponent=None
+        )
+        assert self._status(results, "counter_source") == "fail"
+
+    def test_missing_backend_field_skipped(self):
+        results = compare_key_config(
+            self.CTR, encryption=None, counter_source=None, period_exponent=None
+        )
+        assert self._status(results, "encryption") == "skipped"
+        assert self._status(results, "counter_source") == "skipped"
+
+    def test_ambiguous_counter_source_skipped(self):
+        local = LocalKeyConfig("AES-256-CTR", None, None)  # counter_source None => ambiguous
+        results = compare_key_config(
+            local, encryption="AES-256-CTR", counter_source=UNIX_TIME, period_exponent=None
+        )
+        assert self._status(results, "counter_source") == "skipped"
+
+    def test_eax_period_exponent_compared(self):
+        local = LocalKeyConfig("AES-128-EAX", DEVICE_UPTIME, 12)
+        ok = compare_key_config(
+            local, encryption="AES-128-EAX", counter_source=DEVICE_UPTIME, period_exponent=12
+        )
+        assert self._status(ok, "period_exponent") == "ok"
+        bad = compare_key_config(
+            local, encryption="AES-128-EAX", counter_source=DEVICE_UPTIME, period_exponent=9
+        )
+        assert self._status(bad, "period_exponent") == "fail"
+
+    def test_field_result_shape(self):
+        results = compare_key_config(
+            self.CTR, encryption="AES-256-CTR", counter_source=UNIX_TIME, period_exponent=None
+        )
+        assert isinstance(results[0], FieldResult)

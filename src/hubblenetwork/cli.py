@@ -27,7 +27,8 @@ from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork.detect import (
     CtrCounterModeDetector,
     EaxExponentDetector,
-    detect_eid_type,
+    compare_key_config,
+    detect_key_config,
 )
 from hubblenetwork import cloud
 from hubblenetwork import InvalidCredentialsError
@@ -86,6 +87,30 @@ def _validate_error(msg):
     click.secho("[ERROR]", fg="red", bold=True)
     click.secho(f"\n{msg}", bold=True)
     sys.exit(1)
+
+
+def _format_local_config(cfg, decrypted):
+    parts = [cfg.encryption]
+    parts.append(
+        "counter_source=AMBIGUOUS"
+        if cfg.counter_source_ambiguous
+        else f"counter_source={cfg.counter_source}"
+    )
+    if cfg.period_exponent is not None:
+        parts.append(f"period_exponent={cfg.period_exponent}")
+    line = ", ".join(parts)
+    counter = getattr(decrypted, "counter", None)
+    if counter is not None:
+        line += f" (counter={counter})"
+    return line
+
+
+def _format_field_result(result):
+    mark = "SKIP" if result.status == "skipped" else result.status.upper()
+    line = f"       {result.field}: {mark} (local={result.local}, backend={result.backend})"
+    if result.note:
+        line += f" — {result.note}"
+    return line
 
 
 def _get_pkt_from_be_with_timestamp(org, device, timestamp):
@@ -1433,10 +1458,10 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
         _validate_error("Invalid credentials (Org ID or API token) passed in.")
     _validate_success()
 
-    # Step 4: Validate device registration
+    # Step 4: Validate device registration and fetch its backend config
     _validate_info("Validating that the given device is registered")
-    device = Device(id=device_id)
-    if not any(d.id == device_id for d in org.list_devices()):
+    device = org.get_device(device_id)
+    if device is None:
         _validate_error("Device ID not found in backend")
     _validate_success()
 
@@ -1459,10 +1484,10 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
         )
     _validate_success()
 
-    # Step 6: Validate encryption and detect EID type
+    # Step 6: Validate encryption and detect the full key configuration
     _validate_info("Validating encryption of received packets")
-    pkt_to_ingest, dec_result, eid_label, _ = detect_eid_type(decoded_key, pkts)
-    if not pkt_to_ingest:
+    local_config, pkt_to_ingest, dec_result = detect_key_config(decoded_key, pkts)
+    if local_config is None:
         _validate_error(
             'Unable to decrypt packet with given device key.'
             '\n\nDebug tips:'
@@ -1472,20 +1497,53 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
             '\n\nIf these do not resolve your issue please contact support@hubble.com.'
         )
     _validate_success()
-    if eid_label == UNIX_TIME:
-        click.echo(f"       EID type: {UNIX_TIME} (day counter={dec_result.counter})")
-    elif eid_label == DEVICE_UPTIME:
-        click.echo(f"       EID type: DEVICE_UPTIME (counter={dec_result.counter})")
-    else:
-        click.echo("       EID type: AMBIGUOUS (resolved with both UNIX_TIME and DEVICE_UPTIME)")
+    click.echo(f"       Detected: {_format_local_config(local_config, dec_result)}")
+    if local_config.counter_source_ambiguous:
         click.secho(
-            "       NOTE: Multiple devices may be in BLE range with different configs,\n"
-            "             or a very unlikely cryptographic coincidence. "
+            "       NOTE: both UNIX_TIME and DEVICE_UPTIME decrypt — multiple devices\n"
+            "             may be in range or a rare cryptographic coincidence. "
             "Check your device config.",
             bold=True,
         )
 
-    # Step 7: Ingest + backend retrieval
+    # Step 7: Validate that the detected config matches the backend registration
+    _validate_info("Validating device config matches backend")
+    field_results = compare_key_config(
+        local_config,
+        encryption=device.encryption,
+        counter_source=device.counter_source,
+        period_exponent=device.period_exponent,
+    )
+    if any(r.status == "fail" for r in field_results):
+        _validate_error(
+            "Local device config does not match the backend registration:\n"
+            + "\n".join(_format_field_result(r) for r in field_results)
+        )
+    _validate_success()
+    for result in field_results:
+        click.echo(_format_field_result(result))
+    if all(r.status == "skipped" for r in field_results):
+        click.echo(
+            "       Backend did not report key configuration; comparison skipped."
+        )
+
+    # Steps 8-9 (ingest + retrieve) support AES-CTR only today. For EAX devices
+    # the config above is validated, but there is no ingest path yet, so stop here.
+    if local_config.encryption == "AES-128-EAX":
+        click.secho(
+            "\n[INFO] Ingest/retrieve skipped: end-to-end ingest for AES-128-EAX "
+            "is not supported yet.",
+            fg="yellow",
+            bold=True,
+        )
+        click.secho(
+            "\n[COMPLETE] Config validation passed (EAX device; ingest/retrieve skipped).",
+            fg="green",
+            bold=True,
+        )
+        return
+
+    # Step 8: Ingest into the backend
     _validate_info("Ingesting packet into the backend")
     try:
         org.ingest_packet(pkt_to_ingest)
@@ -1493,6 +1551,7 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
         _validate_error("Unable to ingest packet on the backend (not your fault)")
     _validate_success()
 
+    # Step 9: Confirm the packet is retrievable from the backend
     _validate_info("Checking for packet in the backend")
     timestamp = pkt_to_ingest.timestamp
     backend_pkt = None

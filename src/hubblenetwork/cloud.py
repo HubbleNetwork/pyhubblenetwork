@@ -63,11 +63,7 @@ def _ingest_packets_endpoint(credentials: Credentials) -> str:
     return f"/org/{credentials.org_id}/packets"
 
 
-def _update_device_endpoint(credentials: Credentials, device_id: str) -> str:
-    return f"/org/{credentials.org_id}/devices/{device_id}"
-
-
-def _delete_device_endpoint(credentials: Credentials, device_id: str) -> str:
+def _device_endpoint(credentials: Credentials, device_id: str) -> str:
     return f"/org/{credentials.org_id}/devices/{device_id}"
 
 
@@ -209,7 +205,7 @@ def update_device(
     return cloud_request(
         method="PATCH",
         env=env,
-        path=_update_device_endpoint(credentials, device_id),
+        path=_device_endpoint(credentials, device_id),
         credentials=credentials,
         json=data,
     )[0]
@@ -224,7 +220,7 @@ def delete_device(
     """Delete a device."""
     cloud_request(
         method="DELETE",
-        path=_delete_device_endpoint(credentials, device_id),
+        path=_device_endpoint(credentials, device_id),
         credentials=credentials,
         env=env,
     )
@@ -247,6 +243,21 @@ def list_devices(
         credentials=credentials,
         continuation_token=continuation_token,
     )
+
+
+def get_device(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    device_id: str,
+) -> Any:
+    """Fetch a single device by ID. Raises NotFoundError if it does not exist."""
+    return cloud_request(
+        method="GET",
+        env=env,
+        path=_device_endpoint(credentials, device_id),
+        credentials=credentials,
+    )[0]
 
 
 def retrieve_packets(
