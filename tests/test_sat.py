@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -420,6 +421,257 @@ class TestScanMockMode:
 
 
 # ---------------------------------------------------------------------------
+# Shared container lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestRunningContainer:
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_pulls_starts_and_stops(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container789"
+
+        with sat._running_container(
+            port=sat.API_PORT,
+            image=sat.DOCKER_IMAGE,
+            environment={"FOO": "bar"},
+            privileged=True,
+            name=sat.CONTAINER_NAME,
+            wait_for_sdr=True,
+            on_status=None,
+        ):
+            pass
+
+        mock_ensure.assert_called_once()
+        mock_pull.assert_called_once_with(sat.DOCKER_IMAGE)
+        mock_start.assert_called_once_with(
+            image=sat.DOCKER_IMAGE,
+            port=sat.API_PORT,
+            environment={"FOO": "bar"},
+            privileged=True,
+            name=sat.CONTAINER_NAME,
+        )
+        mock_wait.assert_called_once_with(port=sat.API_PORT)
+        mock_wait_sdr.assert_called_once_with(port=sat.API_PORT)
+        mock_stop.assert_called_once_with("container789")
+
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=True)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_skips_pull_when_image_exists_locally(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container789"
+
+        with sat._running_container(
+            port=sat.API_PORT,
+            image="sdr-docker:dev",
+            environment={},
+            privileged=True,
+            name=sat.CONTAINER_NAME,
+            wait_for_sdr=True,
+            on_status=None,
+        ):
+            pass
+
+        mock_image_exists.assert_called_once_with("sdr-docker:dev")
+        mock_pull.assert_not_called()
+
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_skips_sdr_wait_when_disabled(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container789"
+
+        with sat._running_container(
+            port=sat.API_PORT,
+            image=sat.DOCKER_IMAGE,
+            environment={},
+            privileged=False,
+            name=sat.MOCK_CONTAINER_NAME,
+            wait_for_sdr=False,
+            on_status=None,
+        ):
+            pass
+
+        mock_wait_sdr.assert_not_called()
+
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_stops_container_on_exception(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container789"
+
+        with pytest.raises(ValueError):
+            with sat._running_container(
+                port=sat.API_PORT,
+                image=sat.DOCKER_IMAGE,
+                environment={},
+                privileged=True,
+                name=sat.CONTAINER_NAME,
+                wait_for_sdr=True,
+                on_status=None,
+            ):
+                raise ValueError("boom")
+
+        mock_stop.assert_called_once_with("container789")
+
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    def test_emits_status_messages(
+        self, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container789"
+        messages = []
+
+        with sat._running_container(
+            port=sat.API_PORT,
+            image=sat.DOCKER_IMAGE,
+            environment={},
+            privileged=True,
+            name=sat.CONTAINER_NAME,
+            wait_for_sdr=True,
+            on_status=messages.append,
+        ):
+            pass
+
+        assert "Pulling Docker image..." in messages
+        assert "Starting container..." in messages
+        assert "Waiting for receiver API to be ready..." in messages
+        assert "Waiting for PlutoSDR to connect..." in messages
+
+
+# ---------------------------------------------------------------------------
+# sat.record / sat.analyze
+# ---------------------------------------------------------------------------
+
+
+class TestRecord:
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    @patch("hubblenetwork.sat.iq_capture")
+    def test_captures_and_returns_bytes(
+        self, mock_capture, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container123"
+        mock_capture.return_value = b"\x93NUMPYfake"
+
+        result = sat.record(10)
+
+        assert result == b"\x93NUMPYfake"
+        mock_capture.assert_called_once_with(10, port=sat.API_PORT)
+        mock_stop.assert_called_once_with("container123")
+
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    @patch("hubblenetwork.sat.iq_capture")
+    def test_passes_pluto_uri_as_environment(
+        self, mock_capture, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container123"
+        mock_capture.return_value = b""
+
+        sat.record(10, pluto_uri="usb:1.2.3")
+
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs["environment"] == {"PLUTO_URI": "usb:1.2.3"}
+        assert call_kwargs["privileged"] is True
+        assert call_kwargs["name"] == sat.CONTAINER_NAME
+
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    @patch("hubblenetwork.sat.iq_capture")
+    def test_mock_mode_params(
+        self, mock_capture, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container123"
+        mock_capture.return_value = b""
+
+        sat.record(10, mock=True)
+
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs["environment"] == {"SDR_TYPE": "mock"}
+        assert call_kwargs["privileged"] is False
+        assert call_kwargs["name"] == sat.MOCK_CONTAINER_NAME
+        # Mock mode has no hardware to wait for.
+        mock_wait_sdr.assert_not_called()
+
+
+class TestAnalyze:
+    @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
+    @patch("hubblenetwork.sat.stop_container")
+    @patch("hubblenetwork.sat._wait_for_sdr")
+    @patch("hubblenetwork.sat._wait_for_api")
+    @patch("hubblenetwork.sat.start_container")
+    @patch("hubblenetwork.sat.pull_image")
+    @patch("hubblenetwork.sat.ensure_docker_available")
+    @patch("hubblenetwork.sat.record_analyze")
+    def test_analyzes_and_returns_text(
+        self, mock_analyze, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+        mock_image_exists,
+    ):
+        mock_start.return_value = "container456"
+        mock_analyze.return_value = "device_id=0xAA seq=1\n"
+
+        result = sat.analyze(10)
+
+        assert result == "device_id=0xAA seq=1\n"
+        mock_analyze.assert_called_once_with(10, port=sat.API_PORT)
+        mock_stop.assert_called_once_with("container456")
+
+
+# ---------------------------------------------------------------------------
 # CLI - sat scan
 # ---------------------------------------------------------------------------
 
@@ -585,3 +837,141 @@ class TestSatMockScanCli:
         result = runner.invoke(cli, ["sat", "mock-scan", "--timeout", "1"])
         assert result.exit_code != 0
         assert "Docker is not installed" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI - sat scan/mock-scan --record / --analyze
+# ---------------------------------------------------------------------------
+
+
+class TestSatRecordAnalyzeCli:
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_record_writes_output_file(self, mock_sat, runner, subcommand):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.record.return_value = b"\x93NUMPYfake"
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli, ["sat", subcommand, "--record", "5", "--output", "capture.npy"]
+            )
+            assert result.exit_code == 0
+            with open("capture.npy", "rb") as f:
+                assert f.read() == b"\x93NUMPYfake"
+
+        mock_sat.record.assert_called_once()
+        assert mock_sat.record.call_args[0][0] == 5.0
+
+    @pytest.mark.parametrize(
+        "subcommand,expected_mock", [("scan", False), ("mock-scan", True)]
+    )
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_record_passes_mock_flag_correctly(
+        self, mock_sat, runner, subcommand, expected_mock
+    ):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.record.return_value = b""
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["sat", subcommand, "--record", "5"])
+
+        assert result.exit_code == 0
+        assert mock_sat.record.call_args.kwargs["mock"] is expected_mock
+
+    @pytest.mark.parametrize(
+        "subcommand,expected_mock", [("scan", False), ("mock-scan", True)]
+    )
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_analyze_passes_mock_flag_correctly(
+        self, mock_sat, runner, subcommand, expected_mock
+    ):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.analyze.return_value = ""
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["sat", subcommand, "--analyze", "5"])
+
+        assert result.exit_code == 0
+        assert mock_sat.analyze.call_args.kwargs["mock"] is expected_mock
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_record_default_output_name(self, mock_sat, runner, subcommand):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.record.return_value = b"data"
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["sat", subcommand, "--record", "5"])
+            assert result.exit_code == 0
+            npy_files = [f for f in os.listdir(".") if f.endswith(".npy")]
+            assert len(npy_files) == 1
+            assert npy_files[0].startswith("iq_capture_")
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_analyze_writes_output_file(self, mock_sat, runner, subcommand):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.analyze.return_value = "device_id=0xAA seq=1\n"
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli, ["sat", subcommand, "--analyze", "5", "--output", "analysis.txt"]
+            )
+            assert result.exit_code == 0
+            with open("analysis.txt") as f:
+                assert f.read() == "device_id=0xAA seq=1\n"
+
+        mock_sat.analyze.assert_called_once()
+        assert mock_sat.analyze.call_args[0][0] == 5.0
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_analyze_default_output_name(self, mock_sat, runner, subcommand):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.analyze.return_value = "log\n"
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["sat", subcommand, "--analyze", "5"])
+            assert result.exit_code == 0
+            txt_files = [f for f in os.listdir(".") if f.startswith("analysis_")]
+            assert len(txt_files) == 1
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    def test_record_and_analyze_mutually_exclusive(self, runner, subcommand):
+        result = runner.invoke(
+            cli, ["sat", subcommand, "--record", "5", "--analyze", "5"]
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_record_docker_error(self, mock_sat, runner, subcommand):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.record.side_effect = DockerError("Docker is not installed")
+
+        result = runner.invoke(cli, ["sat", subcommand, "--record", "5"])
+        assert result.exit_code != 0
+        assert "Docker is not installed" in result.output
+
+    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
+    @patch("hubblenetwork.cli.sat_mod")
+    def test_analyze_satellite_error(self, mock_sat, runner, subcommand):
+        mock_sat.DockerError = DockerError
+        mock_sat.SatelliteError = SatelliteError
+        mock_sat.analyze.side_effect = SatelliteError("receiver not ready")
+
+        result = runner.invoke(cli, ["sat", subcommand, "--analyze", "5"])
+        assert result.exit_code != 0
+        assert "receiver not ready" in result.output

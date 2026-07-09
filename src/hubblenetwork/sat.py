@@ -31,6 +31,10 @@ MOCK_CONTAINER_NAME = "hubble-pluto-sdr-mock"
 API_PORT = 8050
 _CONTAINER_INTERNAL_PORT = 8050  # fixed by the Docker image
 
+# Extra time (beyond the recording duration itself) to allow the receiver to
+# process and respond before we give up on the HTTP request.
+_RECORDING_HTTP_TIMEOUT_MARGIN = 30
+
 
 def _packets_url(port: int = API_PORT) -> str:
     return f"http://localhost:{port}/api/packets"
@@ -298,11 +302,6 @@ def fetch_packets(port: int = API_PORT) -> List[SatellitePacket]:
     return _parse_jsonl(resp.text)
 
 
-# Extra time (beyond the recording duration itself) to allow the receiver to
-# process and respond before we give up on the HTTP request.
-_RECORDING_HTTP_TIMEOUT_MARGIN = 30
-
-
 def iq_capture(duration: float, port: int = API_PORT) -> bytes:
     """Capture *duration* seconds of raw IQ samples, returning a ``.npy`` file body."""
     url = _iq_capture_url(port)
@@ -391,6 +390,16 @@ def _running_container(
         stop_container(container_id)
 
 
+def _build_environment(mock: bool, pluto_uri: Optional[str]) -> Dict[str, str]:
+    """Build the container environment shared by ``scan`` and the one-shot ops."""
+    environment: Dict[str, str] = {}
+    if mock:
+        environment["SDR_TYPE"] = "mock"
+    if pluto_uri is not None:
+        environment["PLUTO_URI"] = pluto_uri
+    return environment
+
+
 def scan(
     timeout: Optional[float] = None,
     poll_interval: float = 2.0,
@@ -414,11 +423,7 @@ def scan(
     *on_status*, when provided, is called with a human-readable message
     at each lifecycle step (pull, start, wait, ready).
     """
-    environment: Dict[str, str] = {}
-    if mock:
-        environment["SDR_TYPE"] = "mock"
-    if pluto_uri is not None:
-        environment["PLUTO_URI"] = pluto_uri
+    environment = _build_environment(mock, pluto_uri)
 
     _emit = on_status or (lambda _msg: None)
 
@@ -461,6 +466,7 @@ def _run_one_shot(
     action_status: str,
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
+    mock: bool = False,
     pluto_uri: Optional[str] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> "bytes | str":
@@ -468,10 +474,11 @@ def _run_one_shot(
 
     Shared lifecycle for the one-shot ``record``/``analyze`` operations, which
     (unlike ``scan``) make a single blocking request instead of polling.
+
+    When *mock* is ``True`` the container is started in mock mode, the same
+    as ``scan``'s *mock* parameter.
     """
-    environment: Dict[str, str] = {}
-    if pluto_uri is not None:
-        environment["PLUTO_URI"] = pluto_uri
+    environment = _build_environment(mock, pluto_uri)
 
     _emit = on_status or (lambda _msg: None)
 
@@ -479,9 +486,9 @@ def _run_one_shot(
         port=port,
         image=image,
         environment=environment,
-        privileged=True,
-        name=CONTAINER_NAME,
-        wait_for_sdr=True,
+        privileged=not mock,
+        name=MOCK_CONTAINER_NAME if mock else CONTAINER_NAME,
+        wait_for_sdr=not mock,
         on_status=on_status,
     ):
         _emit(action_status)
@@ -493,10 +500,14 @@ def record(
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
     *,
+    mock: bool = False,
     pluto_uri: Optional[str] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> bytes:
     """Capture *duration* seconds of raw IQ samples, managing the Docker lifecycle.
+
+    When *mock* is ``True`` the container is started in mock mode, the same
+    as ``scan``'s *mock* parameter.
 
     Returns the raw bytes of the ``.npy`` file produced by the receiver.
     """
@@ -505,6 +516,7 @@ def record(
         action_status=f"Capturing IQ samples for {duration}s...",
         port=port,
         image=image,
+        mock=mock,
         pluto_uri=pluto_uri,
         on_status=on_status,
     )
@@ -515,10 +527,14 @@ def analyze(
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
     *,
+    mock: bool = False,
     pluto_uri: Optional[str] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Record for *duration* seconds and decode packets, managing the Docker lifecycle.
+
+    When *mock* is ``True`` the container is started in mock mode, the same
+    as ``scan``'s *mock* parameter.
 
     Returns the plaintext decoded-packet log produced by the receiver.
     """
@@ -526,6 +542,7 @@ def analyze(
         lambda p: record_analyze(duration, port=p),
         action_status=f"Recording and analyzing for {duration}s...",
         port=port,
+        mock=mock,
         image=image,
         pluto_uri=pluto_uri,
         on_status=on_status,

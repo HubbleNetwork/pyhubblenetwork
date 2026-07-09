@@ -42,11 +42,41 @@ logger.addHandler(_handler)
 # Symbol time length in ms
 SYMBOL_TIME = 8.0
 
-# Symbol time tolerance. With our envelope detection, we can expect the symbol 
+# Symbol time tolerance. With our envelope detection, we can expect the symbol
 # to be off by 1/2 of the length of the symbol before that envelope
-# reads the adjacent symbol, Any deviation from the nominal 8ms will see a dB 
+# reads the adjacent symbol, Any deviation from the nominal 8ms will see a dB
 # loss, but the frequency will be correct
 TIMING_TOLERANCE = 4.0
+
+_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"  # used to name default --record/--analyze output files
+
+
+def _default_iq_capture_name() -> str:
+    return f"iq_capture_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.npy"
+
+
+def _default_analysis_name() -> str:
+    return f"analysis_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.txt"
+
+
+# One entry per ``--record``/``--analyze`` mode, keyed by the sat.py function
+# name to call: the in-progress status label, how to name the output file
+# when --output is omitted, and the mode to open that file in. Looked up via
+# getattr(sat_mod, mode) rather than storing the function directly, so tests
+# that patch ``hubblenetwork.cli.sat_mod`` still take effect.
+_ONE_SHOT_MODES = {
+    "record": {
+        "label": "Capturing IQ samples",
+        "default_name": _default_iq_capture_name,
+        "write_mode": "wb",
+    },
+    "analyze": {
+        "label": "Recording and analyzing",
+        "default_name": _default_analysis_name,
+        "write_mode": "w",
+    },
+}
+
 
 def _parse_key(key_str: str) -> bytes:
     """Parse an encryption key from hex or base64. Returns raw bytes.
@@ -3105,36 +3135,6 @@ def sat() -> None:
     """Satellite (PlutoSDR) utilities."""
 
 
-_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
-
-
-def _default_iq_capture_name() -> str:
-    return f"iq_capture_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.npy"
-
-
-def _default_analysis_name() -> str:
-    return f"analysis_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.txt"
-
-
-# One entry per ``--record``/``--analyze`` mode, keyed by the sat.py function
-# name to call: the in-progress status label, how to name the output file
-# when --output is omitted, and the mode to open that file in. Looked up via
-# getattr(sat_mod, mode) rather than storing the function directly, so tests
-# that patch ``hubblenetwork.cli.sat_mod`` still take effect.
-_ONE_SHOT_MODES = {
-    "record": {
-        "label": "Capturing IQ samples",
-        "default_name": _default_iq_capture_name,
-        "write_mode": "wb",
-    },
-    "analyze": {
-        "label": "Recording and analyzing",
-        "default_name": _default_analysis_name,
-        "write_mode": "w",
-    },
-}
-
-
 def _run_sat_scan(
     *,
     mock: bool,
@@ -3186,6 +3186,7 @@ def _run_sat_scan(
         try:
             result = getattr(sat_mod, mode)(
                 duration,
+                mock=mock,
                 pluto_uri=pluto_uri,
                 on_status=_on_status,
             )
@@ -3440,9 +3441,13 @@ def sat_mock_scan(**kwargs) -> None:
     Uses simulated data -- no PlutoSDR hardware required. Useful for testing
     the satellite scanning interface.
 
+    Pass --record or --analyze (mutually exclusive) to capture simulated IQ
+    samples or a decoded-packet log to a local file instead of streaming.
+
     Example:
       hubblenetwork sat mock-scan --timeout 30
       hubblenetwork sat mock-scan -o json -n 5
+      hubblenetwork sat mock-scan --record 10
     """
     _run_sat_scan(mock=True, **kwargs)
 
