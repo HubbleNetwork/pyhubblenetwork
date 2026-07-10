@@ -42,11 +42,41 @@ logger.addHandler(_handler)
 # Symbol time length in ms
 SYMBOL_TIME = 8.0
 
-# Symbol time tolerance. With our envelope detection, we can expect the symbol 
+# Symbol time tolerance. With our envelope detection, we can expect the symbol
 # to be off by 1/2 of the length of the symbol before that envelope
-# reads the adjacent symbol, Any deviation from the nominal 8ms will see a dB 
+# reads the adjacent symbol, Any deviation from the nominal 8ms will see a dB
 # loss, but the frequency will be correct
 TIMING_TOLERANCE = 4.0
+
+_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"  # used to name default --record/--analyze output files
+
+
+def _default_iq_capture_name() -> str:
+    return f"iq_capture_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.npy"
+
+
+def _default_analysis_name() -> str:
+    return f"analysis_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.txt"
+
+
+# One entry per ``--record``/``--analyze`` mode, keyed by the sat.py function
+# name to call: the in-progress status label, how to name the output file
+# when --output is omitted, and the mode to open that file in. Looked up via
+# getattr(sat_mod, mode) rather than storing the function directly, so tests
+# that patch ``hubblenetwork.cli.sat_mod`` still take effect.
+_ONE_SHOT_MODES = {
+    "record": {
+        "label": "Capturing IQ samples",
+        "default_name": _default_iq_capture_name,
+        "write_mode": "wb",
+    },
+    "analyze": {
+        "label": "Recording and analyzing",
+        "default_name": _default_analysis_name,
+        "write_mode": "w",
+    },
+}
+
 
 def _parse_key(key_str: str) -> bytes:
     """Parse an encryption key from hex or base64. Returns raw bytes.
@@ -3081,6 +3111,25 @@ def _docker_err_msg() -> str:
     )
 
 
+def _report_sat_error(exc: Exception, *, suppress_info_messages: bool = False) -> None:
+    """Print a ``sat`` command's DockerError/SatelliteError and exit(1).
+
+    A ``DockerError`` with no message (Docker isn't installed at all) falls
+    back to the install hint. When *suppress_info_messages* is set (JSON
+    output mode) the error is emitted as a ``{"error": ...}`` JSON line
+    instead of a colored ``[ERROR]`` line to stderr.
+    """
+    if isinstance(exc, sat_mod.DockerError):
+        msg = str(exc) or _docker_err_msg()
+    else:
+        msg = str(exc)
+    if suppress_info_messages:
+        click.echo(json.dumps({"error": msg}))
+    else:
+        click.secho(f"\n[ERROR] {msg}", fg="red", err=True)
+    sys.exit(1)
+
+
 @cli.group()
 def sat() -> None:
     """Satellite (PlutoSDR) utilities."""
@@ -3101,9 +3150,56 @@ def _run_sat_scan(
     counter_mode: str = UNIX_TIME,
     auto_detect_ctr: bool = False,
     show_failed_decryption: bool = False,
+    record: Optional[float] = None,
+    analyze: Optional[float] = None,
+    output_path: Optional[str] = None,
 ) -> None:
     """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
     mode_label = "mock satellite receiver" if mock else "satellite receiver"
+
+    is_one_shot = record is not None or analyze is not None
+    if record is not None and analyze is not None:
+        raise click.UsageError("--record and --analyze are mutually exclusive")
+
+    if debug:
+        sat_logger = logging.getLogger("hubblenetwork.sat")
+        sat_logger.setLevel(logging.DEBUG)
+        sat_logger.addHandler(_handler)
+
+    if is_one_shot:
+        try:
+            sat_mod.ensure_docker_available()
+        except sat_mod.DockerError as exc:
+            _report_sat_error(exc)
+
+        click.secho(f"[INFO] Web GUI: {sat_mod.web_ui_url()}", fg="green")
+
+        def _on_status(msg: str) -> None:
+            click.secho(f"[INFO] {msg}", fg="cyan", err=True)
+
+        duration = record if record is not None else analyze
+        mode = "record" if record is not None else "analyze"
+        cfg = _ONE_SHOT_MODES[mode]
+        out_path = output_path or cfg["default_name"]()
+
+        click.secho(f"[INFO] {cfg['label']} for {duration}s... (Press Ctrl+C to stop)")
+        try:
+            result = getattr(sat_mod, mode)(
+                duration,
+                mock=mock,
+                pluto_uri=pluto_uri,
+                on_status=_on_status,
+            )
+        except (sat_mod.DockerError, sat_mod.SatelliteError) as exc:
+            _report_sat_error(exc)
+        except KeyboardInterrupt:
+            click.secho("\n[INFO] Cancelled.", fg="yellow", err=True)
+            sys.exit(130)
+
+        with open(out_path, cfg["write_mode"]) as f:
+            f.write(result)
+        click.secho(f"[SUCCESS] Saved to {out_path}", fg="green")
+        return
 
     printer_class = _SAT_STREAMING_PRINTERS.get(
         output_format.lower(), _SatStreamingTablePrinter
@@ -3137,21 +3233,11 @@ def _run_sat_scan(
         key_len=len(decoded_key) if decoded_key is not None else 0,
     )
 
-    if debug:
-        sat_logger = logging.getLogger("hubblenetwork.sat")
-        sat_logger.setLevel(logging.DEBUG)
-        sat_logger.addHandler(_handler)
-
     # Fail fast: verify Docker is available before printing anything.
     try:
         sat_mod.ensure_docker_available()
     except sat_mod.DockerError as exc:
-        msg = str(exc) or _docker_err_msg()
-        if printer.suppress_info_messages:
-            click.echo(json.dumps({"error": msg}))
-        else:
-            click.secho(f"\n[ERROR] {msg}", fg="red", err=True)
-        sys.exit(1)
+        _report_sat_error(exc, suppress_info_messages=printer.suppress_info_messages)
 
     if not printer.suppress_info_messages:
         click.secho(
@@ -3212,21 +3298,9 @@ def _run_sat_scan(
                 printer.print_row(pkt)
             if count is not None and printer.packet_count >= count:
                 break
-    except sat_mod.DockerError as exc:
+    except (sat_mod.DockerError, sat_mod.SatelliteError) as exc:
         error_occurred = True
-        msg = str(exc) or _docker_err_msg()
-        if printer.suppress_info_messages:
-            click.echo(json.dumps({"error": msg}))
-        else:
-            click.secho(f"\n[ERROR] {msg}", fg="red", err=True)
-        sys.exit(1)
-    except sat_mod.SatelliteError as e:
-        error_occurred = True
-        if printer.suppress_info_messages:
-            click.echo(json.dumps({"error": str(e)}))
-        else:
-            click.secho(f"\n[ERROR] {e}", fg="red", err=True)
-        sys.exit(1)
+        _report_sat_error(exc, suppress_info_messages=printer.suppress_info_messages)
     except KeyboardInterrupt:
         pass
     finally:
@@ -3261,6 +3335,18 @@ def _sat_scan_options(fn):
                      help="Encoding format for packet payload"),
         click.option("--pluto-uri", "pluto_uri", type=str, default=None,
                      help="PlutoSDR URI passed to the container (e.g. usb:, ip:192.168.2.1)"),
+        click.option("--record", type=float, default=None, show_default=False,
+                     help="Instead of streaming packets, capture this many seconds of "
+                          "raw IQ samples and save them to a .npy file. Mutually "
+                          "exclusive with --analyze."),
+        click.option("--analyze", type=float, default=None, show_default=False,
+                     help="Instead of streaming packets, record for this many seconds "
+                          "and save the decoded-packet log to a text file. Mutually "
+                          "exclusive with --record."),
+        click.option("--output", "output_path", type=click.Path(), default=None,
+                     show_default=False,
+                     help="Output file path for --record/--analyze (default: "
+                          "auto-generated name)"),
         click.option("--debug", is_flag=True, default=False,
                      help="Enable debug logging to stderr"),
     ]):
@@ -3315,11 +3401,16 @@ def sat_scan(ctx, **kwargs) -> None:
     source is auto-detected (UNIX_TIME or DEVICE_UPTIME) unless --counter-mode
     is given explicitly.
 
+    Pass --record or --analyze (mutually exclusive) to capture raw IQ samples
+    or a decoded-packet log to a local file instead of streaming packets.
+
     Example:
       hubblenetwork sat scan --timeout 30
       hubblenetwork sat scan -o json --timeout 10
       hubblenetwork sat scan -n 5
       hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 60
+      hubblenetwork sat scan --record 10
+      hubblenetwork sat scan --analyze 10 --output analysis.txt
     """
     key = kwargs.get("key")
     counter_mode = kwargs["counter_mode"]
@@ -3350,9 +3441,13 @@ def sat_mock_scan(**kwargs) -> None:
     Uses simulated data -- no PlutoSDR hardware required. Useful for testing
     the satellite scanning interface.
 
+    Pass --record or --analyze (mutually exclusive) to capture simulated IQ
+    samples or a decoded-packet log to a local file instead of streaming.
+
     Example:
       hubblenetwork sat mock-scan --timeout 30
       hubblenetwork sat mock-scan -o json -n 5
+      hubblenetwork sat mock-scan --record 10
     """
     _run_sat_scan(mock=True, **kwargs)
 

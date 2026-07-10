@@ -14,8 +14,9 @@ import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Generator, List, Optional, Set, Tuple
+from typing import Callable, Dict, Generator, Iterator, List, Optional, Set, Tuple
 
 import httpx
 
@@ -29,6 +30,10 @@ CONTAINER_NAME = "hubble-pluto-sdr"
 MOCK_CONTAINER_NAME = "hubble-pluto-sdr-mock"
 API_PORT = 8050
 _CONTAINER_INTERNAL_PORT = 8050  # fixed by the Docker image
+
+# Extra time (beyond the recording duration itself) to allow the receiver to
+# process and respond before we give up on the HTTP request.
+_RECORDING_HTTP_TIMEOUT_MARGIN = 30
 
 
 def _packets_url(port: int = API_PORT) -> str:
@@ -46,6 +51,14 @@ def _status_url(port: int = API_PORT) -> str:
 
 def _timedomain_url(port: int = API_PORT) -> str:
     return f"http://localhost:{port}/api/timedomain"
+
+
+def _iq_capture_url(port: int = API_PORT) -> str:
+    return f"http://localhost:{port}/api/iq_capture"
+
+
+def _record_analyze_url(port: int = API_PORT) -> str:
+    return f"http://localhost:{port}/api/record_analyze"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +302,36 @@ def fetch_packets(port: int = API_PORT) -> List[SatellitePacket]:
     return _parse_jsonl(resp.text)
 
 
+def iq_capture(duration: float, port: int = API_PORT) -> bytes:
+    """Capture *duration* seconds of raw IQ samples, returning a ``.npy`` file body."""
+    url = _iq_capture_url(port)
+    try:
+        resp = httpx.get(
+            url,
+            params={"duration": duration},
+            timeout=duration + _RECORDING_HTTP_TIMEOUT_MARGIN,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SatelliteError(f"Failed to capture IQ samples from {url}: {exc}")
+    return resp.content
+
+
+def record_analyze(duration: float, port: int = API_PORT) -> str:
+    """Record for *duration* seconds and return the plaintext decoded-packet log."""
+    url = _record_analyze_url(port)
+    try:
+        resp = httpx.get(
+            url,
+            params={"duration": duration},
+            timeout=duration + _RECORDING_HTTP_TIMEOUT_MARGIN,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SatelliteError(f"Failed to analyze recording from {url}: {exc}")
+    return resp.text
+
+
 # ---------------------------------------------------------------------------
 # High-level scanning
 # ---------------------------------------------------------------------------
@@ -297,6 +340,64 @@ def fetch_packets(port: int = API_PORT) -> List[SatellitePacket]:
 def _packet_key(pkt: SatellitePacket) -> Tuple[str, int]:
     """Return a deduplication key for *pkt*."""
     return (pkt.device_id, pkt.seq_num)
+
+
+@contextmanager
+def _running_container(
+    *,
+    port: int,
+    image: str,
+    environment: Dict[str, str],
+    privileged: bool,
+    name: str,
+    wait_for_sdr: bool,
+    on_status: Optional[Callable[[str], None]],
+) -> Iterator[None]:
+    """Pull, start, and wait for the receiver container to be ready; stop it on exit.
+
+    Shared lifecycle for ``scan`` and the one-shot ``record``/``analyze``
+    operations: ensure Docker is available, pull *image*, start the
+    container, wait for its API (and the SDR, unless *wait_for_sdr* is
+    ``False``), then yield. The container is guaranteed to be stopped when
+    the ``with`` block exits, including on exception.
+    """
+    _emit = on_status or (lambda _msg: None)
+
+    ensure_docker_available()
+
+    if _image_exists_locally(image):
+        _emit(f"Using local image {image}...")
+    else:
+        _emit("Pulling Docker image...")
+        pull_image(image)
+
+    _emit("Starting container...")
+    container_id = start_container(
+        image=image,
+        port=port,
+        environment=environment,
+        privileged=privileged,
+        name=name,
+    )
+    try:
+        _emit("Waiting for receiver API to be ready...")
+        _wait_for_api(port=port)
+        if wait_for_sdr:
+            _emit("Waiting for PlutoSDR to connect...")
+            _wait_for_sdr(port=port)
+        yield
+    finally:
+        stop_container(container_id)
+
+
+def _build_environment(mock: bool, pluto_uri: Optional[str]) -> Dict[str, str]:
+    """Build the container environment shared by ``scan`` and the one-shot ops."""
+    environment: Dict[str, str] = {}
+    if mock:
+        environment["SDR_TYPE"] = "mock"
+    if pluto_uri is not None:
+        environment["PLUTO_URI"] = pluto_uri
+    return environment
 
 
 def scan(
@@ -322,37 +423,19 @@ def scan(
     *on_status*, when provided, is called with a human-readable message
     at each lifecycle step (pull, start, wait, ready).
     """
+    environment = _build_environment(mock, pluto_uri)
+
     _emit = on_status or (lambda _msg: None)
 
-    ensure_docker_available()
-
-    if _image_exists_locally(image):
-        _emit(f"Using local image {image}...")
-    else:
-        _emit("Pulling Docker image...")
-        pull_image(image)
-
-    _emit("Starting container...")
-    container_name = MOCK_CONTAINER_NAME if mock else CONTAINER_NAME
-    environment: Dict[str, str] = {}
-    if mock:
-        environment["SDR_TYPE"] = "mock"
-    if pluto_uri is not None:
-        environment["PLUTO_URI"] = pluto_uri
-
-    container_id = start_container(
-        image=image,
+    with _running_container(
         port=port,
+        image=image,
         environment=environment,
         privileged=not mock,
-        name=container_name,
-    )
-    try:
-        _emit("Waiting for receiver API to be ready...")
-        _wait_for_api(port=port)
-        if not mock:
-            _emit("Waiting for PlutoSDR to connect...")
-            _wait_for_sdr(port=port)
+        name=MOCK_CONTAINER_NAME if mock else CONTAINER_NAME,
+        wait_for_sdr=not mock,
+        on_status=on_status,
+    ):
         _emit("Receiver ready, listening for packets...")
 
         seen: Set[Tuple[str, int]] = set()
@@ -375,5 +458,92 @@ def scan(
                 time.sleep(min(poll_interval, remaining))
             else:
                 time.sleep(poll_interval)
-    finally:
-        stop_container(container_id)
+
+
+def _run_one_shot(
+    action: Callable[[int], "bytes | str"],
+    *,
+    action_status: str,
+    port: int = API_PORT,
+    image: str = DOCKER_IMAGE,
+    mock: bool = False,
+    pluto_uri: Optional[str] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> "bytes | str":
+    """Run *action* against a freshly started receiver container, then tear it down.
+
+    Shared lifecycle for the one-shot ``record``/``analyze`` operations, which
+    (unlike ``scan``) make a single blocking request instead of polling.
+
+    When *mock* is ``True`` the container is started in mock mode, the same
+    as ``scan``'s *mock* parameter.
+    """
+    environment = _build_environment(mock, pluto_uri)
+
+    _emit = on_status or (lambda _msg: None)
+
+    with _running_container(
+        port=port,
+        image=image,
+        environment=environment,
+        privileged=not mock,
+        name=MOCK_CONTAINER_NAME if mock else CONTAINER_NAME,
+        wait_for_sdr=not mock,
+        on_status=on_status,
+    ):
+        _emit(action_status)
+        return action(port)
+
+
+def record(
+    duration: float,
+    port: int = API_PORT,
+    image: str = DOCKER_IMAGE,
+    *,
+    mock: bool = False,
+    pluto_uri: Optional[str] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> bytes:
+    """Capture *duration* seconds of raw IQ samples, managing the Docker lifecycle.
+
+    When *mock* is ``True`` the container is started in mock mode, the same
+    as ``scan``'s *mock* parameter.
+
+    Returns the raw bytes of the ``.npy`` file produced by the receiver.
+    """
+    return _run_one_shot(
+        lambda p: iq_capture(duration, port=p),
+        action_status=f"Capturing IQ samples for {duration}s...",
+        port=port,
+        image=image,
+        mock=mock,
+        pluto_uri=pluto_uri,
+        on_status=on_status,
+    )
+
+
+def analyze(
+    duration: float,
+    port: int = API_PORT,
+    image: str = DOCKER_IMAGE,
+    *,
+    mock: bool = False,
+    pluto_uri: Optional[str] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Record for *duration* seconds and decode packets, managing the Docker lifecycle.
+
+    When *mock* is ``True`` the container is started in mock mode, the same
+    as ``scan``'s *mock* parameter.
+
+    Returns the plaintext decoded-packet log produced by the receiver.
+    """
+    return _run_one_shot(
+        lambda p: record_analyze(duration, port=p),
+        action_status=f"Recording and analyzing for {duration}s...",
+        port=port,
+        mock=mock,
+        image=image,
+        pluto_uri=pluto_uri,
+        on_status=on_status,
+    )
