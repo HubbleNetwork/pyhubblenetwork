@@ -227,15 +227,20 @@ hubblenetwork sat scan -o json --timeout 60 -n 20
 # Decrypt payloads locally with a device key (hex or base64, 16 or 32 bytes)
 hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b"
 
+# Force the DEVICE_UPTIME counter instead of auto-detecting
+hubblenetwork sat scan --key "<key>" --counter-mode DEVICE_UPTIME
+
 # Show packets the key can't decrypt too (adds a DECRYPT OK/FAIL column)
 hubblenetwork sat scan --key "<key>" --show-failed-decryption
 ```
 
 When `--key` is supplied, each packet's payload is decrypted locally using the
-same AES-CTR scheme as BLE. Satellite packets always use the UNIX_TIME (day-based)
-counter; `--days` controls how many days around each packet's timestamp are
-searched (default 2). Packets the key cannot decrypt are hidden unless
-`--show-failed-decryption` is given.
+same AES-CTR scheme as BLE, which supports both the UNIX_TIME (day-based) and
+DEVICE_UPTIME counter sources. The counter source is auto-detected from the
+packets (and announced) unless `--counter-mode UNIX_TIME|DEVICE_UPTIME` is given.
+For the UNIX_TIME counter, `--days` controls how many days around each packet's
+timestamp are searched (default 2). Packets the key cannot decrypt are hidden
+unless `--show-failed-decryption` is given.
 
 The command automatically:
 1. Verifies Docker is available
@@ -257,7 +262,8 @@ for pkt in sat.scan(timeout=60.0, poll_interval=2.0):
 # Or fetch the current packet buffer without managing the container yourself
 packets: list[SatellitePacket] = sat.fetch_packets()
 
-# Decrypt a packet's payload locally (UNIX_TIME counter)
+# Decrypt a packet's payload locally.
+# counter_mode defaults to UNIX_TIME; pass DEVICE_UPTIME for uptime-based EIDs.
 from hubblenetwork import decrypt_satellite
 
 for pkt in sat.scan(timeout=60.0):
@@ -265,6 +271,7 @@ for pkt in sat.scan(timeout=60.0):
         plaintext = decrypt_satellite(
             key, seq_no=pkt.seq_num, auth_tag=pkt.auth_tag,
             encrypted_payload=pkt.payload, timestamp=pkt.timestamp,
+            counter_mode="UNIX_TIME",
         )
         if plaintext is not None:
             print(pkt.device_id, plaintext)
