@@ -250,6 +250,31 @@ The command automatically:
 5. Streams new packets as they arrive (deduplicating by device ID + sequence number)
 6. Stops and removes the container on exit or Ctrl+C
 
+### One-shot capture (`record` / `signal-report`)
+
+Alongside the live `scan` stream, two one-shot commands record for a fixed
+duration, save a single file, and exit. Both accept `--output PATH` (default: an
+auto-generated timestamped name), `--mock` (use the simulated receiver — no
+PlutoSDR required), `--pluto-uri`, and `--debug`.
+
+```bash
+# Capture 10 s of raw IQ samples to a .npy file (for offline analysis / reprocessing)
+hubblenetwork sat record 10
+hubblenetwork sat record 10 --output capture.npy
+
+# Record 10 s and save an RF signal-diagnostic report to a .txt file
+hubblenetwork sat signal-report 10
+hubblenetwork sat signal-report 10 --output report.txt --mock
+```
+
+- **`record`** captures the raw radio signal only — no decoding. The output is a
+  NumPy `.npy` file of IQ samples.
+- **`signal-report`** records IQ, then re-analyzes it offline into a plain-text
+  **link-health diagnostic**: per-symbol timing/drift, channel-hopping
+  validation, amplitude/SNR, and chipset metrics. It reports on signal quality
+  and does **not** contain decoded packet payloads — to receive payloads, use
+  `sat scan` (optionally with `--key`).
+
 ### Python API
 
 ```python
@@ -261,6 +286,10 @@ for pkt in sat.scan(timeout=60.0, poll_interval=2.0):
 
 # Or fetch the current packet buffer without managing the container yourself
 packets: list[SatellitePacket] = sat.fetch_packets()
+
+# One-shot captures (manage the container, run once, return the result)
+iq_bytes: bytes = sat.record(10.0)          # raw IQ samples (.npy file body)
+report: str = sat.signal_report(10.0)       # plain-text RF signal-diagnostic report
 
 # Decrypt a packet's payload locally.
 # counter_mode defaults to UNIX_TIME; pass DEVICE_UPTIME for uptime-based EIDs.

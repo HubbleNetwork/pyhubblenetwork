@@ -355,7 +355,7 @@ def _running_container(
 ) -> Iterator[None]:
     """Pull, start, and wait for the receiver container to be ready; stop it on exit.
 
-    Shared lifecycle for ``scan`` and the one-shot ``record``/``analyze``
+    Shared lifecycle for ``scan`` and the one-shot ``record``/``signal_report``
     operations: ensure Docker is available, pull *image*, start the
     container, wait for its API (and the SDR, unless *wait_for_sdr* is
     ``False``), then yield. The container is guaranteed to be stopped when
@@ -472,7 +472,7 @@ def _run_one_shot(
 ) -> "bytes | str":
     """Run *action* against a freshly started receiver container, then tear it down.
 
-    Shared lifecycle for the one-shot ``record``/``analyze`` operations, which
+    Shared lifecycle for the one-shot ``record``/``signal_report`` operations, which
     (unlike ``scan``) make a single blocking request instead of polling.
 
     When *mock* is ``True`` the container is started in mock mode, the same
@@ -522,7 +522,7 @@ def record(
     )
 
 
-def analyze(
+def signal_report(
     duration: float,
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
@@ -531,16 +531,20 @@ def analyze(
     pluto_uri: Optional[str] = None,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """Record for *duration* seconds and decode packets, managing the Docker lifecycle.
+    """Record for *duration* seconds and build an RF signal-diagnostic report.
+
+    Records raw IQ, then re-analyzes it offline to produce a plain-text report
+    of per-symbol timing/drift, channel-hopping validation, amplitude/SNR, and
+    chipset metrics. Manages the Docker lifecycle.
 
     When *mock* is ``True`` the container is started in mock mode, the same
     as ``scan``'s *mock* parameter.
 
-    Returns the plaintext decoded-packet log produced by the receiver.
+    Returns the plain-text diagnostic report produced by the receiver.
     """
     return _run_one_shot(
         lambda p: record_analyze(duration, port=p),
-        action_status=f"Recording and analyzing for {duration}s...",
+        action_status=f"Recording signal diagnostic for {duration}s...",
         port=port,
         mock=mock,
         image=image,
