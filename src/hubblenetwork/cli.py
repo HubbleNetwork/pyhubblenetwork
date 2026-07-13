@@ -48,31 +48,31 @@ SYMBOL_TIME = 8.0
 # loss, but the frequency will be correct
 TIMING_TOLERANCE = 4.0
 
-_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"  # used to name default --record/--analyze output files
+_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"  # used to name default sat record/signal-report output files
 
 
 def _default_iq_capture_name() -> str:
     return f"iq_capture_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.npy"
 
 
-def _default_analysis_name() -> str:
-    return f"analysis_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.txt"
+def _default_signal_report_name() -> str:
+    return f"signal_report_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.txt"
 
 
-# One entry per ``--record``/``--analyze`` mode, keyed by the sat.py function
-# name to call: the in-progress status label, how to name the output file
-# when --output is omitted, and the mode to open that file in. Looked up via
-# getattr(sat_mod, mode) rather than storing the function directly, so tests
-# that patch ``hubblenetwork.cli.sat_mod`` still take effect.
+# One entry per ``sat record`` / ``sat signal-report`` one-shot command, keyed
+# by the sat.py function name to call: the in-progress status label, how to
+# name the output file when --output is omitted, and the mode to open that file
+# in. Looked up via getattr(sat_mod, mode) rather than storing the function
+# directly, so tests that patch ``hubblenetwork.cli.sat_mod`` still take effect.
 _ONE_SHOT_MODES = {
     "record": {
         "label": "Capturing IQ samples",
         "default_name": _default_iq_capture_name,
         "write_mode": "wb",
     },
-    "analyze": {
-        "label": "Recording and analyzing",
-        "default_name": _default_analysis_name,
+    "signal_report": {
+        "label": "Recording signal diagnostic",
+        "default_name": _default_signal_report_name,
         "write_mode": "w",
     },
 }
@@ -3135,6 +3135,14 @@ def sat() -> None:
     """Satellite (PlutoSDR) utilities."""
 
 
+def _enable_sat_debug_logging(debug: bool) -> None:
+    """Route the ``hubblenetwork.sat`` logger to stderr at DEBUG when *debug* is set."""
+    if debug:
+        sat_logger = logging.getLogger("hubblenetwork.sat")
+        sat_logger.setLevel(logging.DEBUG)
+        sat_logger.addHandler(_handler)
+
+
 def _run_sat_scan(
     *,
     mock: bool,
@@ -3150,56 +3158,11 @@ def _run_sat_scan(
     counter_mode: str = UNIX_TIME,
     auto_detect_ctr: bool = False,
     show_failed_decryption: bool = False,
-    record: Optional[float] = None,
-    analyze: Optional[float] = None,
-    output_path: Optional[str] = None,
 ) -> None:
     """Shared implementation for ``sat scan`` and ``sat mock-scan``."""
     mode_label = "mock satellite receiver" if mock else "satellite receiver"
 
-    is_one_shot = record is not None or analyze is not None
-    if record is not None and analyze is not None:
-        raise click.UsageError("--record and --analyze are mutually exclusive")
-
-    if debug:
-        sat_logger = logging.getLogger("hubblenetwork.sat")
-        sat_logger.setLevel(logging.DEBUG)
-        sat_logger.addHandler(_handler)
-
-    if is_one_shot:
-        try:
-            sat_mod.ensure_docker_available()
-        except sat_mod.DockerError as exc:
-            _report_sat_error(exc)
-
-        click.secho(f"[INFO] Web GUI: {sat_mod.web_ui_url()}", fg="green")
-
-        def _on_status(msg: str) -> None:
-            click.secho(f"[INFO] {msg}", fg="cyan", err=True)
-
-        duration = record if record is not None else analyze
-        mode = "record" if record is not None else "analyze"
-        cfg = _ONE_SHOT_MODES[mode]
-        out_path = output_path or cfg["default_name"]()
-
-        click.secho(f"[INFO] {cfg['label']} for {duration}s... (Press Ctrl+C to stop)")
-        try:
-            result = getattr(sat_mod, mode)(
-                duration,
-                mock=mock,
-                pluto_uri=pluto_uri,
-                on_status=_on_status,
-            )
-        except (sat_mod.DockerError, sat_mod.SatelliteError) as exc:
-            _report_sat_error(exc)
-        except KeyboardInterrupt:
-            click.secho("\n[INFO] Cancelled.", fg="yellow", err=True)
-            sys.exit(130)
-
-        with open(out_path, cfg["write_mode"]) as f:
-            f.write(result)
-        click.secho(f"[SUCCESS] Saved to {out_path}", fg="green")
-        return
+    _enable_sat_debug_logging(debug)
 
     printer_class = _SAT_STREAMING_PRINTERS.get(
         output_format.lower(), _SatStreamingTablePrinter
@@ -3315,6 +3278,80 @@ def _run_sat_scan(
             )
 
 
+def _run_sat_one_shot(
+    mode: str,
+    duration: float,
+    *,
+    output_path: Optional[str],
+    mock: bool,
+    pluto_uri: Optional[str],
+    debug: bool,
+) -> None:
+    """Shared implementation for the one-shot ``sat record`` / ``sat signal-report`` commands.
+
+    Unlike ``scan``, these start the receiver, make a single blocking request
+    for *duration* seconds, and write the result to a file. *mode* selects the
+    entry in ``_ONE_SHOT_MODES`` and the ``sat_mod`` function to call.
+    """
+    _enable_sat_debug_logging(debug)
+
+    try:
+        sat_mod.ensure_docker_available()
+    except sat_mod.DockerError as exc:
+        _report_sat_error(exc)
+
+    click.secho(f"[INFO] Web GUI: {sat_mod.web_ui_url()}", fg="green")
+
+    def _on_status(msg: str) -> None:
+        click.secho(f"[INFO] {msg}", fg="cyan", err=True)
+
+    cfg = _ONE_SHOT_MODES[mode]
+    out_path = output_path or cfg["default_name"]()
+
+    click.secho(f"[INFO] {cfg['label']} for {duration}s... (Press Ctrl+C to stop)")
+    try:
+        result = getattr(sat_mod, mode)(
+            duration,
+            mock=mock,
+            pluto_uri=pluto_uri,
+            on_status=_on_status,
+        )
+    except (sat_mod.DockerError, sat_mod.SatelliteError) as exc:
+        _report_sat_error(exc)
+    except KeyboardInterrupt:
+        click.secho("\n[INFO] Cancelled.", fg="yellow", err=True)
+        sys.exit(130)
+
+    with open(out_path, cfg["write_mode"]) as f:
+        f.write(result)
+    click.secho(f"[SUCCESS] Saved to {out_path}", fg="green")
+
+
+# Shared by both sat option helpers below; kept in one place so the flag
+# names/help stay in sync across ``sat scan`` and ``sat record``/``signal-report``.
+def _sat_pluto_debug_options():
+    return [
+        click.option("--pluto-uri", "pluto_uri", type=str, default=None,
+                     help="PlutoSDR URI passed to the container (e.g. usb:, ip:192.168.2.1)"),
+        click.option("--debug", is_flag=True, default=False,
+                     help="Enable debug logging to stderr"),
+    ]
+
+
+def _sat_one_shot_options(fn):
+    """Apply the common sat record/signal-report Click options."""
+    for decorator in reversed([
+        click.option("--output", "output_path", type=click.Path(), default=None,
+                     show_default=False,
+                     help="Output file path (default: auto-generated name)"),
+        click.option("--mock", is_flag=True, default=False,
+                     help="Use the mock receiver -- no PlutoSDR hardware required"),
+        *_sat_pluto_debug_options(),
+    ]):
+        fn = decorator(fn)
+    return fn
+
+
 def _sat_scan_options(fn):
     """Apply the common sat scan/mock-scan Click options."""
     for decorator in reversed([
@@ -3333,22 +3370,7 @@ def _sat_scan_options(fn):
                                        case_sensitive=False),
                      default="base64", show_default=True,
                      help="Encoding format for packet payload"),
-        click.option("--pluto-uri", "pluto_uri", type=str, default=None,
-                     help="PlutoSDR URI passed to the container (e.g. usb:, ip:192.168.2.1)"),
-        click.option("--record", type=float, default=None, show_default=False,
-                     help="Instead of streaming packets, capture this many seconds of "
-                          "raw IQ samples and save them to a .npy file. Mutually "
-                          "exclusive with --analyze."),
-        click.option("--analyze", type=float, default=None, show_default=False,
-                     help="Instead of streaming packets, record for this many seconds "
-                          "and save the decoded-packet log to a text file. Mutually "
-                          "exclusive with --record."),
-        click.option("--output", "output_path", type=click.Path(), default=None,
-                     show_default=False,
-                     help="Output file path for --record/--analyze (default: "
-                          "auto-generated name)"),
-        click.option("--debug", is_flag=True, default=False,
-                     help="Enable debug logging to stderr"),
+        *_sat_pluto_debug_options(),
     ]):
         fn = decorator(fn)
     return fn
@@ -3401,16 +3423,14 @@ def sat_scan(ctx, **kwargs) -> None:
     source is auto-detected (UNIX_TIME or DEVICE_UPTIME) unless --counter-mode
     is given explicitly.
 
-    Pass --record or --analyze (mutually exclusive) to capture raw IQ samples
-    or a decoded-packet log to a local file instead of streaming packets.
+    To capture raw IQ samples or an RF signal-diagnostic report to a file
+    instead of streaming, use ``sat record`` or ``sat signal-report``.
 
     Example:
       hubblenetwork sat scan --timeout 30
       hubblenetwork sat scan -o json --timeout 10
       hubblenetwork sat scan -n 5
       hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 60
-      hubblenetwork sat scan --record 10
-      hubblenetwork sat scan --analyze 10 --output analysis.txt
     """
     key = kwargs.get("key")
     counter_mode = kwargs["counter_mode"]
@@ -3441,15 +3461,59 @@ def sat_mock_scan(**kwargs) -> None:
     Uses simulated data -- no PlutoSDR hardware required. Useful for testing
     the satellite scanning interface.
 
-    Pass --record or --analyze (mutually exclusive) to capture simulated IQ
-    samples or a decoded-packet log to a local file instead of streaming.
+    To capture simulated IQ samples or an RF signal-diagnostic report to a file
+    instead of streaming, use ``sat record --mock`` or ``sat signal-report --mock``.
 
     Example:
       hubblenetwork sat mock-scan --timeout 30
       hubblenetwork sat mock-scan -o json -n 5
-      hubblenetwork sat mock-scan --record 10
     """
     _run_sat_scan(mock=True, **kwargs)
+
+
+@sat.command("record")
+@click.argument("duration", type=float)
+@_sat_one_shot_options
+def sat_record(duration, output_path, mock, pluto_uri, debug) -> None:
+    """
+    Capture DURATION seconds of raw IQ samples and save them to a .npy file.
+
+    Requires Docker. Records the raw radio signal without decoding it, for
+    offline analysis or reprocessing. Pass --mock to use the simulated
+    receiver instead of a PlutoSDR.
+
+    Example:
+      hubblenetwork sat record 10
+      hubblenetwork sat record 10 --output capture.npy
+      hubblenetwork sat record 10 --mock
+    """
+    _run_sat_one_shot(
+        "record", duration, output_path=output_path, mock=mock,
+        pluto_uri=pluto_uri, debug=debug,
+    )
+
+
+@sat.command("signal-report")
+@click.argument("duration", type=float)
+@_sat_one_shot_options
+def sat_signal_report(duration, output_path, mock, pluto_uri, debug) -> None:
+    """
+    Record DURATION seconds and save an RF signal-diagnostic report to a text file.
+
+    Requires Docker. Records raw IQ, then re-analyzes it offline into a
+    plain-text report of per-symbol timing/drift, channel-hopping validation,
+    amplitude/SNR, and chipset metrics -- a link-health diagnostic, not packet
+    payloads. Pass --mock to use the simulated receiver instead of a PlutoSDR.
+
+    Example:
+      hubblenetwork sat signal-report 10
+      hubblenetwork sat signal-report 10 --output report.txt
+      hubblenetwork sat signal-report 10 --mock
+    """
+    _run_sat_one_shot(
+        "signal_report", duration, output_path=output_path, mock=mock,
+        pluto_uri=pluto_uri, debug=debug,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:

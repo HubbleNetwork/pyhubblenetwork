@@ -575,7 +575,7 @@ class TestRunningContainer:
 
 
 # ---------------------------------------------------------------------------
-# sat.record / sat.analyze
+# sat.record / sat.signal_report
 # ---------------------------------------------------------------------------
 
 
@@ -648,7 +648,7 @@ class TestRecord:
         mock_wait_sdr.assert_not_called()
 
 
-class TestAnalyze:
+class TestSignalReport:
     @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
     @patch("hubblenetwork.sat.stop_container")
     @patch("hubblenetwork.sat._wait_for_sdr")
@@ -657,17 +657,17 @@ class TestAnalyze:
     @patch("hubblenetwork.sat.pull_image")
     @patch("hubblenetwork.sat.ensure_docker_available")
     @patch("hubblenetwork.sat.record_analyze")
-    def test_analyzes_and_returns_text(
-        self, mock_analyze, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
+    def test_returns_report_text(
+        self, mock_report, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
         mock_image_exists,
     ):
         mock_start.return_value = "container456"
-        mock_analyze.return_value = "device_id=0xAA seq=1\n"
+        mock_report.return_value = "=== Hubble sat-record diagnostic ===\n"
 
-        result = sat.analyze(10)
+        result = sat.signal_report(10)
 
-        assert result == "device_id=0xAA seq=1\n"
-        mock_analyze.assert_called_once_with(10, port=sat.API_PORT)
+        assert result == "=== Hubble sat-record diagnostic ===\n"
+        mock_report.assert_called_once_with(10, port=sat.API_PORT)
         mock_stop.assert_called_once_with("container456")
 
 
@@ -840,25 +840,24 @@ class TestSatMockScanCli:
 
 
 # ---------------------------------------------------------------------------
-# CLI - sat scan/mock-scan --record / --analyze
+# CLI - sat record / sat signal-report
 # ---------------------------------------------------------------------------
 
 
-class TestSatRecordAnalyzeCli:
+class TestSatRecordSignalReportCli:
     @pytest.fixture
     def runner(self):
         return CliRunner()
 
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
     @patch("hubblenetwork.cli.sat_mod")
-    def test_record_writes_output_file(self, mock_sat, runner, subcommand):
+    def test_record_writes_output_file(self, mock_sat, runner):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
         mock_sat.record.return_value = b"\x93NUMPYfake"
 
         with runner.isolated_filesystem():
             result = runner.invoke(
-                cli, ["sat", subcommand, "--record", "5", "--output", "capture.npy"]
+                cli, ["sat", "record", "5", "--output", "capture.npy"]
             )
             assert result.exit_code == 0
             with open("capture.npy", "rb") as f:
@@ -868,110 +867,97 @@ class TestSatRecordAnalyzeCli:
         assert mock_sat.record.call_args[0][0] == 5.0
 
     @pytest.mark.parametrize(
-        "subcommand,expected_mock", [("scan", False), ("mock-scan", True)]
+        "flags,expected_mock", [([], False), (["--mock"], True)]
     )
     @patch("hubblenetwork.cli.sat_mod")
     def test_record_passes_mock_flag_correctly(
-        self, mock_sat, runner, subcommand, expected_mock
+        self, mock_sat, runner, flags, expected_mock
     ):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
         mock_sat.record.return_value = b""
 
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["sat", subcommand, "--record", "5"])
+            result = runner.invoke(cli, ["sat", "record", "5", *flags])
 
         assert result.exit_code == 0
         assert mock_sat.record.call_args.kwargs["mock"] is expected_mock
 
     @pytest.mark.parametrize(
-        "subcommand,expected_mock", [("scan", False), ("mock-scan", True)]
+        "flags,expected_mock", [([], False), (["--mock"], True)]
     )
     @patch("hubblenetwork.cli.sat_mod")
-    def test_analyze_passes_mock_flag_correctly(
-        self, mock_sat, runner, subcommand, expected_mock
+    def test_signal_report_passes_mock_flag_correctly(
+        self, mock_sat, runner, flags, expected_mock
     ):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
-        mock_sat.analyze.return_value = ""
+        mock_sat.signal_report.return_value = ""
 
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["sat", subcommand, "--analyze", "5"])
+            result = runner.invoke(cli, ["sat", "signal-report", "5", *flags])
 
         assert result.exit_code == 0
-        assert mock_sat.analyze.call_args.kwargs["mock"] is expected_mock
+        assert mock_sat.signal_report.call_args.kwargs["mock"] is expected_mock
 
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
     @patch("hubblenetwork.cli.sat_mod")
-    def test_record_default_output_name(self, mock_sat, runner, subcommand):
+    def test_record_default_output_name(self, mock_sat, runner):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
         mock_sat.record.return_value = b"data"
 
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["sat", subcommand, "--record", "5"])
+            result = runner.invoke(cli, ["sat", "record", "5"])
             assert result.exit_code == 0
             npy_files = [f for f in os.listdir(".") if f.endswith(".npy")]
             assert len(npy_files) == 1
             assert npy_files[0].startswith("iq_capture_")
 
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
     @patch("hubblenetwork.cli.sat_mod")
-    def test_analyze_writes_output_file(self, mock_sat, runner, subcommand):
+    def test_signal_report_writes_output_file(self, mock_sat, runner):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
-        mock_sat.analyze.return_value = "device_id=0xAA seq=1\n"
+        mock_sat.signal_report.return_value = "=== Hubble sat-record diagnostic ===\n"
 
         with runner.isolated_filesystem():
             result = runner.invoke(
-                cli, ["sat", subcommand, "--analyze", "5", "--output", "analysis.txt"]
+                cli, ["sat", "signal-report", "5", "--output", "report.txt"]
             )
             assert result.exit_code == 0
-            with open("analysis.txt") as f:
-                assert f.read() == "device_id=0xAA seq=1\n"
+            with open("report.txt") as f:
+                assert f.read() == "=== Hubble sat-record diagnostic ===\n"
 
-        mock_sat.analyze.assert_called_once()
-        assert mock_sat.analyze.call_args[0][0] == 5.0
+        mock_sat.signal_report.assert_called_once()
+        assert mock_sat.signal_report.call_args[0][0] == 5.0
 
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
     @patch("hubblenetwork.cli.sat_mod")
-    def test_analyze_default_output_name(self, mock_sat, runner, subcommand):
+    def test_signal_report_default_output_name(self, mock_sat, runner):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
-        mock_sat.analyze.return_value = "log\n"
+        mock_sat.signal_report.return_value = "report\n"
 
         with runner.isolated_filesystem():
-            result = runner.invoke(cli, ["sat", subcommand, "--analyze", "5"])
+            result = runner.invoke(cli, ["sat", "signal-report", "5"])
             assert result.exit_code == 0
-            txt_files = [f for f in os.listdir(".") if f.startswith("analysis_")]
+            txt_files = [f for f in os.listdir(".") if f.startswith("signal_report_")]
             assert len(txt_files) == 1
 
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
-    def test_record_and_analyze_mutually_exclusive(self, runner, subcommand):
-        result = runner.invoke(
-            cli, ["sat", subcommand, "--record", "5", "--analyze", "5"]
-        )
-        assert result.exit_code != 0
-        assert "mutually exclusive" in result.output
-
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
     @patch("hubblenetwork.cli.sat_mod")
-    def test_record_docker_error(self, mock_sat, runner, subcommand):
+    def test_record_docker_error(self, mock_sat, runner):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
         mock_sat.record.side_effect = DockerError("Docker is not installed")
 
-        result = runner.invoke(cli, ["sat", subcommand, "--record", "5"])
+        result = runner.invoke(cli, ["sat", "record", "5"])
         assert result.exit_code != 0
         assert "Docker is not installed" in result.output
 
-    @pytest.mark.parametrize("subcommand", ["scan", "mock-scan"])
     @patch("hubblenetwork.cli.sat_mod")
-    def test_analyze_satellite_error(self, mock_sat, runner, subcommand):
+    def test_signal_report_satellite_error(self, mock_sat, runner):
         mock_sat.DockerError = DockerError
         mock_sat.SatelliteError = SatelliteError
-        mock_sat.analyze.side_effect = SatelliteError("receiver not ready")
+        mock_sat.signal_report.side_effect = SatelliteError("receiver not ready")
 
-        result = runner.invoke(cli, ["sat", subcommand, "--analyze", "5"])
+        result = runner.invoke(cli, ["sat", "signal-report", "5"])
         assert result.exit_code != 0
         assert "receiver not ready" in result.output
