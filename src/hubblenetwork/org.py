@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable, Iterator
 
 from . import cloud
 from .crypto import DEVICE_UPTIME, UNIX_TIME
@@ -121,6 +122,39 @@ class Organization:
             device_id=device_id,
         )
 
+    def iter_devices(
+        self, on_page: Callable[[int, int], None] | None = None
+    ) -> Iterator[Device]:
+        """
+        Yield Device objects from the Cloud API “List Devices” endpoint,
+        one page at a time.
+
+        Pagination is handled internally, but nothing is accumulated, so a
+        caller can render or process the first page without waiting for the
+        last one.
+
+        Args:
+            on_page: Optional callback invoked as ``on_page(page_number, total_so_far)``
+                     after each page is fetched. Intended for progress reporting.
+        """
+        continuation_token = None
+        page = 0
+        seen = 0
+        while True:
+            resp, continuation_token = cloud.list_devices(
+                credentials=self.credentials,
+                env=self.env,
+                continuation_token=continuation_token,
+            )
+            page += 1
+            for item in resp["devices"]:
+                seen += 1
+                yield Device.from_json(item)
+            if on_page:
+                on_page(page, seen)
+            if not continuation_token:
+                break
+
     def list_devices(self) -> list[Device]:
         """
         Call the Cloud API “List Devices” endpoint and return Device objects.
@@ -128,33 +162,30 @@ class Organization:
         Returns:
             list[Device]
         """
+        return list(self.iter_devices())
 
-        # Turn each JSON object into a Device
-        devices: list[Device] = []
-
-        continuation_token = None
-        while True:
-            resp, continuation_token = cloud.list_devices(
-                credentials=self.credentials,
-                env=self.env,
-                continuation_token=continuation_token,
-            )
-            raw_list = resp["devices"]
-            for item in raw_list:
-                devices.append(Device.from_json(item))
-            if not continuation_token:
-                break
-
-        return devices
-
-    def retrieve_packets(self, device: Device, days: int = 7) -> list[DecryptedPacket]:
+    def iter_packets(
+        self,
+        device: Device,
+        days: int = 7,
+        on_page: Callable[[int, int], None] | None = None,
+    ) -> Iterator[DecryptedPacket]:
         """
-        Return the most recent decrypted packet for the given device,
-        or None if none exists.
+        Yield decrypted packets for the given device, one page at a time.
+
+        Pagination is handled internally without accumulating results, so a
+        caller can start rendering immediately. A busy device can return tens
+        of thousands of packets.
+
+        Args:
+            device: The device to fetch packets for.
+            days: Number of days to query back from now.
+            on_page: Optional callback invoked as ``on_page(page_number, total_so_far)``
+                     after each page is fetched. Intended for progress reporting.
         """
         continuation_token = None
-
-        packets = []
+        page = 0
+        seen = 0
         while True:
             resp, continuation_token = cloud.retrieve_packets(
                 credentials=self.credentials,
@@ -163,28 +194,34 @@ class Organization:
                 days=days,
                 continuation_token=continuation_token,
             )
+            page += 1
             for packet in resp["packets"]:
-                packets.append(
-                    DecryptedPacket(
-                        timestamp=int(packet["device"]["timestamp"]),
-                        device_id=packet["device"]["id"],
-                        device_name=(
-                            packet["device"].get("name", "")
-                        ),
-                        location=Location(
-                            lat=packet["location"]["latitude"],
-                            lon=packet["location"]["longitude"],
-                        ),
-                        tags=packet["device"]["tags"],
-                        payload=base64.b64decode(packet["device"]["payload"]),
-                        rssi=packet["device"]["rssi"],
-                        counter=packet["device"]["counter"],
-                        sequence=packet["device"]["sequence_number"],
-                    )
+                seen += 1
+                yield DecryptedPacket(
+                    timestamp=int(packet["device"]["timestamp"]),
+                    device_id=packet["device"]["id"],
+                    device_name=packet["device"].get("name", ""),
+                    location=Location(
+                        lat=packet["location"]["latitude"],
+                        lon=packet["location"]["longitude"],
+                    ),
+                    tags=packet["device"]["tags"],
+                    payload=base64.b64decode(packet["device"]["payload"]),
+                    rssi=packet["device"]["rssi"],
+                    counter=packet["device"]["counter"],
+                    sequence=packet["device"]["sequence_number"],
                 )
+            if on_page:
+                on_page(page, seen)
             if not continuation_token:
                 break
-        return packets
+
+    def retrieve_packets(self, device: Device, days: int = 7) -> list[DecryptedPacket]:
+        """
+        Return the most recent decrypted packet for the given device,
+        or None if none exists.
+        """
+        return list(self.iter_packets(device, days=days))
 
     def device_metrics(self, days_back: int = 1) -> dict:
         """Fetch device metrics for this organization."""

@@ -334,7 +334,10 @@ class TestCliAesEaxScan:
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1"])
         assert result.exit_code == 0
-        assert "VERSION" in result.output
+        # V is the protocol-version column; EID and the salt confirm the
+        # AES-EAX fields were parsed rather than skipped.
+        assert " V " in result.output
+        assert f"{pkt.eid:x}" in result.output
 
     @patch("hubblenetwork.cli.ble_mod.scan_single")
     def test_scan_aes_eax_no_key_json(self, mock_scan):
@@ -438,7 +441,8 @@ class TestCliAesEaxScan:
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1"])
         assert result.exit_code == 0
-        assert "VERSION" in result.output
+        assert " V " in result.output
+        assert str(pkt.protocol_version) in result.output
 
     @patch("hubblenetwork.cli.ble_mod.scan_single")
     def test_scan_unknown_packet_json(self, mock_scan):

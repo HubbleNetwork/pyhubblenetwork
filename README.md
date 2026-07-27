@@ -147,15 +147,90 @@ hubblenetwork ble scan --key "base64key=" --counter-mode DEVICE_UPTIME  # counte
 hubblenetwork org get-packets --payload-format string
 ```
 
+Every command lives inside a group, so it is always `hubblenetwork <group> <command>`:
+`org` for the cloud, `ble` for nearby devices, `ready` for provisioning, `sat` for
+satellite, `metrics` for fleet counts. `hubblenetwork --help` prints the full list with
+a one-line description and the required arguments for each, and every command takes
+`--help` for its own options.
+
+You don't have to remember which group a command is in. If you type one at the wrong
+level the CLI finds it for you:
+
+```
+$ hubblenetwork list-devices
+
+Usage: hubblenetwork [OPTIONS] COMMAND [ARGS]...
+Try 'hubblenetwork --help' for help.
+
+Error: No such command 'list-devices'.
+
+  Did you mean:  hubblenetwork org list-devices
+```
+
+The same applies to missing arguments (they say how to find the value), unknown options
+(they list what the command accepts), and missing credentials (they name the environment
+variables and the flags). `validate-credentials` exits 1 when credentials are invalid, so
+scripts can branch on it.
+
 ### Payload format option
 
-Commands that output packet data (`ble scan`, `ble detect`, `org get-packets`) support the `--payload-format` flag to control how payloads are displayed:
+Commands that output packet data (`ble scan`, `sat scan`, `ble detect`, `org get-packets`) support the `--payload-format` flag to control how payloads are displayed:
 
-* `base64` (default) — encode payloads as base64
+* `auto` — printable ASCII shows as text, anything else as uppercase hex
+* `base64` — encode payloads as base64
 * `hex` — display payloads as hexadecimal
 * `string` — decode payloads as UTF-8 text (falls back to `<invalid UTF-8>` if bytes are not valid UTF-8)
 
 This applies to all output formats (tabular, json, csv).
+
+Defaults differ by output format, because a person and a program want different
+things. Tabular output on `ble scan`, `sat scan` and `org get-packets` defaults to
+`auto`, so a decrypted payload reads as `T=21.4` instead of `VD0yMS40`. JSON and CSV
+always default to `base64` so the machine contract stays stable. An explicit
+`--payload-format` always wins.
+
+### Organization commands
+
+`org list-devices` and `org get-packets` stream rows as pages arrive, so the first
+rows appear in about a second rather than after the whole window downloads. A busy
+device can hold tens of thousands of packets; Ctrl+C stops early and still prints a
+summary, and `--limit N` caps the run (it says how it stopped, never silently).
+
+```bash
+hubblenetwork org info
+hubblenetwork org list-devices              # streams, tags summarised once
+hubblenetwork org list-devices -f json      # machine-readable
+hubblenetwork org list-devices -n 20
+hubblenetwork org get-packets DEVICE_ID -n 50 --debug
+```
+
+`list-devices` takes `--format tabular|json` and `--limit`. `get-packets` takes
+`--limit` and `--debug` (which adds `EPOCH`, `CTR` and `SEQ` columns). As with the
+scan commands, rows go to stdout and headings, progress and summaries go to stderr.
+
+The SDK mirrors this: `Organization.iter_devices()` and `Organization.iter_packets()`
+are generators that yield as pages arrive, and both accept an `on_page(page, total)`
+callback for progress. `list_devices()` and `retrieve_packets()` still return lists.
+
+### Scan output layout
+
+`ble scan` and `sat scan` print one line per packet with a signal bar, and close
+with a summary on stderr:
+
+```
+  TIME     RSSI       V EID              CTR/SEQ PAYLOAD
+  ───────────────────────────────────────────────────────────────────────────
+✓ 00:06:40  -62 ███▏  2 9c4e2ab77d3f0e1a   20320 T=21.4,B=87
+✗ 00:06:49  -81 █▋    2 9c4e2ab77d3f0e1d       - -
+  ───────────────────────────────────────────────────────────────────────────
+
+2 packets  ·  1 decrypted, 1 failed  ·  RSSI -62 to -81 dBm  ·  12s
+```
+
+Packet rows go to stdout and everything else (the scanning notice, detection
+lines, the summary) goes to stderr, so `hubblenetwork ble scan > packets.txt`
+captures data only. Pass `--debug` to add the forensic columns: `EPOCH`, `TAG`
+and `SALT` for `ble scan`, `RS_CORR`, `SYM_MS` and `GAP_MS` for `sat scan`.
 
 ## Validating a device end-to-end
 
@@ -230,7 +305,7 @@ hubblenetwork sat scan --key "a562a2f7e4c62bed52ab09633878f62b"
 # Force the DEVICE_UPTIME counter instead of auto-detecting
 hubblenetwork sat scan --key "<key>" --counter-mode DEVICE_UPTIME
 
-# Show packets the key can't decrypt too (adds a DECRYPT OK/FAIL column)
+# Show packets the key can't decrypt too (adds a ✓/✗ decrypt mark per row)
 hubblenetwork sat scan --key "<key>" --show-failed-decryption
 ```
 

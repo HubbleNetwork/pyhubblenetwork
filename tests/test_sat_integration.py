@@ -69,4 +69,4 @@ class TestMockScanCLI:
             ["sat", "mock-scan", "--timeout", "15", "-n", "2"],
         )
         assert result.exit_code == 0
-        assert "packet(s) received" in result.output
+        assert "packets" in result.output
