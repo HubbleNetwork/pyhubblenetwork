@@ -299,3 +299,36 @@ class TestSummaryReconciles:
         res = _scan([], [_eax()])
         for line in res.stdout.splitlines():
             assert line == line.rstrip(), repr(line)
+
+
+class TestBleDetectPayloadFormat:
+    """`ble detect` prints payloads too, so it follows the same auto default."""
+
+    @staticmethod
+    def _detect(args):
+        pkt = _eax()
+        with patch("hubblenetwork.cli.ble_mod.scan_single", return_value=pkt), \
+             patch("hubblenetwork.cli.decrypt_eax",
+                   return_value=_decrypted(payload=b"T=21.4")):
+            return CliRunner().invoke(
+                cli, ["ble", "detect", "--key", KEY_HEX, "-t", "1", *args]
+            )
+
+    def test_tabular_defaults_to_auto(self):
+        res = self._detect([])
+        assert res.exit_code == 0
+        assert "T=21.4" in res.stdout
+        assert "VD0yMS40" not in res.stdout
+
+    def test_json_keeps_base64(self):
+        res = self._detect(["-o", "json"])
+        assert res.exit_code == 0
+        assert "VD0yMS40" in res.stdout
+
+    def test_explicit_format_wins(self):
+        res = self._detect(["--payload-format", "base64"])
+        assert "VD0yMS40" in res.stdout
+
+    def test_auto_is_an_accepted_choice(self):
+        res = CliRunner().invoke(cli, ["ble", "detect", "--help"])
+        assert "auto" in res.stdout
