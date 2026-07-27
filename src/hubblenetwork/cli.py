@@ -1393,10 +1393,13 @@ def ble() -> None:
 @click.option(
     "--payload-format",
     "payload_format",
-    type=click.Choice(["base64", "hex", "string"], case_sensitive=False),
+    type=click.Choice(["auto", "base64", "hex", "string"], case_sensitive=False),
     default="base64",
     show_default=True,
-    help="Encoding format for packet payload",
+    help=(
+        "Encoding format for packet payload. Tabular output defaults to 'auto' "
+        "(printable ASCII as text, otherwise hex); JSON always defaults to base64."
+    ),
 )
 @click.option(
     "--debug",
@@ -1427,6 +1430,7 @@ def ble_detect(
       hubblenetwork ble detect -k "q9vH3u2J4aN8Rw1KpZsO+A==" -o tabular
     """
     use_json = output_format.lower() == "json"
+    payload_format = _effective_payload_format(ctx, payload_format, not use_json)
 
     if counter_mode == DEVICE_UPTIME:
         days_source = ctx.get_parameter_source("days")

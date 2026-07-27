@@ -252,3 +252,52 @@ class TestGroupsUseTheCustomClass:
                 for sub in cmd.commands.values():
                     walk(sub)
         walk(cli)
+
+
+class TestReadmeStaysTrue:
+    """Stale docs teach the old interface with the new one's confidence."""
+
+    @staticmethod
+    def _readme_commands():
+        import pathlib
+        import re
+        import shlex
+
+        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+        found = []
+        for block in re.findall(r"```bash\n(.*?)```", text, re.S):
+            for line in block.splitlines():
+                line = line.split("#")[0].strip().rstrip("\\").strip()
+                if line.startswith("hubblenetwork "):
+                    found.append(shlex.split(line)[1:])
+        return found
+
+    def test_readme_has_command_examples(self):
+        assert len(self._readme_commands()) >= 20
+
+    def test_every_readme_command_resolves(self):
+        """Asking for --help proves the path and every flag exist."""
+        broken = []
+        for args in self._readme_commands():
+            res = _run(args + ["--help"])
+            out = _plain(res)
+            if "No such command" in out or "No such option" in out:
+                broken.append((" ".join(args), out.strip().splitlines()[-1]))
+        assert not broken, broken
+
+    def test_readme_import_block_matches_the_package(self):
+        import pathlib
+        import re
+
+        import hubblenetwork
+
+        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+        block = re.search(r"from hubblenetwork import \(\n(.*?)\)", text, re.S)
+        assert block, "README lost its import example"
+        names = [
+            n.strip().rstrip(",")
+            for n in block.group(1).replace("\n", " ").split(",")
+            if n.strip()
+        ]
+        missing = [n for n in names if not hasattr(hubblenetwork, n)]
+        assert not missing, missing

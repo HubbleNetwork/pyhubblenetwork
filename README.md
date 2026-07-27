@@ -34,7 +34,11 @@
 
 - Python **3.9+** (3.11/3.12 recommended)
 - BLE platform prerequisites (only needed if you use `ble.scan()`):
-  - **macOS**: CoreBluetooth; run in a regular user session (GUI).
+  - **macOS**: CoreBluetooth. Run from a real terminal app and grant it Bluetooth
+    access when prompted. macOS kills any process whose executable has no
+    `NSBluetoothAlwaysUsageDescription` in an Info.plist, and a bare Python binary
+    has none — see [Troubleshooting](#troubleshooting) if you hit a crash rather
+    than a permission prompt.
   - **Linux**: BlueZ required; user must have permission to access the BLE adapter (often `bluetooth` group).
   - **Windows**: Requires a compatible BLE stack/adapter.
 - Satellite scanning prerequisites (only needed if you use `sat.scan()`):
@@ -53,10 +57,9 @@ pipx install pyhubblenetwork
 
 ### Developers (editable install)
 
-From the repo root (recommended):
+From the repo root:
 
 ```bash
-cd python
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
 ```
@@ -135,7 +138,7 @@ for pkt in sat.scan(timeout=60.0):
 
 Docker must be running before calling `sat.scan()`. The PlutoSDR dongle must be connected.
 
-## CLI usage (optional)
+## CLI usage
 
 If installed, the `hubblenetwork` command is available:
 
@@ -144,7 +147,7 @@ hubblenetwork --help
 hubblenetwork ble scan
 hubblenetwork ble scan --payload-format hex
 hubblenetwork ble scan --key "base64key=" --counter-mode DEVICE_UPTIME  # counter-based EID
-hubblenetwork org get-packets --payload-format string
+hubblenetwork org get-packets <id> --payload-format string
 ```
 
 Every command lives inside a group, so it is always `hubblenetwork <group> <command>`:
@@ -181,13 +184,11 @@ Commands that output packet data (`ble scan`, `sat scan`, `ble detect`, `org get
 * `hex` — display payloads as hexadecimal
 * `string` — decode payloads as UTF-8 text (falls back to `<invalid UTF-8>` if bytes are not valid UTF-8)
 
-This applies to all output formats (tabular, json, csv).
-
-Defaults differ by output format, because a person and a program want different
-things. Tabular output on `ble scan`, `sat scan` and `org get-packets` defaults to
-`auto`, so a decrypted payload reads as `T=21.4` instead of `VD0yMS40`. JSON and CSV
-always default to `base64` so the machine contract stays stable. An explicit
-`--payload-format` always wins.
+All four values work with every output format, but the **default** differs by
+format, because a person and a program want different things. Tabular output
+defaults to `auto`, so a decrypted payload reads as `T=21.4` rather than
+`VD0yMS40`. JSON and CSV default to `base64` so the machine contract stays
+stable. An explicit `--payload-format` always wins.
 
 ### Organization commands
 
@@ -201,7 +202,7 @@ hubblenetwork org info
 hubblenetwork org list-devices              # streams, tags summarised once
 hubblenetwork org list-devices -f json      # machine-readable
 hubblenetwork org list-devices -n 20
-hubblenetwork org get-packets DEVICE_ID -n 50 --debug
+hubblenetwork org get-packets <id> -n 50 --debug
 ```
 
 `list-devices` takes `--format tabular|json` and `--limit`. `get-packets` takes
@@ -218,14 +219,20 @@ callback for progress. `list_devices()` and `retrieve_packets()` still return li
 with a summary on stderr:
 
 ```
-  TIME     RSSI       V EID              CTR/SEQ PAYLOAD
-  ───────────────────────────────────────────────────────────────────────────
-✓ 00:06:40  -62 ███▏  2 9c4e2ab77d3f0e1a   20320 T=21.4,B=87
-✗ 00:06:49  -81 █▋    2 9c4e2ab77d3f0e1d       - -
-  ───────────────────────────────────────────────────────────────────────────
+    TIME     RSSI       V EID              CTR/SEQ PAYLOAD
+─────────────────────────────────────────────────────────────────────────────
+✓   00:06:40  -62 ███▏  2 9c4e2ab77d3f0e1a   20320 T=21.4,B=87
+✓   00:06:43  -66 ██▉   2 9c4e2ab77d3f0e1b   20321 T=21.4,B=87
+✗   00:06:49  -74 ██▏   2 9c4e2ab77d3f0e1d       - D307912C66BA4018E5
+─────────────────────────────────────────────────────────────────────────────
 
-2 packets  ·  1 decrypted, 1 failed  ·  RSSI -62 to -81 dBm  ·  12s
+4 packets  ·  3 decrypted, 1 failed  ·  RSSI -62 to -74 dBm  ·  12s
 ```
+
+The bar next to RSSI is signal strength: length is the magnitude, so you can watch
+it shrink as you walk away from a device. The `✓`/`✗` mark only appears with
+`--show-failed-decryption`; the mark carries the state on its own, so it still reads
+correctly with `NO_COLOR=1` or piped to a file.
 
 Packet rows go to stdout and everything else (the scanning notice, detection
 lines, the summary) goes to stderr, so `hubblenetwork ble scan > packets.txt`
@@ -293,7 +300,7 @@ hubblenetwork sat scan --timeout 30
 # Stop after receiving 5 packets
 hubblenetwork sat scan -n 5
 
-# JSON output (one object per line)
+# JSON output (a single array, streamed as packets arrive)
 hubblenetwork sat scan -o json
 
 # Combine options
@@ -412,10 +419,13 @@ Import from the package top-level for a stable surface:
 
 ```python
 from hubblenetwork import (
-    ble, cloud, sat,
+    ble, cloud, ready, sat,
     Organization, Device, Credentials, Environment,
-    EncryptedPacket, DecryptedPacket, SatellitePacket, Location,
-    decrypt, InvalidCredentialsError,
+    EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket,
+    DecryptedPacket, SatellitePacket, Location,
+    decrypt, decrypt_eax, decrypt_satellite,
+    UNIX_TIME, DEVICE_UPTIME,
+    InvalidCredentialsError,
 )
 ```
 
@@ -428,6 +438,11 @@ Key objects & functions:
 * `Location` data about where a packet was seen.
 * `ble.scan` function for locally scanning for devices with BLE.
 * `sat.scan` generator for receiving satellite packets via PlutoSDR (requires Docker).
+* `Organization.iter_devices()` / `iter_packets()` generators that yield as each API
+  page arrives instead of accumulating, so you can start processing immediately on a
+  device with tens of thousands of packets. Both take an optional
+  `on_page(page, total_so_far)` callback. `list_devices()` and `retrieve_packets()`
+  are `list()` wrappers over them and still return lists.
 
 See code for full details.
 
@@ -436,7 +451,6 @@ See code for full details.
 Set up a virtualenv and install dev deps:
 
 ```bash
-cd python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
@@ -451,7 +465,19 @@ ruff check src
 ## Troubleshooting
 
 * **`ble.scan()` finds nothing**: verify BLE permissions and adapter state; try increasing `timeout`.
-* **Auth errors**: confirm `Organization(org_id, api_token)` or env vars are set; check token scope/expiry.
+* **macOS: `ble scan` crashes instead of prompting for Bluetooth** — you'll see
+  `Termination Reason: Namespace TCC` and a message about a missing
+  `NSBluetoothAlwaysUsageDescription` key. macOS refuses CoreBluetooth to any
+  executable without that key in an Info.plist, and Homebrew's `python3` binary has
+  no Info.plist at all. Run from a real terminal app (Terminal, iTerm) rather than an
+  embedded IDE shell and grant it Bluetooth under System Settings → Privacy &
+  Security → Bluetooth. If it still aborts, run the CLI through a small app bundle
+  that carries the key; the framework build at
+  `$(brew --prefix)/Frameworks/Python.framework/Versions/<ver>/Resources/Python.app`
+  is a usable starting point to copy and amend.
+* **Auth errors**: confirm `Organization(org_id, api_token)` or env vars are set; check
+  token scope/expiry. `hubblenetwork validate-credentials` reports which environment
+  accepted them and exits 1 if neither did, so it is safe to use in a script.
 * **Import errors**: ensure you installed into the Python you’re running (`python -m pip …`). Prefer `pipx` for CLI-only usage.
 * **`DockerError: Docker is not available`**: Docker daemon is not running. Start Docker Desktop (macOS/Windows) or `sudo systemctl start docker` (Linux).
 * **`DockerError: The ‘docker’ Python package is required`**: run `pip install docker` (it is bundled with `pyhubblenetwork` but may be missing in some environments).
