@@ -164,8 +164,10 @@ class TestOrgRetrievePackets:
         org.credentials = MagicMock()
         org.env = MagicMock()
 
+        # Parsing lives in the iter_packets generator; retrieve_packets is a
+        # thin list() wrapper over it.
         with patch("hubblenetwork.org.cloud.retrieve_packets", return_value=(api_resp, None)):
-            packets = Organization.retrieve_packets(org, MagicMock())
+            packets = list(Organization.iter_packets(org, MagicMock()))
 
         assert len(packets) == 1
         pkt = packets[0]
@@ -202,7 +204,8 @@ class TestOrgRetrievePackets:
         with patch("hubblenetwork.cli.Organization") as mock_org_cls:
             mock_org_cls.return_value = MagicMock(spec=Organization)
             mock_org = mock_org_cls.return_value
-            mock_org.retrieve_packets.return_value = [
+            # Tabular output streams through iter_packets.
+            mock_org.iter_packets.return_value = iter([
                 DecryptedPacket(
                     timestamp=1700000000,
                     device_id="dev-abc",
@@ -214,7 +217,7 @@ class TestOrgRetrievePackets:
                     counter=1,
                     sequence=0,
                 )
-            ]
+            ])
             result = runner.invoke(
                 cli,
                 ["org", "--org-id", "fake-org", "--token", "fake-token",

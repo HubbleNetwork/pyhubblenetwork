@@ -752,7 +752,7 @@ class TestSatScanCli:
             ["sat", "scan", "-n", "3", "--timeout", "5", "--poll-interval", "0.1"],
         )
         assert result.exit_code == 0
-        assert "3 packet(s) received" in result.output
+        assert "3 packets" in result.output
 
     @patch("hubblenetwork.cli.sat_mod")
     def test_docker_not_available(self, mock_sat, runner):
@@ -828,7 +828,7 @@ class TestSatMockScanCli:
             ["sat", "mock-scan", "-n", "3", "--timeout", "5", "--poll-interval", "0.1"],
         )
         assert result.exit_code == 0
-        assert "3 packet(s) received" in result.output
+        assert "3 packets" in result.output
 
     @patch("hubblenetwork.cli.sat_mod")
     def test_docker_not_available(self, mock_sat, runner):

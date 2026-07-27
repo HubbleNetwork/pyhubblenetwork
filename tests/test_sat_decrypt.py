@@ -278,7 +278,7 @@ class TestSatScanKeyCli:
              "--poll-interval", "0.1"],
         )
         assert result.exit_code == 0
-        assert "0 packet(s) received" in result.output
+        assert "No packets in" in result.output
 
     def test_show_failed_decryption(self, runner, monkeypatch):
         bad = SatellitePacket(
@@ -298,8 +298,8 @@ class TestSatScanKeyCli:
              "--show-failed-decryption", "--timeout", "1", "--poll-interval", "0.1"],
         )
         assert result.exit_code == 0
-        assert "FAIL" in result.output
-        assert "1 packet(s) received" in result.output
+        assert "\u2717" in result.output  # failed-decrypt mark
+        assert "1 packets" in result.output
 
     def test_decrypts_payload_json(self, runner, monkeypatch):
         pkt = _make_encrypted_sat_pkt(seq_no=42, plaintext=b"hello")
