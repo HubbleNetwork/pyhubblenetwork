@@ -320,13 +320,12 @@ Write EID configuration to device.
 
 **Command:**
 ```bash
-hubblenetwork ready write-config --format json --address <MAC> --eid-type <TYPE> --pool-size <SIZE> [--timeout SECONDS]
+hubblenetwork ready write-config --format json --address <MAC> --eid-type <TYPE> [--timeout SECONDS]
 ```
 
 **Parameters:**
 - `--address` (required): Device MAC address
 - `--eid-type` (required): "utc" or "counter"
-- `--pool-size` (required): Integer >= 1
 - `--timeout` (optional): Connection timeout in seconds (default: 10)
 
 **Expected Output:**
@@ -346,16 +345,16 @@ hubblenetwork ready write-config --format json --address <MAC> --eid-type <TYPE>
 **Test Examples:**
 ```bash
 # Test UTC mode with pool size 10
-hubblenetwork ready write-config --format json --address <MAC> --eid-type utc --pool-size 10
+hubblenetwork ready write-config --format json --address <MAC> --eid-type utc
 
 # Test counter mode with pool size 1
-hubblenetwork ready write-config --format json --address <MAC> --eid-type counter --pool-size 1
+hubblenetwork ready write-config --format json --address <MAC> --eid-type counter
 ```
 
 **Validation:**
 - Verify success: true
 - Read config after write and compare values
-- Test boundary conditions (pool-size=1, large pool-size)
+- Pool size is fixed at 128 by the protocol and is not settable
 
 ---
 
@@ -413,13 +412,12 @@ Execute complete provisioning workflow: scan → register with backend → write
 
 **Command:**
 ```bash
-hubblenetwork ready provision --format json [--timeout SECONDS] [--eid-type TYPE] [--pool-size SIZE]
+hubblenetwork ready provision [--timeout SECONDS] [--eid-type TYPE]
 ```
 
 **Parameters:**
 - `--timeout` (optional): Per-operation timeout (default: 10)
 - `--eid-type` (optional): "utc" or "counter" (default: "utc")
-- `--pool-size` (optional): Integer >= 1 (default: 5)
 
 **Environment Variables Required:**
 - `HUBBLE_ORG_ID`: Organization ID
@@ -579,7 +577,7 @@ hubblenetwork ready read-status --format json --address <MAC>
 hubblenetwork ready read-config --format json --address <MAC>
 
 # Step 2: Write new config
-hubblenetwork ready write-config --format json --address <MAC> --eid-type utc --pool-size 10
+hubblenetwork ready write-config --format json --address <MAC> --eid-type utc
 
 # Step 3: Verify changes
 hubblenetwork ready read-config --format json --address <MAC>
@@ -632,7 +630,7 @@ hubblenetwork ready read-time --format json --address <MAC>
 **Commands:**
 ```bash
 # Run complete provisioning
-hubblenetwork ready provision --format json
+hubblenetwork ready provision
 
 # Verify provisioning
 hubblenetwork ready info --format json --address <MAC>
@@ -874,7 +872,7 @@ After write operations, always read back to verify changes persisted:
 
 ```bash
 # Write config
-hubblenetwork ready write-config --format json --address <MAC> --eid-type utc --pool-size 10
+hubblenetwork ready write-config --format json --address <MAC> --eid-type utc
 
 # Verify write succeeded
 hubblenetwork ready read-config --format json --address <MAC>
@@ -948,9 +946,9 @@ Quick reference table for all test commands:
 | `read-config` | Read EID config | `--format json --address` | `--timeout` |
 | `read-time` | Read device time | `--format json --address` | `--timeout` |
 | `write-key` | Write encryption key | `--format json --address --key` | `--timeout` |
-| `write-config` | Write EID config | `--format json --address --eid-type --pool-size` | `--timeout` |
+| `write-config` | Write EID config | `--format json --address --eid-type` | `--timeout` |
 | `write-time` | Write device time | `--format json --address` | `--timeout --timestamp` |
-| `provision` | Full provisioning flow | `--format json` | `--timeout --eid-type --pool-size --address` |
+| `provision` | Full provisioning flow | (none) | `--timeout --eid-type --verbose --org-id --token` |
 
 ---
 
