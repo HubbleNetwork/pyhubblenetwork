@@ -218,7 +218,7 @@ For testing framework questions:
 
 ## Version
 
-This testing framework wraps the `hubblenetwork ready` commands. It automatically stays synchronized with CLI changes since it documents exact command syntax.
+This testing framework wraps the `hubblenetwork ready` commands. The examples are checked against the real CLI by `tests/test_cli_help_and_errors.py::TestReadmeStaysTrue`, which resolves every documented invocation through the Click tree, so a flag that stops existing fails the suite rather than sitting here misleading people.
 
 ## License
 

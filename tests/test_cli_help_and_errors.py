@@ -266,20 +266,68 @@ class TestGroupsUseTheCustomClass:
 class TestReadmeStaysTrue:
     """Stale docs teach the old interface with the new one's confidence."""
 
-    @staticmethod
-    def _readme_commands():
+    #: Every markdown file that documents CLI invocations. The plugin skill docs
+    #: had drifted badly (documenting --pool-size and `provision --format json`,
+    #: neither of which exist) precisely because nothing checked them.
+    DOC_GLOBS = ("README.md", "plugins/**/*.md")
+
+    @classmethod
+    def _doc_files(cls):
         import pathlib
-        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        files = []
+        for pattern in cls.DOC_GLOBS:
+            files.extend(sorted(root.glob(pattern)))
+        return files
+
+    @classmethod
+    def _commands_in(cls, path):
+        """Every `hubblenetwork ...` invocation inside a fenced block.
+
+        Tracked line by line rather than with a regex: an optional language tag
+        makes a closing fence indistinguishable from an opening one, which
+        silently captures the prose between blocks instead of the blocks.
+        """
         import shlex
 
-        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+        runnable = {"bash", "sh", "shell", "console"}
         found = []
-        for block in re.findall(r"```bash\n(.*?)```", text, re.S):
-            for line in block.splitlines():
-                line = line.split("#")[0].strip().rstrip("\\").strip()
-                if line.startswith("hubblenetwork "):
-                    found.append(shlex.split(line)[1:])
+        lang = None
+        in_fence = False
+        for line in path.read_text().splitlines():
+            if line.startswith("```"):
+                if in_fence:
+                    in_fence, lang = False, None
+                else:
+                    in_fence = True
+                    lang = line[3:].strip().lower()
+                continue
+            # Only fences tagged as a shell hold runnable examples. A bare fence
+            # is illustrative output, e.g. the README's "wrong command" demo,
+            # which is supposed to fail.
+            if not in_fence or lang not in runnable:
+                continue
+            line = line.split("#")[0].strip().rstrip("\\").strip()
+            line = line.removeprefix("$ ").strip()
+            if not line.startswith("hubblenetwork "):
+                continue
+            # Skip shell plumbing, which is not a single argv. Careful not to
+            # catch the ">" inside placeholders like <id>.
+            if any(tok in line for tok in ("$(", "`", " | ", " && ", " > ", " >> ", "2>")):
+                continue
+            try:
+                found.append(shlex.split(line)[1:])
+            except ValueError:
+                continue
         return found
+
+    @classmethod
+    def _readme_commands(cls):
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        return cls._commands_in(root / "README.md")
 
     def test_readme_has_command_examples(self):
         assert len(self._readme_commands()) >= 20
@@ -293,6 +341,22 @@ class TestReadmeStaysTrue:
             if "No such command" in out or "No such option" in out:
                 broken.append((" ".join(args), out.strip().splitlines()[-1]))
         assert not broken, broken
+
+    def test_every_documented_command_resolves_in_every_doc(self):
+        """Docs that name a flag the CLI does not accept teach the wrong thing."""
+        broken = []
+        for path in self._doc_files():
+            for args in self._commands_in(path):
+                # Strip angle-bracket and UPPER placeholders' values, keeping flags.
+                res = _run(args + ["--help"])
+                out = _plain(res)
+                for marker in ("No such command", "No such option"):
+                    if marker in out:
+                        bad = next(l for l in out.splitlines() if marker in l)
+                        broken.append(f"{path.name}: {' '.join(args)}\n      {bad.strip()}")
+        assert not broken, "docs reference things the CLI does not have:\n  " + "\n  ".join(
+            broken
+        )
 
     def test_readme_import_block_matches_the_package(self):
         import pathlib
