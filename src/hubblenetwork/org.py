@@ -126,7 +126,7 @@ class Organization:
         self, on_page: Callable[[int, int], None] | None = None
     ) -> Iterator[Device]:
         """
-        Yield Device objects from the Cloud API “List Devices” endpoint,
+        Yield Device objects from the Cloud API "List Devices" endpoint,
         one page at a time.
 
         Pagination is handled internally, but nothing is accumulated, so a
@@ -157,7 +157,7 @@ class Organization:
 
     def list_devices(self) -> list[Device]:
         """
-        Call the Cloud API “List Devices” endpoint and return Device objects.
+        Call the Cloud API "List Devices" endpoint and return Device objects.
 
         Returns:
             list[Device]

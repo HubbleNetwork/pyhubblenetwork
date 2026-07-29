@@ -14,10 +14,9 @@ import json
 import logging
 import os
 import time
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
 
 import httpx
 
@@ -139,7 +138,7 @@ def pull_image(image: str = DOCKER_IMAGE) -> None:
     """
     import docker
 
-    logger.info("Pulling %s …", image)
+    logger.info("Pulling %s ...", image)
     client = _get_client()
     try:
         client.images.pull(image)
@@ -239,13 +238,13 @@ def _wait_for_sdr(port: int = API_PORT, timeout: float = 15) -> None:
             time.sleep(0.5)
             continue
         if "sdr_connected" not in status:
-            # Older receiver image without hardware reporting — can't tell.
+            # Older receiver image without hardware reporting, can't tell.
             return
         if status["sdr_connected"]:
             return
         time.sleep(0.5)
     raise SatelliteError(
-        "No PlutoSDR detected — check that the device is plugged in "
+        "No PlutoSDR detected. Check that the device is plugged in "
         f"(receiver reported no SDR connection within {timeout}s)."
     )
 

@@ -9,8 +9,9 @@ involves active GATT connections and characteristic writes.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from bleak import BleakClient, BleakScanner
 

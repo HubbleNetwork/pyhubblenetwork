@@ -32,7 +32,7 @@
 
 ## Requirements & supported platforms
 
-- Python **3.9+** (3.11/3.12 recommended)
+- Python **3.10+** (3.11/3.12 recommended)
 - BLE platform prerequisites (only needed if you use `ble.scan()`):
   - **macOS**: CoreBluetooth. Run from a real terminal app and grant it Bluetooth
     access when prompted. macOS kills any process whose executable has no
@@ -231,8 +231,35 @@ with a summary on stderr:
 
 The bar next to RSSI is signal strength: length is the magnitude, so you can watch
 it shrink as you walk away from a device. The `✓`/`✗` mark only appears with
-`--show-failed-decryption`; the mark carries the state on its own, so it still reads
-correctly with `NO_COLOR=1` or piped to a file.
+`--show-failed-decryption`, and the mark carries the state on its own, so the output
+still reads correctly without colour.
+
+### Terminals that can't do box-drawing
+
+Not every terminal can render `─` and `█`. Writing them to a stdout using a legacy
+code page raises `UnicodeEncodeError`, and because most of them are East Asian Width
+"Ambiguous" they render double-width under a CJK terminal configuration, which shears
+every column.
+
+Pass `--ascii` (or set `HUBBLE_ASCII=1`) for a pure-ASCII rendering with identical
+column widths:
+
+```
+  TIME     RSSI       V EID              CTR/SEQ PAYLOAD
+---------------------------------------------------------------------------
+  15:50:13  -62 ###=  0 2030405              300 0A0B0C0D0E0F
+---------------------------------------------------------------------------
+
+1 packets  |  RSSI -62 to -62 dBm  |  0s
+```
+
+The encoding case is detected automatically, so you only need the flag for the
+double-width one. `--no-ascii` forces the Unicode rendering if the detection is
+wrong for you.
+
+Colour is a separate axis: `--no-color`, `NO_COLOR=1`, or a non-TTY stdout all
+disable it, and `FORCE_COLOR=1` keeps it on where a pipe would otherwise strip it
+(useful in CI). Both flags work on any command, before or after the subcommand.
 
 Packet rows go to stdout and everything else (the scanning notice, detection
 lines, the summary) goes to stderr, so `hubblenetwork ble scan > packets.txt`

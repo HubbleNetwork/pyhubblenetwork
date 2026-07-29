@@ -1,6 +1,6 @@
 # hubblenetwork/__init__.py
 """
-Hubble Python SDK — public API façade.
+Hubble Python SDK: public API facade.
 Import from here; internal module layout may change without notice.
 """
 
