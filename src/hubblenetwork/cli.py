@@ -32,6 +32,7 @@ from hubblenetwork import (
     decrypt,
     decrypt_eax,
     decrypt_satellite,
+    termcaps,
 )
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
@@ -199,7 +200,6 @@ def _format_payload(payload, fmt: str) -> str:
 # a mark plus a semantic color, chrome is a dim rule.
 # ---------------------------------------------------------------------------
 
-_BAR_FRACTIONS = "▏▎▍▌▋▊▉"  # 1/8 .. 7/8 blocks
 _SAT_PAYLOAD_WIDTH = 22
 _BAR_CELLS = 5
 _RSSI_FLOOR = -100  # empty bar at or below this dBm
@@ -214,16 +214,22 @@ def _signal_bar(rssi: int | None) -> str:
     frac = max(0.0, min(1.0, (rssi - _RSSI_FLOOR) / span))
     eighths = round(frac * _BAR_CELLS * 8)
     full, rem = divmod(eighths, 8)
-    bar = "█" * full + (_BAR_FRACTIONS[rem - 1] if rem else "")
+    g = termcaps.glyphs()
+    bar = g.bar_full * full + (g.bar_partials[rem - 1] if rem else "")
     return bar.ljust(_BAR_CELLS)
+
+
+def _rule_line(width: int) -> str:
+    """A dim horizontal rule. The one place a rule glyph is chosen."""
+    return click.style(termcaps.glyphs().rule * width, dim=True)
 
 
 def _decrypt_mark(decrypt_status: str | None) -> str:
     """Decrypt state as a mark plus color. The mark alone carries it under NO_COLOR."""
     if decrypt_status == "ok":
-        return click.style("✓", fg="green")
+        return click.style(termcaps.glyphs().mark_ok, fg="green")
     if decrypt_status == "fail":
-        return click.style("✗", fg="red")
+        return click.style(termcaps.glyphs().mark_fail, fg="red")
     return " "
 
 
@@ -275,7 +281,7 @@ def _scan_summary(
         parts.append(extra)
     parts.append(f"{secs}s")
     click.secho(f"{count} packets", bold=True, err=True, nl=False)
-    click.secho("  ·  " + "  ·  ".join(parts), dim=True, err=True)
+    click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(parts), dim=True, err=True)
     if hidden:
         click.secho(
             f"  {hidden} packet(s) failed to decrypt and were hidden.  "
@@ -398,13 +404,87 @@ def _unknown_command_message(name: str) -> str:
     return "\n".join(lines)
 
 
-class HubbleGroup(click.Group):
+def _ascii_callback(ctx, param, value):
+    if value is not None:
+        termcaps.set_explicit_ascii(value)
+    return value
+
+
+def _no_color_callback(ctx, param, value):
+    if value:
+        termcaps.set_explicit_no_color(True)
+        node = ctx
+        while node is not None:
+            node.color = False
+            node = node.parent
+    return value
+
+
+def _shared_flags() -> list[click.Option]:
+    """Options every command accepts, declared once.
+
+    Injected through `get_params` rather than added per command, so all 26 stay
+    untouched and their signatures do not grow two parameters they never read
+    (`expose_value=False`).
+    """
+    return [
+        click.Option(
+            ["--ascii/--no-ascii"],
+            default=None,
+            show_default=False,
+            is_eager=True,
+            expose_value=False,
+            callback=_ascii_callback,
+            help="Render tables with ASCII only, instead of box-drawing and block glyphs.",
+        ),
+        click.Option(
+            ["--no-color"],
+            is_flag=True,
+            default=False,
+            is_eager=True,
+            expose_value=False,
+            callback=_no_color_callback,
+            help="Disable colour. NO_COLOR in the environment does the same.",
+        ),
+    ]
+
+
+class _SharedFlagsMixin:
+    """Give every command and group the shared rendering flags.
+
+    Hidden on leaves so 26 help screens stay uncluttered, while still parsing:
+    `hubblenetwork --ascii ble scan` and `hubblenetwork ble scan --ascii` both
+    work.
+    """
+
+    def get_params(self, ctx):
+        params = list(super().get_params(ctx))
+        hide = not (ctx is None or ctx.parent is None)
+        for opt in _shared_flags():
+            opt.hidden = hide
+            params.append(opt)
+        return params
+
+
+class HubbleCommand(_SharedFlagsMixin, click.Command):
+    """A leaf command carrying the shared rendering flags."""
+
+
+class HubbleGroup(_SharedFlagsMixin, click.Group):
     """A group whose help lists real invocations and whose errors point somewhere.
 
     Click only searches sibling commands when a name is unknown, so from the
     root it cannot see that `list-devices` lives under `org`. This searches the
     whole tree instead.
     """
+
+    command_class = HubbleCommand
+
+    @property
+    def group_class(self):
+        # Subgroups declared on this group reuse it, so the flags reach the
+        # whole tree without naming HubbleGroup at each declaration site.
+        return type(self)
 
     def resolve_command(self, ctx, args):
         try:
@@ -908,7 +988,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
 
     def _make_separator(self) -> str:
         width = 2 + sum(w for _, w, _ in self._cols) + (len(self._cols) - 1)
-        return click.style("─" * (width + len(self._lead)), dim=True)
+        return _rule_line(width + len(self._lead))
 
     def print_row(self, pkt, decrypt_status: str | None = None) -> None:
         """Print a single packet row, printing header first if needed."""
@@ -1094,7 +1174,10 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         frac = max(0.0, min(1.0, (rssi_db - self._RSSI_FLOOR_DB) / span))
         eighths = round(frac * _BAR_CELLS * 8)
         full, rem = divmod(eighths, 8)
-        return ("█" * full + (_BAR_FRACTIONS[rem - 1] if rem else "")).ljust(_BAR_CELLS)
+        g = termcaps.glyphs()
+        return (
+            g.bar_full * full + (g.bar_partials[rem - 1] if rem else "")
+        ).ljust(_BAR_CELLS)
 
     def _format_row(self, values: list[str]) -> str:
         cells = [
@@ -1105,7 +1188,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
 
     def _make_separator(self) -> str:
         width = 2 + sum(w for _, w, _ in self._cols) + (len(self._cols) - 1)
-        return click.style("─" * (width + len(self._lead)), dim=True)
+        return _rule_line(width + len(self._lead))
 
     def print_row(self, pkt: SatellitePacket, decrypt_status: str | None = None) -> None:
         if not self._header_printed:
@@ -1274,7 +1357,7 @@ class _OrgTablePrinter:
 
     def _rule(self) -> str:
         width = 2 + sum(w for _, w, _ in self._cols) + (len(self._cols) - 1)
-        return click.style("─" * width, dim=True)
+        return _rule_line(width)
 
     def row(self, values: list[str]) -> None:
         if not self._header_printed:
@@ -1294,7 +1377,7 @@ def _org_heading(label: str, subject: str, detail: str = "") -> None:
     click.echo("", err=True)
     click.echo(
         click.style(label, fg="cyan") + f"  {subject}"
-        + (click.style(f"  ·  {detail}", dim=True) if detail else ""),
+        + (click.style(f"{termcaps.sep_pad()}{detail}", dim=True) if detail else ""),
         err=True,
     )
 
@@ -1304,7 +1387,7 @@ def _org_summary(head: str, details: list[str], notes: list[str] | None = None) 
     click.echo("", err=True)
     click.secho(head, bold=True, err=True, nl=False)
     if details:
-        click.secho("  ·  " + "  ·  ".join(details), dim=True, err=True)
+        click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(details), dim=True, err=True)
     else:
         click.echo("", err=True)
     for note in notes or []:
@@ -1338,8 +1421,9 @@ class _FetchProgress:
         if time.monotonic() - self._start < _PACKET_PROGRESS_AFTER:
             return
         click.secho(
-            f"  fetching page {page}  ·  {total:,} {self._noun} so far"
-            "  ·  Ctrl+C to stop",
+            f"  fetching page {page}{termcaps.sep_pad()}"
+            f"{total:,} {self._noun} so far"
+            f"{termcaps.sep_pad()}Ctrl+C to stop",
             dim=True,
             err=True,
         )
@@ -1364,10 +1448,17 @@ def _get_version() -> str:
     cls=HubbleGroup, context_settings={"help_option_names": ["-h", "--help"]}
 )
 @click.version_option(version=_get_version(), prog_name="hubblenetwork")
-def cli() -> None:
+@click.pass_context
+def cli(ctx) -> None:
     """Talk to Hubble Network IoT devices over Bluetooth and satellite, and to
     your devices in the Hubble Cloud."""
-    # top-level group; subcommands are added below
+    # Click has no NO_COLOR support at any version, so honour it here. Doing it
+    # in the root callback means every child context inherits the decision when
+    # it is constructed.
+    if not termcaps.color_enabled():
+        ctx.color = False
+    elif termcaps.force_color():
+        ctx.color = True
 
 
 @cli.command("validate-credentials", short_help="Check that your API credentials work")
@@ -1596,7 +1687,7 @@ def ble_detect(
             )
             _announce_detection(d.label, suppress=use_json)
             decrypted_pkt = d.result
-        # UnencryptedPacket and UnknownPacket fall through — keep scanning.
+        # UnencryptedPacket and UnknownPacket fall through, keep scanning.
 
         if decrypted_pkt:
             # If we can decrypt it, output success
@@ -1729,7 +1820,7 @@ def ble_detect(
     "--show-failed-decryption",
     is_flag=True,
     default=False,
-    help="Show encrypted packets that fail decryption/authentication with the provided key. Adds a ✓/✗ decrypt mark to each row.",
+    help="Show encrypted packets that fail decryption/authentication with the provided key. Adds an ok/fail decrypt mark to each row.",
 )
 @click.option(
     "--debug",
@@ -1826,7 +1917,7 @@ def ble_scan(
             raise click.ClickException(f"Invalid base64 key: {e}")
 
     # Click's parameter source lets users disable auto-detect by passing the
-    # default value verbatim — otherwise we couldn't tell "default" apart
+    # default value verbatim, otherwise we couldn't tell "default" apart
     # from "user explicitly chose UNIX_TIME / exponent=0".
     def _explicit(name: str) -> bool:
         return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
@@ -3163,7 +3254,7 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
                 )
                 click.echo(json.dumps(success_obj, indent=2))
             else:
-                click.secho("✓ Configuration written successfully", fg="green", bold=True)
+                click.secho("[SUCCESS] Configuration written successfully", fg="green", bold=True)
                 click.echo("")
                 click.echo(f"  EID type: {eid_type.lower()}")
                 click.echo("  Rotation period: 0 seconds")
@@ -3198,7 +3289,7 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
                 }
                 click.echo(json.dumps(error_obj, indent=2))
             else:
-                click.secho("✗ Configuration write failed", fg="red", bold=True, err=True)
+                click.secho("[ERROR] Configuration write failed", fg="red", bold=True, err=True)
                 if result.error_message:
                     click.echo(f"  {result.error_message}", err=True)
                 if result.error_code is not None:
@@ -3221,7 +3312,7 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
             )
             click.echo(json.dumps(error_obj, indent=2))
         else:
-            click.secho(f"✗ BLE Error: {e}", fg="red", bold=True, err=True)
+            click.secho(f"[ERROR] BLE Error: {e}", fg="red", bold=True, err=True)
         sys.exit(2)
 
     except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
@@ -3235,7 +3326,7 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
             )
             click.echo(json.dumps(error_obj, indent=2))
         else:
-            click.secho(f"✗ Error: {e}", fg="red", bold=True, err=True)
+            click.secho(f"[ERROR] Error: {e}", fg="red", bold=True, err=True)
         sys.exit(2)
 
 
@@ -3311,7 +3402,7 @@ def ready_write_time(address: str, timestamp: int | None, timeout: float, output
                 )
                 click.echo(json.dumps(success_obj, indent=2))
             else:
-                click.secho("✓ Time written successfully", fg="green", bold=True)
+                click.secho("[SUCCESS] Time written successfully", fg="green", bold=True)
                 click.echo("")
                 click.echo(f"  Timestamp: {actual_timestamp}")
                 click.echo(f"  ISO 8601: {datetime.fromtimestamp(actual_timestamp, tz=timezone.utc).isoformat()}")
@@ -3345,7 +3436,7 @@ def ready_write_time(address: str, timestamp: int | None, timeout: float, output
                 }
                 click.echo(json.dumps(error_obj, indent=2))
             else:
-                click.secho("✗ Time write failed", fg="red", bold=True, err=True)
+                click.secho("[ERROR] Time write failed", fg="red", bold=True, err=True)
                 if result.error_message:
                     click.echo(f"  {result.error_message}", err=True)
                 if result.error_code is not None:
@@ -3368,7 +3459,7 @@ def ready_write_time(address: str, timestamp: int | None, timeout: float, output
             )
             click.echo(json.dumps(error_obj, indent=2))
         else:
-            click.secho(f"✗ BLE Error: {e}", fg="red", bold=True, err=True)
+            click.secho(f"[ERROR] BLE Error: {e}", fg="red", bold=True, err=True)
         sys.exit(2)
 
     except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
@@ -3382,7 +3473,7 @@ def ready_write_time(address: str, timestamp: int | None, timeout: float, output
             )
             click.echo(json.dumps(error_obj, indent=2))
         else:
-            click.secho(f"✗ Error: {e}", fg="red", bold=True, err=True)
+            click.secho(f"[ERROR] Error: {e}", fg="red", bold=True, err=True)
         sys.exit(2)
 
 
@@ -3605,7 +3696,7 @@ def info(org: Organization) -> None:
         "  "
         + click.style("Env ", dim=True)
         + f"  {org.env.name}"
-        + click.style(f"  ·  {org.env.url}", dim=True)
+        + click.style(f"{termcaps.sep_pad()}{org.env.url}", dim=True)
     )
 
 
@@ -3835,13 +3926,15 @@ def list_devices(org: Organization, output_format: str = "tabular", limit: int =
     _org_summary(head, details, notes)
 
 
+# Values are bare; the approximation sign is prepended at render time so the
+# glyph lives in exactly one place.
 _PERIOD_EXPONENT_LABELS = {
-    10: "≈17m",
-    11: "≈34m",
-    12: "≈1.1h",
-    13: "≈2.3h",
-    14: "≈4.6h",
-    15: "≈9h",
+    10: "17m",
+    11: "34m",
+    12: "1.1h",
+    13: "2.3h",
+    14: "4.6h",
+    15: "9h",
 }
 
 
@@ -3849,7 +3942,7 @@ def _format_period_exponent(n: int) -> str:
     """Human-readable duration label for a period exponent (period = 2^n seconds)."""
     label = _PERIOD_EXPONENT_LABELS.get(n)
     if label is not None:
-        return label
+        return f"{termcaps.glyphs().approx}{label}"
     return f"{2 ** n}s" if n >= 0 else f"2^{n}s"
 
 
@@ -4130,19 +4223,16 @@ def metrics_devices(org: Organization, days: int, output_format: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# sat – Satellite (PlutoSDR) commands
+# sat: Satellite (PlutoSDR) commands
 # ---------------------------------------------------------------------------
 
 _DOCKER_INSTALL_URL = "https://www.docker.com/get-started/"
 
 
 def _docker_err_msg() -> str:
-    url = _DOCKER_INSTALL_URL
-    if sys.stderr.isatty():
-        url = f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
     return (
-        f"Docker Desktop is required for satellite scanning. "
-        f"Install from {url} and make sure it is running."
+        "Docker Desktop is required for satellite scanning. "
+        f"Install from {_DOCKER_INSTALL_URL} and make sure it is running."
     )
 
 
@@ -4588,12 +4678,45 @@ def sat_signal_report(duration, output_path, mock, pluto_uri, debug) -> None:
     )
 
 
+def _prescan_render_flags(argv: list[str] | None) -> None:
+    """Resolve rendering flags before Click parses, so errors render correctly."""
+    args = list(argv if argv is not None else sys.argv[1:])
+    for arg in args:
+        if arg == "--":
+            break
+        if arg == "--ascii":
+            termcaps.set_explicit_ascii(True)
+        elif arg == "--no-ascii":
+            termcaps.set_explicit_ascii(False)
+        elif arg == "--no-color":
+            termcaps.set_explicit_no_color(True)
+
+
+def _emit(message: str, *, err: bool = True, **style) -> None:
+    """Echo, honouring --no-color/NO_COLOR even outside a Click context."""
+    if not termcaps.color_enabled():
+        click.echo(click.unstyle(message), err=err)
+        return
+    if style:
+        click.secho(message, err=err, **style)
+    else:
+        click.echo(message, err=err)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point used by console_scripts.
 
     Returns a process exit code instead of letting Click call sys.exit for easier testing.
     """
+    termcaps.reset()
+    _prescan_render_flags(argv)
+    # stderr is prose, never a machine contract, so it may degrade rather than
+    # raise. stdout stays strict: that is what keeps the CSV data path honest.
+    try:
+        sys.stderr.reconfigure(errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
     try:
         # standalone_mode=False prevents Click from calling sys.exit itself.
         cli.main(args=argv, prog_name="hubblenetwork", standalone_mode=False)
@@ -4635,12 +4758,30 @@ def main(argv: list[str] | None = None) -> int:
             # Only the first line is the diagnosis; guidance below it stays plain
             # so the suggested commands remain readable.
             head, _, rest = message.partition("\n")
-            click.secho(f"Error: {head}", fg="red", bold=True, err=True)
+            _emit(f"Error: {head}", fg="red", bold=True)
             if rest:
-                click.echo(rest, err=True)
+                _emit(rest)
         return e.exit_code
+    except UnicodeEncodeError:
+        # Reached when data (not a glyph) cannot be encoded for this terminal,
+        # e.g. a non-ASCII device payload under --payload-format string on a
+        # legacy code page. Glyphs are handled by the ASCII fallback.
+        _emit("")
+        _emit(
+            "Error: this terminal's encoding "
+            f"({getattr(sys.stdout, 'encoding', 'unknown')}) cannot represent "
+            "the output.",
+            fg="red", bold=True,
+        )
+        _emit("")
+        _emit("  Render the payload as text this encoding can hold:")
+        _emit(click.style("    --payload-format hex", fg="cyan"))
+        _emit(click.style("    --payload-format base64", fg="cyan"))
+        _emit("  Or switch the terminal to UTF-8:")
+        _emit(click.style("    PYTHONIOENCODING=utf-8 hubblenetwork ...", fg="cyan"))
+        return 1
     except Exception as e:  # noqa: BLE001 - safety net to avoid tracebacks in user CLI
-        click.secho(f"Unexpected error: {e}", fg="red", err=True)
+        _emit(f"Unexpected error: {e}", fg="red")
         return 2
     return 0
 

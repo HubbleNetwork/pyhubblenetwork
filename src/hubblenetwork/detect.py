@@ -9,14 +9,15 @@ until one decrypts, then caches the winner so the rest of the scan skips the
 sweep. Caching is keyed per EID for BLE (a scan can see many devices) and shared
 across the whole stream for satellite (no per-packet EID).
 
-Detection returns its outcome as a :class:`Detection` rather than printing —
+Detection returns its outcome as a :class:`Detection` rather than printing,
 ``result`` is the decrypted packet/payload and ``label`` describes the detected
 configuration, set once per scan so the caller can announce it exactly once.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from .crypto import DEVICE_UPTIME, UNIX_TIME, decrypt
 from .packets import DecryptedPacket, EncryptedPacket
@@ -38,7 +39,7 @@ class Detection(Generic[T]):
 
     ``label`` is the human description of the detected configuration (e.g.
     ``"AES-256-CTR, counter_source=UNIX_TIME"``). It is set only on the *first*
-    successful detection of a scan and is ``None`` otherwise — i.e. when decrypt
+    successful detection of a scan and is ``None`` otherwise, i.e. when decrypt
     failed, when the mode came from cache, or when a configuration was already
     announced this scan.
     """

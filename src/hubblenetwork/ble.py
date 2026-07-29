@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import struct
 from datetime import datetime, timezone
-from typing import Union
 
 from bleak import BleakScanner
 
@@ -24,7 +23,7 @@ from .packets import (
 Bluetooth spec defines a base UUID 0000xxxx-0000-1000-8000-00805F9B34FB.
 Any 16-bit (or 32-bit) UUID is expanded into that base by substituting xxxx.
 
-Libraries normalize to consistent 128-bit strings so you don’t have to guess
+Libraries normalize to consistent 128-bit strings so you don't have to guess
 whether a platform will report 16- vs 128-bit in scan results.
 
 In bleak, AdvertisementData.service_uuids and the keys in AdvertisementData.service_data
@@ -41,7 +40,7 @@ _FAKE_LOCATION = Location(lat=90, lon=0, fake=True)
 
 _NETWORK_ID_MASK = (1 << 34) - 1
 
-HubblePacket = Union[EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket]
+HubblePacket = EncryptedPacket | UnencryptedPacket | AesEaxPacket | UnknownPacket
 
 
 def parse_unencrypted(data: bytes) -> tuple | None:

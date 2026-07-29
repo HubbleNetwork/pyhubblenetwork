@@ -118,7 +118,7 @@ def decrypt_eax(
         if candidate_eid != pkt.eid:
             continue
 
-        # EID matched — construct nonce and decrypt
+        # EID matched, construct nonce and decrypt
         nonce = counter.to_bytes(4, "big") + pkt.nonce_salt
         cipher = AES.new(key, AES.MODE_EAX, mac_len=4, nonce=nonce)
         try:
