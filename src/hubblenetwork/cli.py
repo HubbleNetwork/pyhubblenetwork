@@ -8,6 +8,7 @@ import functools
 import json
 import logging
 import os
+import pathlib
 import signal
 import sys
 import time
@@ -323,6 +324,7 @@ _GROUP_BLURB = {
 }
 
 _START_HERE = [
+    ("doctor", "Check your setup end to end"),
     ("validate-credentials", "Confirm your credentials work"),
     ("org list-devices", "See what's registered"),
     ("ble scan --timeout 30", "Watch nearby devices report"),
@@ -1459,6 +1461,197 @@ def cli(ctx) -> None:
         ctx.color = False
     elif termcaps.force_color():
         ctx.color = True
+
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+_CHECK_OK = "ok"
+_CHECK_FAIL = "fail"
+_CHECK_SKIP = "skip"
+
+
+def _bluetooth_usage_description() -> tuple:
+    """Whether this interpreter may talk to CoreBluetooth, and where we looked.
+
+    Deliberately static. Touching CoreBluetooth without an Info.plist carrying
+    NSBluetoothAlwaysUsageDescription is what kills the process, so a check that
+    probed by scanning would be the very crash it is meant to report.
+    """
+    import plistlib
+    import sysconfig
+
+    candidates = []
+    exe = pathlib.Path(sys.executable).resolve()
+    candidates.extend(parent / "Info.plist" for parent in list(exe.parents)[:4])
+    framework = sysconfig.get_config_var("PYTHONFRAMEWORKPREFIX") or ""
+    if framework:
+        candidates.append(
+            pathlib.Path(framework)
+            / "Python.framework/Versions/Current/Resources/Python.app/Contents/Info.plist"
+        )
+    for plist in candidates:
+        try:
+            if not plist.exists():
+                continue
+            with open(plist, "rb") as fh:
+                data = plistlib.load(fh)
+        except (OSError, ValueError):
+            continue
+        return ("NSBluetoothAlwaysUsageDescription" in data), str(plist)
+    return None, "no Info.plist found for this interpreter"
+
+
+def _doctor_credentials(org_id, token) -> tuple:
+    if not org_id and not token:
+        return (
+            _CHECK_FAIL,
+            "not set",
+            ["Set both, or pass --org-id/--token:",
+             "  export HUBBLE_ORG_ID=<your org id>",
+             "  export HUBBLE_API_TOKEN=<your api token>"],
+        )
+    if not org_id or not token:
+        missing = "HUBBLE_ORG_ID" if not org_id else "HUBBLE_API_TOKEN"
+        return (_CHECK_FAIL, f"{missing} is missing", [f"Set {missing} as well."])
+    try:
+        env = cloud.get_env_from_credentials(cloud.Credentials(org_id, token))
+    except Exception as exc:  # noqa: BLE001 - network trouble is not the same as bad creds
+        return (_CHECK_FAIL, f"could not reach the API ({exc})", ["Check your connection."])
+    if env is None:
+        return (
+            _CHECK_FAIL,
+            "rejected by both PROD and TESTING",
+            ["The org ID and token must come from the same environment.",
+             "Re-copy both from the Hubble dashboard."],
+        )
+    return (_CHECK_OK, f"valid, {env.name}", [])
+
+
+def _doctor_bluetooth() -> tuple:
+    if sys.platform != "darwin":
+        return (_CHECK_SKIP, f"not checked on {sys.platform}", [])
+    has_key, where = _bluetooth_usage_description()
+    if has_key is True:
+        return (_CHECK_OK, "usage description present", [])
+    if has_key is None:
+        return (
+            _CHECK_SKIP,
+            "could not inspect this interpreter",
+            [f"Looked for: {where}"],
+        )
+    return (
+        _CHECK_FAIL,
+        "no NSBluetoothAlwaysUsageDescription",
+        ["macOS will kill `ble scan` rather than prompt for permission.",
+         f"This interpreter's plist: {where}",
+         "Run from a real terminal app and grant it Bluetooth, or run the CLI",
+         "through an app bundle that declares the key."],
+    )
+
+
+def _doctor_docker() -> tuple:
+    try:
+        sat_mod.ensure_docker_available()
+    except Exception as exc:  # noqa: BLE001 - surface any failure reason as a check result
+        first = str(exc).split(".")[0]
+        return (_CHECK_FAIL, first, ["Only `sat` commands need Docker."])
+    return (_CHECK_OK, "reachable", [])
+
+
+def _doctor_sdr_image() -> tuple:
+    try:
+        cached = sat_mod._image_exists_locally(sat_mod.DOCKER_IMAGE)
+    except Exception:  # noqa: BLE001 - this check is best-effort, never fatal
+        return (_CHECK_SKIP, "could not ask Docker", [])
+    if cached:
+        return (_CHECK_OK, "receiver image cached", [])
+    return (
+        _CHECK_SKIP,
+        "receiver image not pulled yet",
+        ["First `sat scan` will pull it, which takes a minute."],
+    )
+
+
+@cli.command("doctor", short_help="Check your setup end to end")
+@click.option(
+    "--org-id",
+    "-o",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="Organization ID",
+)
+@click.option(
+    "--token",
+    "-t",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="API token",
+)
+def doctor(org_id, token) -> None:
+    """
+    Check whether this machine is set up to talk to Hubble.
+
+    Reports credentials, Bluetooth and Docker, each with the fix when it fails.
+    Exits 1 if anything needed is broken, so it is safe to gate a script on.
+    A skipped check is not a failure: it means the check does not apply here, or
+    could not be answered cheaply.
+
+    \b
+    Example:
+      hubblenetwork doctor
+      hubblenetwork doctor --org-id <id> --token <token>
+    """
+    g = termcaps.glyphs()
+    marks = {
+        _CHECK_OK: click.style(g.mark_ok, fg="green"),
+        _CHECK_FAIL: click.style(g.mark_fail, fg="red"),
+        _CHECK_SKIP: click.style("-", dim=True),
+    }
+
+    checks = [
+        ("Credentials", lambda: _doctor_credentials(org_id, token)),
+        ("Bluetooth", _doctor_bluetooth),
+        ("Docker", _doctor_docker),
+    ]
+
+    click.echo("")
+    results = []
+    for name, run in checks:
+        status, summary, advice = run()
+        results.append(status)
+        click.echo(f"  {marks[status]} {name.ljust(14)} {summary}")
+        for line in advice:
+            click.secho(f"      {line}", dim=True)
+        # Only ask Docker about the image when Docker itself answered.
+        if name == "Docker" and status == _CHECK_OK:
+            sub_status, sub_summary, sub_advice = _doctor_sdr_image()
+            results.append(sub_status)
+            click.echo(f"  {marks[sub_status]} {'Receiver'.ljust(14)} {sub_summary}")
+            for line in sub_advice:
+                click.secho(f"      {line}", dim=True)
+
+    failed = results.count(_CHECK_FAIL)
+    skipped = results.count(_CHECK_SKIP)
+    click.echo("")
+    parts = [f"{results.count(_CHECK_OK)} ok"]
+    if failed:
+        parts.append(f"{failed} failed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    head = "Ready to go." if not failed else "Not ready."
+    click.secho(head, bold=True, nl=False)
+    click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(parts), dim=True)
+    if failed:
+        raise SystemExit(1)
 
 
 @cli.command("validate-credentials", short_help="Check that your API credentials work")

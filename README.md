@@ -20,6 +20,7 @@
 - [Public API (summary)](#public-api-summary)
 - [Development & tests](#development--tests)
 - [Troubleshooting](#troubleshooting)
+- [Telemetry](#telemetry)
 - [Releases & versioning](#releases--versioning)
 
 
@@ -149,6 +150,31 @@ hubblenetwork ble scan --payload-format hex
 hubblenetwork ble scan --key "base64key=" --counter-mode DEVICE_UPTIME  # counter-based EID
 hubblenetwork org get-packets <id> --payload-format string
 ```
+
+Start with `hubblenetwork doctor`, which checks whether this machine can actually
+talk to Hubble and names the fix for anything broken:
+
+```bash
+hubblenetwork doctor
+```
+
+```
+  x Credentials    not set
+      Set both, or pass --org-id/--token:
+        export HUBBLE_ORG_ID=<your org id>
+        export HUBBLE_API_TOKEN=<your api token>
+  + Bluetooth      usage description present
+  x Docker         Docker is not available
+      Only `sat` commands need Docker.
+
+Not ready.  |  1 ok  |  2 failed
+```
+
+It exits 1 when something needed is broken, so a script can gate on it. A skipped
+check is not a failure: it means the check does not apply on this platform, or could
+not be answered without doing real work (pulling the satellite receiver image, say).
+The Bluetooth check reads the interpreter's Info.plist rather than attempting a scan,
+because attempting one is exactly what macOS kills.
 
 Every command lives inside a group, so it is always `hubblenetwork <group> <command>`:
 `org` for the cloud, `ble` for nearby devices, `ready` for provisioning, `sat` for
@@ -530,6 +556,31 @@ ruff check src
 * **`SatelliteError: Satellite receiver API did not become ready`**: the PlutoSDR container started but couldn’t access the hardware. Ensure the ADALM-PLUTO dongle is plugged in before running `sat scan`, and that no other process is using it.
 * **`sat scan` hangs pulling the image**: first run fetches `ghcr.io/hubblenetwork/sdr-docker:latest`; this may take a minute on a slow connection. Subsequent runs use the cached image.
 
+
+## Telemetry
+
+**There is none.** The CLI makes no network call except the ones a command
+explicitly needs: the Hubble Cloud API for `org` and `metrics`, `localhost` for the
+satellite receiver container, and Docker pulling that container image from
+`ghcr.io` on first `sat` use. Nothing is reported anywhere about how you use it.
+
+If that changes, these are the constraints it would have to meet, recorded here so
+the bar is set before anyone writes the code:
+
+* **Opt-in only.** Off by default, no collection before an explicit yes, and no
+  dark-pattern prompt that treats a dismissed dialog as consent.
+* **Nothing sensitive, ever.** No API tokens, org IDs, device IDs, encryption keys,
+  payloads, coordinates, hostnames, or file paths. This tool handles customer device
+  keys, so the bar is higher than for a typical CLI. Command name, exit status, and
+  version is the ceiling.
+* **Documented in this file**, listing every field actually sent, not a link to a
+  policy page.
+* **Killable two ways**, a flag and an environment variable, both honoured on every
+  command.
+* **Never blocks or slows a command.** No network call on the critical path, and
+  silent failure when offline.
+* **Tested.** A test asserting the payload contains no credential and no device
+  identifier, so a future field cannot quietly widen it.
 
 ## Releases & versioning
 
