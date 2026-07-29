@@ -509,6 +509,51 @@ class HubbleGroup(click.Group):
             )
 
 
+def _own_option_names(cmd, ctx) -> list[str]:
+    """Long-form option names a command accepts, excluding hidden ones."""
+    names: list[str] = []
+    for param in cmd.get_params(ctx):
+        if isinstance(param, click.Option) and not param.hidden:
+            names.extend(o for o in param.opts if o.startswith("--"))
+    return names
+
+
+def _option_guidance(exc: click.NoSuchOption) -> str:
+    """Explain an unknown option, including when it lives on a parent group.
+
+    Credentials sit on the `org` and `metrics` groups rather than their
+    subcommands, so `org list-devices --org-id X` fails. Listing only the
+    subcommand's own options there is worse than saying nothing: the flag does
+    exist, just one level up.
+    """
+    ctx = exc.ctx
+    if ctx is None:
+        return ""
+    typed = exc.option_name or ""
+
+    # Walk up the context chain looking for a group that owns this option.
+    parent = ctx.parent
+    while parent is not None:
+        owner = parent.command
+        if typed and typed in _own_option_names(owner, parent):
+            invocation = " ".join(
+                [parent.command_path, f"{typed} <value>", *ctx.info_name.split()]
+            )
+            return (
+                f"\n\n  '{typed}' belongs to '{parent.command_path}', so it goes"
+                " before the subcommand:\n    "
+                + click.style(invocation, fg="cyan")
+            )
+        parent = parent.parent
+
+    names = _own_option_names(ctx.command, ctx)
+    if not names:
+        return ""
+    return "\n\n  This command accepts:\n    " + click.style(
+        "  ".join(sorted(names)), fg="cyan"
+    )
+
+
 class GuidedArgument(click.Argument):
     """A positional argument that says how to find its value when omitted."""
 
@@ -532,8 +577,20 @@ _FIND_DEVICE_ID = (
 )
 
 
-def _credentials_error(*, org_id: str | None, token: str | None) -> click.ClickException:
-    """Build the credentials error. Not-set and rejected need different advice."""
+_ORG_FLAG_EXAMPLE = "hubblenetwork org --org-id <id> --token <token> list-devices"
+
+
+def _credentials_error(
+    *,
+    org_id: str | None,
+    token: str | None,
+    example: str = _ORG_FLAG_EXAMPLE,
+) -> click.ClickException:
+    """Build the credentials error. Not-set and rejected need different advice.
+
+    `example` lets a caller show the flag form for its own command, since
+    pointing an `ble scan --ingest` user at `org list-devices` is a detour.
+    """
     lines = ["No valid Hubble credentials.", ""]
     if not org_id or not token:
         missing = [
@@ -544,12 +601,7 @@ def _credentials_error(*, org_id: str | None, token: str | None) -> click.ClickE
         lines.append(click.style("    export HUBBLE_API_TOKEN=<your api token>", fg="cyan"))
         lines.append("")
         lines.append(click.style("  Or pass them per command:", dim=True))
-        lines.append(
-            click.style(
-                "    hubblenetwork org --org-id <id> --token <token> list-devices",
-                fg="cyan",
-            )
-        )
+        lines.append(click.style(f"    {example}", fg="cyan"))
     else:
         lines.append("  Both PROD and TESTING rejected the org ID and token you gave.")
         lines.append(
@@ -1324,18 +1376,20 @@ def cli() -> None:
     "-o",
     type=str,
     envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+    help="Organization ID",
 )
 @click.option(
     "--token",
     "-t",
     type=str,
     envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Token (if not using HUBBLE_API_TOKEN env var)",
+    help="API token",
 )
 def validate_credentials(org_id, token) -> None:
     """Check that your API credentials work.
@@ -1634,6 +1688,24 @@ def ble_detect(
 )
 @click.option("--ingest", is_flag=True, help="Ingest packets to backend (requires key)")
 @click.option(
+    "--org-id",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="Organization ID, for --ingest",
+)
+@click.option(
+    "--token",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="API token, for --ingest",
+)
+@click.option(
     "--format",
     "-o",
     "output_format",
@@ -1672,6 +1744,8 @@ def ble_scan(
     count: int | None = None,
     network_id: int | None = None,
     ingest: bool = False,
+    org_id: str | None = None,
+    token: str | None = None,
     key: str | None = None,
     days: int = 2,
     counter_mode: str = "UNIX_TIME",
@@ -1722,10 +1796,20 @@ def ble_scan(
         )
 
     if ingest:
-        org = Organization(
-            org_id=_get_env_or_fail("HUBBLE_ORG_ID"),
-            api_token=_get_env_or_fail("HUBBLE_API_TOKEN"),
+        ingest_example = (
+            "hubblenetwork ble scan --ingest --key <key> "
+            "--org-id <id> --token <token>"
         )
+        if not org_id or not token:
+            raise _credentials_error(
+                org_id=org_id, token=token, example=ingest_example
+            )
+        try:
+            org = Organization(org_id=org_id, api_token=token)
+        except InvalidCredentialsError:
+            raise _credentials_error(
+                org_id=org_id, token=token, example=ingest_example
+            ) from None
 
     start = time.monotonic()
     deadline = None if timeout is None else start + timeout
@@ -2010,17 +2094,19 @@ def ble_check_time(
     "--org-id",
     type=str,
     envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+    help="Organization ID",
 )
 @click.option(
     "--token",
     type=str,
     envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Token (if not using HUBBLE_API_TOKEN env var)",
+    help="API token",
 )
 @click.option(
     "--timeout",
@@ -3328,17 +3414,19 @@ def ready_write_time(address: str, timestamp: int | None, timeout: float, output
     "-o",
     type=str,
     envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+    help="Organization ID",
 )
 @click.option(
     "--token",
     type=str,
     envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="API token (if not using HUBBLE_API_TOKEN env var)",
+    help="API token",
 )
 def ready_provision(
     timeout: float = 10.0,
@@ -3478,18 +3566,20 @@ def pass_orgcfg(fn):
     "-o",
     type=str,
     envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+    help="Organization ID",
 )
 @click.option(
     "--token",
     "-t",
     type=str,
     envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Token (if not using HUBBLE_API_TOKEN env var)",
+    help="API token",
 )
 @click.pass_context
 def org(ctx, org_id, token) -> None:
@@ -3960,18 +4050,20 @@ def get_packets(
     "-o",
     type=str,
     envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Organization ID (if not using HUBBLE_ORG_ID env var)",
+    help="Organization ID",
 )
 @click.option(
     "--token",
     "-t",
     type=str,
     envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
     default=None,
     show_default=False,
-    help="Token (if not using HUBBLE_API_TOKEN env var)",
+    help="API token",
 )
 @click.pass_context
 def metrics(ctx, org_id, token) -> None:
@@ -4517,14 +4609,7 @@ def main(argv: list[str] | None = None) -> int:
             click.echo(message, err=True)
             return e.exit_code
         if isinstance(e, click.NoSuchOption) and "Did you mean" not in message:
-            names = []
-            for param in (e.ctx.command.get_params(e.ctx) if e.ctx else []):
-                if isinstance(param, click.Option):
-                    names.extend(o for o in param.opts if o.startswith("--"))
-            if names:
-                message += "\n\n  This command accepts:\n    " + click.style(
-                    "  ".join(sorted(names)), fg="cyan"
-                )
+            message += _option_guidance(e)
         e.message = message
         # Keep Click's usage + "Try --help" preamble, then the red diagnosis and
         # any guidance lines below it.

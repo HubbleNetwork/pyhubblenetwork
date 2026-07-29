@@ -399,19 +399,38 @@ for pkt in sat.scan(timeout=60.0):
 
 ## Configuration
 
-Some functions read defaults from environment variables if not provided explicitly. Suggested variables:
+The **CLI** reads two environment variables:
 
-* `HUBBLE_ORG_ID` — default organization id
-* `HUBBLE_API_TOKEN` — API token (base64 encoded)
-
-Example:
+* `HUBBLE_ORG_ID` — your organization id
+* `HUBBLE_API_TOKEN` — your API token, passed through as a bearer token
 
 ```bash
 export HUBBLE_ORG_ID=org_123
 export HUBBLE_API_TOKEN=sk_XXXX
 ```
 
-You can also pass org ID and API token into API calls.
+Every command that needs credentials also takes `--org-id` and `--token`, and
+`--help` names the environment variable for each. On the `org` and `metrics`
+groups those flags belong to the group, so they go before the subcommand:
+
+```bash
+hubblenetwork org --org-id <id> --token <token> list-devices
+```
+
+Check whichever route you used with `hubblenetwork validate-credentials`.
+
+**The SDK does not read the environment.** `Organization()` requires its
+credentials explicitly, so exporting the variables does nothing for library code:
+
+```python
+from hubblenetwork import Organization
+import os
+
+org = Organization(
+    org_id=os.environ["HUBBLE_ORG_ID"],
+    api_token=os.environ["HUBBLE_API_TOKEN"],
+)
+```
 
 ## Public API (summary)
 
