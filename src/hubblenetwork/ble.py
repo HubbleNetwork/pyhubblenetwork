@@ -15,6 +15,7 @@ from .packets import (
     Location,
     UnencryptedPacket,
     UnknownPacket,
+    parse_seq_no,
 )
 
 """
@@ -76,7 +77,10 @@ def _make_packet(raw: bytes, rssi: int) -> HubblePacket:
     version = raw[0] >> 2
 
     if version == 0:
-        # AES-CTR advertisement layout: seq_no (2) | EID (4) | auth_tag (4) | ciphertext.
+        # AES-CTR advertisement layout: version+seq_no (2) | EID (4) |
+        # auth_tag (4) | ciphertext. All three header fields are readable
+        # without the key, so they are extracted here rather than at decrypt
+        # time and stay available on packets that never decrypt.
         eid = int.from_bytes(raw[2:6], "big") if len(raw) >= 6 else None
         auth_tag = bytes(raw[6:10]) if len(raw) >= 10 else None
         return EncryptedPacket(
@@ -87,6 +91,7 @@ def _make_packet(raw: bytes, rssi: int) -> HubblePacket:
             protocol_version=version,
             eid=eid,
             auth_tag=auth_tag,
+            seq_no=parse_seq_no(raw),
         )
     elif version == 1:
         parsed = parse_unencrypted(raw)

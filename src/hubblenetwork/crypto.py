@@ -6,7 +6,7 @@ from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
 
-from .packets import AesEaxPacket, DecryptedPacket, EncryptedPacket
+from .packets import AesEaxPacket, DecryptedPacket, EncryptedPacket, parse_seq_no
 
 UNIX_TIME = "UNIX_TIME"
 DEVICE_UPTIME = "DEVICE_UPTIME"
@@ -23,7 +23,7 @@ class ParsedPacket:
 
     def __init__(self, encrypted_pkt: EncryptedPacket) -> None:
         ble_adv = encrypted_pkt.payload
-        self.seq_no: int = int.from_bytes(ble_adv[0:2], "big") & 0x3FF
+        self.seq_no: int = parse_seq_no(ble_adv) or 0
         self.auth_tag: bytes = ble_adv[6:10]
         self.encrypted_payload: bytes = ble_adv[10:]
 
