@@ -599,13 +599,17 @@ def _add_raw_adv_fields(data: dict, pkt) -> None:
     auth_tag = getattr(pkt, "auth_tag", None)
     if auth_tag is not None:
         data["auth_tag"] = auth_tag.hex()
+    seq_no = getattr(pkt, "seq_no", None)
+    if seq_no is not None:
+        data["seq_no"] = seq_no
 
 
 def _ctr_display_payload(pkt) -> bytes:
     """Return payload bytes with the AES-CTR header stripped, if applicable.
 
-    The seq_no/EID/auth_tag header is already rendered in dedicated columns,
-    so only the trailing ciphertext belongs in the PAYLOAD field.
+    The seq_no, EID and auth_tag from that header each get their own column
+    (seq_no in CTR/SEQ, the other two under --debug), so only the trailing
+    ciphertext belongs in the PAYLOAD field.
     """
     if isinstance(pkt, EncryptedPacket) and len(pkt.payload) >= 10:
         return pkt.payload[10:]
@@ -822,6 +826,27 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         """Left gutter. Reserves two cells for the decrypt mark when shown."""
         return "  " if self._show_decrypt_status else ""
 
+    @staticmethod
+    def _counter_cell(pkt) -> str:
+        """Render CTR/SEQ, including for packets that were never decrypted.
+
+        AES-CTR carries a real 10-bit sequence number in its advertisement
+        header, readable without the key, so a missing key is no reason to show
+        "-" for those.
+
+        AES-EAX deliberately stays "-" here. `decrypt_eax` reports the nonce
+        salt as the sequence once a packet decrypts, but the salt is a
+        per-message random value rather than a counter, and it already has its
+        own hex SALT column under --debug. Showing the same two bytes as a
+        decimal in one column and hex in another is what this table used to do
+        wrong.
+        """
+        if isinstance(pkt, DecryptedPacket):
+            ctr = pkt.counter if pkt.counter is not None else pkt.sequence
+            return "-" if ctr is None else str(ctr)
+        seq_no = getattr(pkt, "seq_no", None)
+        return "-" if seq_no is None else str(seq_no)
+
     def _format_row(self, values: list[str]) -> str:
         cells = [
             v.rjust(w) if align == ">" else v.ljust(w)
@@ -863,11 +888,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         else:
             eid = getattr(pkt, "eid", None)
             row.append(f"{eid:x}" if eid is not None else "-")
-            if isinstance(pkt, DecryptedPacket):
-                ctr = pkt.counter if pkt.counter is not None else pkt.sequence
-                row.append("-" if ctr is None else str(ctr))
-            else:
-                row.append("-")
+            row.append(self._counter_cell(pkt))
 
         if self._show_debug_cols:
             auth_tag = getattr(pkt, "auth_tag", None)

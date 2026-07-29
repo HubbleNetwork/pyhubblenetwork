@@ -14,6 +14,23 @@ class Location:
     fake: bool = False
 
 
+# AES-CTR advertisement layout: version(6 bits) + seq_no(10 bits) | EID(4) |
+# auth_tag(4) | ciphertext. The sequence number shares the first two bytes with
+# the protocol version, so it needs masking off.
+SEQ_NO_MASK = 0x3FF
+
+
+def parse_seq_no(ble_adv: bytes) -> int | None:
+    """Read the 10-bit sequence number from an AES-CTR advertisement.
+
+    Available without the encryption key, which is why it can be displayed for
+    packets that have not been decrypted.
+    """
+    if len(ble_adv) < 2:
+        return None
+    return int.from_bytes(ble_adv[0:2], "big") & SEQ_NO_MASK
+
+
 @dataclass(frozen=True)
 class EncryptedPacket:
     """A packet received locally (e.g., via BLE) that has not been decrypted."""
@@ -27,6 +44,9 @@ class EncryptedPacket:
     protocol_version: int | None = None
     eid: int | None = None
     auth_tag: bytes | None = None
+    # 10-bit sequence number from the advertisement header. Readable without the
+    # key, so it stays useful on packets that could not be decrypted.
+    seq_no: int | None = None
 
 
 @dataclass(frozen=True)

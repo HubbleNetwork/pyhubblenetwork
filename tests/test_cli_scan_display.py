@@ -332,3 +332,92 @@ class TestBleDetectPayloadFormat:
     def test_auto_is_an_accepted_choice(self):
         res = CliRunner().invoke(cli, ["ble", "detect", "--help"])
         assert "auto" in res.stdout
+
+
+def _ctr(seq_no=305, nbytes=14):
+    """An AES-CTR advertisement: version+seq (2) | EID (4) | tag (4) | ciphertext."""
+    from hubblenetwork.packets import EncryptedPacket, parse_seq_no
+
+    header = bytes([(0 << 2) | (seq_no >> 8), seq_no & 0xFF])
+    raw = header + bytes(range(2, nbytes))
+    pkt = EncryptedPacket(
+        timestamp=1753600000,
+        location=FAKE_LOC,
+        payload=raw,
+        rssi=-62,
+        protocol_version=0,
+        eid=int.from_bytes(raw[2:6], "big"),
+        auth_tag=bytes(raw[6:10]),
+        seq_no=parse_seq_no(raw),
+    )
+    return pkt
+
+
+class TestSequenceNumberWithoutAKey:
+    """The sequence number is in the clear, so a missing key is no reason to hide it."""
+
+    def test_aes_ctr_sequence_is_shown_undecrypted(self):
+        pkt = _ctr(seq_no=305)
+        res = _scan([], [pkt])
+        assert res.exit_code == 0
+        header, _, row, _ = [ln for ln in res.stdout.splitlines() if ln.strip()]
+        col = header.index("CTR/SEQ")
+        assert "305" in row[col - 2 : col + 8], row
+
+    def test_parse_seq_no_masks_off_the_version_bits(self):
+        from hubblenetwork.packets import SEQ_NO_MASK, parse_seq_no
+
+        # Version 63 in the top 6 bits must not bleed into the sequence.
+        raw = bytes([(63 << 2) | 0x03, 0xFF])
+        assert parse_seq_no(raw) == SEQ_NO_MASK == 0x3FF
+
+    def test_parse_seq_no_needs_two_bytes(self):
+        from hubblenetwork.packets import parse_seq_no
+
+        assert parse_seq_no(b"") is None
+        assert parse_seq_no(b"\x00") is None
+
+    def test_ble_parser_populates_seq_no(self):
+        from hubblenetwork.ble import _make_packet
+        from hubblenetwork.packets import EncryptedPacket
+
+        raw = bytes([0x01, 0x2C]) + bytes(range(2, 14))  # version 0, seq 300
+        pkt = _make_packet(raw, rssi=-70)
+        assert isinstance(pkt, EncryptedPacket)
+        assert pkt.seq_no == 300
+
+    def test_crypto_and_packets_agree_on_the_decode(self):
+        """One source of truth: ParsedPacket must not re-derive the mask."""
+        from hubblenetwork.crypto import ParsedPacket
+        from hubblenetwork.packets import parse_seq_no
+
+        pkt = _ctr(seq_no=1023)
+        assert ParsedPacket(pkt).seq_no == parse_seq_no(pkt.payload) == 1023
+
+    def test_json_exposes_seq_no_for_aes_ctr(self):
+        res = _scan(["-o", "json"], [_ctr(seq_no=777)])
+        assert json.loads(res.stdout)[0]["seq_no"] == 777
+
+    def test_tabular_and_json_agree(self):
+        pkt = _ctr(seq_no=512)
+        tab = _scan([], [pkt])
+        js = _scan(["-o", "json"], [pkt])
+        assert str(json.loads(js.stdout)[0]["seq_no"]) in tab.stdout
+
+    def test_aes_eax_keeps_a_dash_rather_than_the_salt(self):
+        """The nonce salt is not a counter, and it already has its own hex column."""
+        res = _scan([], [_eax()])
+        header, _, row, _ = [ln for ln in res.stdout.splitlines() if ln.strip()]
+        col = header.index("CTR/SEQ")
+        assert "-" in row[col : col + 7]
+        # 0x4a1f rendered as decimal is exactly the old inconsistency.
+        assert "18975" not in res.stdout
+
+    def test_eax_json_has_no_seq_no_key(self):
+        res = _scan(["-o", "json"], [_eax()])
+        assert "seq_no" not in json.loads(res.stdout)[0]
+
+    def test_decrypted_still_shows_its_counter(self):
+        res = _scan(["--key", KEY_HEX], [_eax()],
+                    decrypted_for={_eax().eid: _decrypted()})
+        assert "20320" in res.stdout
