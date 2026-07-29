@@ -205,13 +205,22 @@ class TestCredentialErrors:
         assert code == 1
         assert "No valid Hubble credentials" in out
 
-    def test_env_var_helper_names_the_fix(self, capsys, monkeypatch):
+    def test_ingest_without_credentials_shows_its_own_invocation(self, capsys, monkeypatch):
+        """--ingest used to be env-var only, and pointed at the org command."""
         code, out = _main_output(
             ["ble", "scan", "--ingest", "--key", "00" * 16, "-t", "1"],
             capsys, monkeypatch=monkeypatch,
         )
-        assert "HUBBLE_ORG_ID is not set" in out
+        assert code == 1
+        assert "HUBBLE_ORG_ID" in out
         assert "export HUBBLE_ORG_ID=" in out
+        assert "ble scan --ingest" in out
+        assert "org --org-id <id> --token <token> list-devices" not in out
+
+    def test_ingest_accepts_credential_flags(self):
+        res = _run(["ble", "scan", "--help"])
+        assert "--org-id" in res.stdout
+        assert "--token" in res.stdout
 
 
 class TestHelpNeedsNoCredentials:
