@@ -1,5 +1,16 @@
 # Release Notes
 
+## [0.13.0] - 2026-08-10
+
+### Added
+- feat(sat): split one-shot capture into `sat record` and `sat signal-report`
+- feat: Add record and analyze sat scan calls
+- feat: Add RS Corrections per packet
+- feat: add option to use local sdr-docker image
+
+### Documentation
+- docs: correct sat scan counter-mode support in README
+
 ## [0.12.0] - 2026-06-17
 
 ### Added
