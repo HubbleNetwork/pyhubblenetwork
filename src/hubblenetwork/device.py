@@ -1,8 +1,8 @@
 # hubble/device.py
 from __future__ import annotations
+
 import base64
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass
@@ -13,11 +13,11 @@ class Device:
     """
 
     id: str
-    key: Optional[bytes] = None
-    name: Optional[str] = None
-    tags: Optional[Dict[str, str]] = None
-    created_ts: Optional[int] = None
-    active: Optional[bool] = False
+    key: bytes | None = None
+    name: str | None = None
+    tags: dict[str, str] | None = None
+    created_ts: int | None = None
+    active: bool | None = False
 
     def __str__(self) -> str:
         key_str = (

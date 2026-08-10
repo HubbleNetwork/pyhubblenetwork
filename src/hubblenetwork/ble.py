@@ -1,18 +1,19 @@
 # hubblenetwork/ble.py
 from __future__ import annotations
+
 import asyncio
 import struct
 from datetime import datetime, timezone
-from typing import Optional, List, Union
+from typing import Union
 
 from bleak import BleakScanner
 
 # Import your dataclass
 from .packets import (
-    Location,
-    EncryptedPacket,
-    UnencryptedPacket,
     AesEaxPacket,
+    EncryptedPacket,
+    Location,
+    UnencryptedPacket,
     UnknownPacket,
 )
 
@@ -42,7 +43,7 @@ _NETWORK_ID_MASK = (1 << 34) - 1
 HubblePacket = Union[EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket]
 
 
-def parse_unencrypted(data: bytes) -> Optional[tuple]:
+def parse_unencrypted(data: bytes) -> tuple | None:
     """Parse unencrypted protocol service data bytes.
 
     Returns (protocol_version, network_id, payload) or None if *data* does
@@ -124,7 +125,7 @@ def _make_packet(raw: bytes, rssi: int) -> HubblePacket:
     )
 
 
-def _extract_hubble_service_data(adv_data) -> Optional[tuple]:
+def _extract_hubble_service_data(adv_data) -> tuple | None:
     """Extract Hubble service data payload and RSSI from a BLE advertisement.
 
     Returns (payload_bytes, rssi) or None if UUID 0xFCA6 not present.
@@ -141,10 +142,10 @@ def _extract_hubble_service_data(adv_data) -> Optional[tuple]:
 # ---------------------------------------------------------------------------
 
 
-async def _scan_async(ttl: float) -> List[HubblePacket]:
+async def _scan_async(ttl: float) -> list[HubblePacket]:
     """Async implementation of BLE scan."""
     done = asyncio.Event()
-    packets: List[HubblePacket] = []
+    packets: list[HubblePacket] = []
 
     def on_detect(device, adv_data) -> None:
         nonlocal packets
@@ -162,7 +163,7 @@ async def _scan_async(ttl: float) -> List[HubblePacket]:
     return packets
 
 
-def scan(timeout: float) -> List[HubblePacket]:
+def scan(timeout: float) -> list[HubblePacket]:
     """
     Scan for BLE advertisements that include service data for UUID 0xFCA6.
     Automatically detects encrypted vs unencrypted protocol packets.
@@ -187,7 +188,7 @@ def scan(timeout: float) -> List[HubblePacket]:
         )
 
 
-async def scan_async(timeout: float) -> List[HubblePacket]:
+async def scan_async(timeout: float) -> list[HubblePacket]:
     """
     Async version of scan() for use in async environments like Jupyter notebooks.
 
@@ -197,10 +198,10 @@ async def scan_async(timeout: float) -> List[HubblePacket]:
     return await _scan_async(timeout)
 
 
-async def _scan_single_async(ttl: float) -> Optional[HubblePacket]:
+async def _scan_single_async(ttl: float) -> HubblePacket | None:
     """Async implementation for scanning a single BLE packet."""
     done = asyncio.Event()
-    packet: Optional[HubblePacket] = None
+    packet: HubblePacket | None = None
 
     def on_detect(device, adv_data) -> None:
         nonlocal packet
@@ -225,7 +226,7 @@ async def _scan_single_async(ttl: float) -> Optional[HubblePacket]:
     return packet
 
 
-def scan_single(timeout: float) -> Optional[HubblePacket]:
+def scan_single(timeout: float) -> HubblePacket | None:
     """
     Scan for a BLE advertisement that includes service data for UUID 0xFCA6
     and return it. Automatically detects encrypted vs unencrypted protocol.
@@ -250,7 +251,7 @@ def scan_single(timeout: float) -> Optional[HubblePacket]:
         )
 
 
-async def scan_single_async(timeout: float) -> Optional[HubblePacket]:
+async def scan_single_async(timeout: float) -> HubblePacket | None:
     """
     Async version of scan_single() for use in async environments like Jupyter notebooks.
 

@@ -16,7 +16,7 @@ configuration, set once per scan so the caller can announce it exactly once.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Generic, List, Optional, Tuple, TypeVar
+from typing import Callable, Generic, TypeVar
 
 from .crypto import DEVICE_UPTIME, UNIX_TIME, decrypt
 from .packets import DecryptedPacket, EncryptedPacket
@@ -43,14 +43,14 @@ class Detection(Generic[T]):
     announced this scan.
     """
 
-    result: Optional[T]
-    label: Optional[str] = None
+    result: T | None
+    label: str | None = None
 
 
 def detect_eid_type(
     key: bytes,
-    pkts: List[EncryptedPacket],
-) -> Tuple[Optional[EncryptedPacket], Optional[DecryptedPacket], Optional[str], bool]:
+    pkts: list[EncryptedPacket],
+) -> tuple[EncryptedPacket | None, DecryptedPacket | None, str | None, bool]:
     """Classify a key's EID rotation mode from sample packets.
 
     Returns ``(packet, decrypted, label, ambiguous)`` where ``label`` is
@@ -117,10 +117,10 @@ class CtrCounterModeDetector:
     def decrypt(
         self,
         *,
-        decrypt_fn: Callable[..., Optional[T]],
+        decrypt_fn: Callable[..., T | None],
         cache_key: object = _SINGLE_STREAM,
     ) -> Detection[T]:
-        def _try(mode: str) -> Optional[T]:
+        def _try(mode: str) -> T | None:
             kwargs = {"counter_mode": mode}
             if mode == UNIX_TIME:
                 kwargs["days"] = self._days
@@ -168,7 +168,7 @@ class EaxExponentDetector:
     def decrypt(
         self,
         *,
-        decrypt_fn: Callable[[int], Optional[T]],
+        decrypt_fn: Callable[[int], T | None],
         cache_key: object,
     ) -> Detection[T]:
         if not self._auto_detect:

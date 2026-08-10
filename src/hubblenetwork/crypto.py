@@ -1,11 +1,12 @@
 from __future__ import annotations
-from typing import Optional
+
+from datetime import datetime, timezone
+
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
-from datetime import datetime, timezone
 
-from .packets import EncryptedPacket, DecryptedPacket, AesEaxPacket
+from .packets import AesEaxPacket, DecryptedPacket, EncryptedPacket
 
 UNIX_TIME = "UNIX_TIME"
 DEVICE_UPTIME = "DEVICE_UPTIME"
@@ -18,7 +19,7 @@ _HUBBLE_AES_TAG_SIZE = 4
 class ParsedPacket:
     """Parsed components from an EncryptedPacket's BLE advertisement payload."""
 
-    __slots__ = ("seq_no", "auth_tag", "encrypted_payload")
+    __slots__ = ("auth_tag", "encrypted_payload", "seq_no")
 
     def __init__(self, encrypted_pkt: EncryptedPacket) -> None:
         ble_adv = encrypted_pkt.payload
@@ -91,7 +92,7 @@ def decrypt_eax(
     pkt: AesEaxPacket,
     period_exponent: int = 0,
     pool_size: int = 128,
-) -> Optional[DecryptedPacket]:
+) -> DecryptedPacket | None:
     """Decrypt an AES-EAX packet by trying candidate counters.
 
     Generates candidate EIDs for each counter and matches against
@@ -179,7 +180,7 @@ def decrypt(
     encrypted_pkt: EncryptedPacket,
     days: int = 2,
     counter_mode: str = UNIX_TIME,
-) -> Optional[DecryptedPacket]:
+) -> DecryptedPacket | None:
     counter_mode = _normalize_counter_mode(counter_mode, days)
 
     parsed = ParsedPacket(encrypted_pkt)
@@ -220,10 +221,10 @@ def decrypt_satellite(
     seq_no: int,
     auth_tag: bytes,
     encrypted_payload: bytes,
-    timestamp: Optional[float] = None,
+    timestamp: float | None = None,
     days: int = 2,
     counter_mode: str = UNIX_TIME,
-) -> Optional[bytes]:
+) -> bytes | None:
     """Decrypt a satellite packet's encrypted customer payload.
 
     Satellite packets deliver the sequence number, 4-byte auth tag, and
@@ -263,7 +264,7 @@ def decrypt_satellite(
 
 def find_time_counter_delta(
     key: bytes, encrypted_pkt: EncryptedPacket, max_days_back: int = 365
-) -> Optional[int]:
+) -> int | None:
     """
     Find which day counter (time_counter) the key resolves for.
 

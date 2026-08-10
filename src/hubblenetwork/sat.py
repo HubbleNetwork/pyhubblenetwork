@@ -14,9 +14,10 @@ import json
 import logging
 import os
 import time
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Generator, Iterator, List, Optional, Set, Tuple
+from typing import Callable
 
 import httpx
 
@@ -101,7 +102,7 @@ def _get_client():
                 client = docker.DockerClient(base_url=f"unix://{sock}")
                 client.ping()
                 return client
-            except Exception:
+            except docker.errors.DockerException:
                 continue
 
     raise DockerError(
@@ -114,29 +115,35 @@ def _get_client():
 
 def ensure_docker_available() -> None:
     """Verify that Docker is installed and the daemon is running."""
+    import docker
+
     client = _get_client()
     try:
         client.ping()
-    except Exception:
+    except docker.errors.DockerException:
         raise DockerError("Docker daemon is not responding")
 
 
 def _image_exists_locally(image: str) -> bool:
+    import docker
+
     try:
         _get_client().images.get(image)
         return True
-    except Exception:
+    except docker.errors.DockerException:
         return False
 
 
 def pull_image(image: str = DOCKER_IMAGE) -> None:
     """Pull *image*, ensuring the latest version is fetched.
     """
+    import docker
+
     logger.info("Pulling %s …", image)
     client = _get_client()
     try:
         client.images.pull(image)
-    except Exception as exc:
+    except docker.errors.DockerException as exc:
         raise DockerError(f"Failed to pull image {image}: {exc}")
 
 
@@ -144,7 +151,7 @@ def start_container(
     image: str = DOCKER_IMAGE,
     port: int = API_PORT,
     *,
-    environment: Optional[Dict[str, str]] = None,
+    environment: dict[str, str] | None = None,
     privileged: bool = True,
     name: str = CONTAINER_NAME,
 ) -> str:
@@ -153,6 +160,8 @@ def start_container(
     The container is started with ``auto_remove=True`` so it is
     automatically removed when stopped.
     """
+    import docker
+
     client = _get_client()
     try:
         container = client.containers.run(
@@ -166,17 +175,19 @@ def start_container(
         )
         logger.debug("Started container %s", container.short_id)
         return container.id
-    except Exception as exc:
+    except docker.errors.DockerException as exc:
         raise DockerError(f"Failed to start container: {exc}")
 
 
 def stop_container(container_id: str) -> None:
     """Stop *container_id* (best-effort, errors are swallowed)."""
+    import docker
+
     try:
         client = _get_client()
         container = client.containers.get(container_id)
         container.stop(timeout=5)
-    except Exception:
+    except docker.errors.DockerException:
         pass  # best-effort cleanup
 
 
@@ -239,9 +250,9 @@ def _wait_for_sdr(port: int = API_PORT, timeout: float = 15) -> None:
     )
 
 
-def _parse_jsonl(text: str) -> List[SatellitePacket]:
+def _parse_jsonl(text: str) -> list[SatellitePacket]:
     """Parse a JSONL response body into a list of ``SatellitePacket``."""
-    packets: List[SatellitePacket] = []
+    packets: list[SatellitePacket] = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -291,7 +302,7 @@ def start_timedomain(device_id: int, port: int = API_PORT) -> None:
         raise SatelliteError(f"Failed to start time-domain capture: {exc}")
 
 
-def fetch_packets(port: int = API_PORT) -> List[SatellitePacket]:
+def fetch_packets(port: int = API_PORT) -> list[SatellitePacket]:
     """Fetch the current packet buffer from the satellite receiver API."""
     url = _packets_url(port)
     try:
@@ -337,7 +348,7 @@ def record_analyze(duration: float, port: int = API_PORT) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _packet_key(pkt: SatellitePacket) -> Tuple[str, int]:
+def _packet_key(pkt: SatellitePacket) -> tuple[str, int]:
     """Return a deduplication key for *pkt*."""
     return (pkt.device_id, pkt.seq_num)
 
@@ -347,11 +358,11 @@ def _running_container(
     *,
     port: int,
     image: str,
-    environment: Dict[str, str],
+    environment: dict[str, str],
     privileged: bool,
     name: str,
     wait_for_sdr: bool,
-    on_status: Optional[Callable[[str], None]],
+    on_status: Callable[[str], None] | None,
 ) -> Iterator[None]:
     """Pull, start, and wait for the receiver container to be ready; stop it on exit.
 
@@ -390,9 +401,9 @@ def _running_container(
         stop_container(container_id)
 
 
-def _build_environment(mock: bool, pluto_uri: Optional[str]) -> Dict[str, str]:
+def _build_environment(mock: bool, pluto_uri: str | None) -> dict[str, str]:
     """Build the container environment shared by ``scan`` and the one-shot ops."""
-    environment: Dict[str, str] = {}
+    environment: dict[str, str] = {}
     if mock:
         environment["SDR_TYPE"] = "mock"
     if pluto_uri is not None:
@@ -401,14 +412,14 @@ def _build_environment(mock: bool, pluto_uri: Optional[str]) -> Dict[str, str]:
 
 
 def scan(
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
     poll_interval: float = 2.0,
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
     *,
     mock: bool = False,
-    pluto_uri: Optional[str] = None,
-    on_status: Optional[Callable[[str], None]] = None,
+    pluto_uri: str | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> Generator[SatellitePacket, None, None]:
     """Scan for satellite packets, managing the Docker container lifecycle.
 
@@ -438,7 +449,7 @@ def scan(
     ):
         _emit("Receiver ready, listening for packets...")
 
-        seen: Set[Tuple[str, int]] = set()
+        seen: set[tuple[str, int]] = set()
         start = time.monotonic()
         deadline = None if timeout is None else start + timeout
 
@@ -461,15 +472,15 @@ def scan(
 
 
 def _run_one_shot(
-    action: Callable[[int], "bytes | str"],
+    action: Callable[[int], bytes | str],
     *,
     action_status: str,
     port: int = API_PORT,
     image: str = DOCKER_IMAGE,
     mock: bool = False,
-    pluto_uri: Optional[str] = None,
-    on_status: Optional[Callable[[str], None]] = None,
-) -> "bytes | str":
+    pluto_uri: str | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> bytes | str:
     """Run *action* against a freshly started receiver container, then tear it down.
 
     Shared lifecycle for the one-shot ``record``/``signal_report`` operations, which
@@ -501,8 +512,8 @@ def record(
     image: str = DOCKER_IMAGE,
     *,
     mock: bool = False,
-    pluto_uri: Optional[str] = None,
-    on_status: Optional[Callable[[str], None]] = None,
+    pluto_uri: str | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> bytes:
     """Capture *duration* seconds of raw IQ samples, managing the Docker lifecycle.
 
@@ -528,8 +539,8 @@ def signal_report(
     image: str = DOCKER_IMAGE,
     *,
     mock: bool = False,
-    pluto_uri: Optional[str] = None,
-    on_status: Optional[Callable[[str], None]] = None,
+    pluto_uri: str | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> str:
     """Record for *duration* seconds and build an RF signal-diagnostic report.
 

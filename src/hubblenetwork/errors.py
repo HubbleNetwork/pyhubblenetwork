@@ -9,8 +9,8 @@ Usage:
 """
 
 from __future__ import annotations
-from typing import Any, Optional
 
+from typing import Any
 
 # ----- Base classes ---------------------------------------------------------
 
@@ -69,7 +69,7 @@ class SatelliteError(HubbleError):
 class BleError(HubbleError):
     """BLE operation failed (connection, GATT read/write, etc.)."""
 
-    def __init__(self, message: str, att_error_code: Optional[int] = None):
+    def __init__(self, message: str, att_error_code: int | None = None):
         super().__init__(message)
         self.att_error_code = att_error_code
 
@@ -106,7 +106,7 @@ ATT_ERROR_NAMES = {
 }
 
 
-def extract_att_error_code(error_message: str) -> Optional[int]:
+def extract_att_error_code(error_message: str) -> int | None:
     """
     Extract ATT error code from a BleakError message.
 
@@ -150,39 +150,39 @@ class FlashError(RuntimeError):
 
 
 __all__ = [
-    "HubbleError",
-    "BackendError",
-    "RequestError",
-    "InternalServerError",
-    "NetworkError",
-    "APITimeout",
-    "InvalidCredentialsError",
-    "ValidationError",
-    "ScanError",
-    "DecryptionError",
-    "DockerError",
-    "SatelliteError",
-    "BleError",
-    "InvalidDeviceError",
-    "ElfFetchError",
-    "FlashError",
-    "ATT_INVALID_ATTRIBUTE_LENGTH",
+    "ATT_ERROR_NAMES",
     "ATT_INSUFFICIENT_ENCRYPTION",
+    "ATT_INVALID_ATTRIBUTE_LENGTH",
+    "ATT_INVALID_EID_PARAMETER",
+    "ATT_INVALID_EID_TYPE",
     "ATT_INVALID_POOL_SIZE",
     "ATT_INVALID_ROTATION_PERIOD",
-    "ATT_INVALID_EID_TYPE",
-    "ATT_INVALID_EID_PARAMETER",
-    "ATT_ERROR_NAMES",
+    "APITimeout",
+    "BackendError",
+    "BleError",
+    "DecryptionError",
+    "DockerError",
+    "ElfFetchError",
+    "FlashError",
+    "HubbleError",
+    "InternalServerError",
+    "InvalidCredentialsError",
+    "InvalidDeviceError",
+    "NetworkError",
+    "RequestError",
+    "SatelliteError",
+    "ScanError",
+    "ValidationError",
     "extract_att_error_code",
-    "raise_for_response",
     "map_http_status",
+    "raise_for_response",
 ]
 
 
 # ----- Helpers for HTTP client code ----------------------------------------
 
 
-def map_http_status(status_code: int, detail: Optional[str] = None) -> BackendError:
+def map_http_status(status_code: int, detail: str | None = None) -> BackendError:
     """
     Map an HTTP status code to a concrete exception instance.
     `detail` should be a short server-provided error message if available.

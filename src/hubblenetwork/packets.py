@@ -1,7 +1,7 @@
 # hubble/packets.py
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Dict
 
 
 @dataclass(frozen=True)
@@ -10,7 +10,7 @@ class Location:
 
     lat: float
     lon: float
-    alt_m: Optional[float] = None  # altitude meters, if known
+    alt_m: float | None = None  # altitude meters, if known
     fake: bool = False
 
 
@@ -19,14 +19,14 @@ class EncryptedPacket:
     """A packet received locally (e.g., via BLE) that has not been decrypted."""
 
     timestamp: int  # timezone-aware UTC recommended
-    location: Optional[Location]  # None if unknown
+    location: Location | None  # None if unknown
     payload: bytes  # opaque encrypted bytes
     rssi: int  # received signal strength (dBm)
     # Fields extracted from the raw advertisement, when present. AES-CTR
     # carries auth_tag but no EID; None means the field isn't applicable.
-    protocol_version: Optional[int] = None
-    eid: Optional[int] = None
-    auth_tag: Optional[bytes] = None
+    protocol_version: int | None = None
+    eid: int | None = None
+    auth_tag: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class UnencryptedPacket:
     """A packet received via BLE using the unencrypted Hubble protocol."""
 
     timestamp: int
-    location: Optional[Location]
+    location: Location | None
     network_id: int  # 34-bit static network ID
     protocol_version: int  # 6-bit protocol version
     payload: bytes  # 0-18 bytes customer payload
@@ -46,7 +46,7 @@ class AesEaxPacket:
     """A packet using AES-EAX authenticated encryption (protocol version 2)."""
 
     timestamp: int
-    location: Optional[Location]
+    location: Location | None
     protocol_version: int  # 6-bit version (2 for AES-EAX)
     nonce_salt: bytes  # 2 bytes, random per-message
     eid: int  # 8-byte EID as uint64
@@ -60,7 +60,7 @@ class UnknownPacket:
     """A packet with an unrecognized protocol version."""
 
     timestamp: int
-    location: Optional[Location]
+    location: Location | None
     protocol_version: int
     payload: bytes
     rssi: int
@@ -73,18 +73,18 @@ class DecryptedPacket:
     timestamp: int
     device_id: str
     device_name: str
-    location: Optional[Location]
-    tags: Dict[str, str]  # arbitrary tags
+    location: Location | None
+    tags: dict[str, str]  # arbitrary tags
     payload: bytes  # decrypted payload bytes
     rssi: int  # received signal strength (dBm)
-    counter: Optional[int] = None
-    sequence: Optional[int] = None
+    counter: int | None = None
+    sequence: int | None = None
     # Preserved from the raw packet so the original version / EID / auth tag
     # can still be displayed alongside the decrypted payload. AES-CTR has no
     # EID.
-    protocol_version: Optional[int] = None
-    eid: Optional[int] = None
-    auth_tag: Optional[bytes] = None
+    protocol_version: int | None = None
+    eid: int | None = None
+    auth_tag: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -101,8 +101,8 @@ class SatellitePacket:
     payload: bytes  # encrypted payload bytes (base64-decoded from API)
     # 4-byte CMAC auth tag, when reported by the receiver. Needed to locally
     # decrypt the payload (identifies the day counter); None if unavailable.
-    auth_tag: Optional[bytes] = None
-    pdu_n_corr: Optional[int] = None   # Reed-Solomon corrections on PDU (None for OOK/v-1)
-    header_n_corr: Optional[int] = None  # Reed-Solomon corrections on header
-    sym_mean_ms: Optional[float] = None  # average symbol duration from envelope analysis
-    gap_mean_ms: Optional[float] = None  # average inter-symbol gap duration
+    auth_tag: bytes | None = None
+    pdu_n_corr: int | None = None   # Reed-Solomon corrections on PDU (None for OOK/v-1)
+    header_n_corr: int | None = None  # Reed-Solomon corrections on header
+    sym_mean_ms: float | None = None  # average symbol duration from envelope analysis
+    gap_mean_ms: float | None = None  # average inter-symbol gap duration
