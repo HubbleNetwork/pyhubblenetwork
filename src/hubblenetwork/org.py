@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-from typing import List, Optional
 
 from . import cloud
 from .crypto import DEVICE_UPTIME, UNIX_TIME
@@ -31,9 +30,9 @@ class Organization:
 
     def __init__(
         self,
-        org_id: Optional[str] = None,
-        api_token: Optional[str] = None,
-        credentials: Optional[cloud.Credentials] = None,
+        org_id: str | None = None,
+        api_token: str | None = None,
+        credentials: cloud.Credentials | None = None,
     ) -> None:
         if credentials:
             self.credentials = credentials
@@ -48,10 +47,10 @@ class Organization:
 
     def register_device(
         self,
-        encryption: Optional[str] = None,
-        counter_source: Optional[str] = None,
-        period_seconds: Optional[int] = None,
-        period_exponent: Optional[int] = None,
+        encryption: str | None = None,
+        counter_source: str | None = None,
+        period_seconds: int | None = None,
+        period_exponent: int | None = None,
     ) -> Device:
         """
         Register a new device in this organization and return it.
@@ -131,7 +130,7 @@ class Organization:
         """
 
         # Turn each JSON object into a Device
-        devices: List[Device] = []
+        devices: list[Device] = []
 
         continuation_token = None
         while True:
@@ -148,7 +147,7 @@ class Organization:
 
         return devices
 
-    def retrieve_packets(self, device: Device, days: int = 7) -> List[DecryptedPacket]:
+    def retrieve_packets(self, device: Device, days: int = 7) -> list[DecryptedPacket]:
         """
         Return the most recent decrypted packet for the given device,
         or None if none exists.
@@ -170,9 +169,7 @@ class Organization:
                         timestamp=int(packet["device"]["timestamp"]),
                         device_id=packet["device"]["id"],
                         device_name=(
-                            packet["device"]["name"]
-                            if "name" in packet["device"]
-                            else ""
+                            packet["device"].get("name", "")
                         ),
                         location=Location(
                             lat=packet["location"]["latitude"],

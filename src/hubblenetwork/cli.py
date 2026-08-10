@@ -11,9 +11,9 @@ import sys
 import time
 import uuid
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
-from typing import List, Optional
+from typing import ClassVar
 
 import click
 from tabulate import tabulate
@@ -67,11 +67,11 @@ _TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"  # used to name default sat record/signal-re
 
 
 def _default_iq_capture_name() -> str:
-    return f"iq_capture_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.npy"
+    return f"iq_capture_{datetime.now(timezone.utc).astimezone().strftime(_TIMESTAMP_FORMAT)}.npy"
 
 
 def _default_signal_report_name() -> str:
-    return f"signal_report_{datetime.now().strftime(_TIMESTAMP_FORMAT)}.txt"
+    return f"signal_report_{datetime.now(timezone.utc).astimezone().strftime(_TIMESTAMP_FORMAT)}.txt"
 
 
 # One entry per ``sat record`` / ``sat signal-report`` one-shot command, keyed
@@ -157,7 +157,7 @@ def _announce_auto_detect(auto_ctr: bool, auto_eax: bool, *, suppress: bool) -> 
     )
 
 
-def _announce_detection(label: Optional[str], *, suppress: bool) -> None:
+def _announce_detection(label: str | None, *, suppress: bool) -> None:
     """Print the one-shot ``[INFO] Detected:`` line for a fresh detection.
 
     ``label`` is set by the detector only on the first successful detection of a
@@ -229,10 +229,10 @@ def _ctr_display_payload(pkt) -> bytes:
 def _packet_to_dict(
     pkt,
     payload_format: str = "base64",
-    decrypt_status: Optional[str] = None,
+    decrypt_status: str | None = None,
 ) -> dict:
     """Convert a packet to a dictionary for JSON serialization."""
-    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+    ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
     data = {
         "timestamp": pkt.timestamp,
         "datetime": ts,
@@ -268,7 +268,7 @@ def _format_ready_json_success(
     device_address: str,
     result: dict,
     duration_ms: int,
-    device_name: Optional[str] = None,
+    device_name: str | None = None,
 ) -> dict:
     """
     Format a successful ready command result as JSON.
@@ -300,7 +300,7 @@ def _format_ready_json_error(
     device_address: str,
     error: Exception,
     duration_ms: int,
-    device_name: Optional[str] = None,
+    device_name: str | None = None,
 ) -> dict:
     """
     Format a failed ready command result as JSON.
@@ -346,7 +346,7 @@ def _format_ready_json_error(
     }
 
 
-def _decrypt_status_cell(decrypt_status: Optional[str]) -> str:
+def _decrypt_status_cell(decrypt_status: str | None) -> str:
     """Render a decrypt status as a table cell ("OK"/"FAIL"/"-")."""
     return {"ok": "OK", "fail": "FAIL"}.get(decrypt_status, "-")
 
@@ -358,7 +358,7 @@ class _StreamingPrinterBase:
         self._packet_count = 0
         self._show_decrypt_status = show_decrypt_status
 
-    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
         """Print a single packet. Override in subclasses."""
         raise NotImplementedError
 
@@ -379,7 +379,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
     """Print table rows as they arrive, printing header once."""
 
     # Fixed column widths for consistent alignment
-    _COL_WIDTHS = {
+    _COL_WIDTHS: ClassVar[dict[str, int]] = {
         "TIMESTAMP": 12,
         "TIME": 10,
         "RSSI": 6,
@@ -397,12 +397,12 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
     def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False):
         super().__init__(show_decrypt_status=show_decrypt_status)
         self._header_printed = False
-        self._headers: List[str] = []
+        self._headers: list[str] = []
         self._show_net_id = False
         self._show_coordinates = False
         self._payload_format = payload_format
 
-    def _determine_columns(self, pkt) -> List[str]:
+    def _determine_columns(self, pkt) -> list[str]:
         """Determine column headers based on the first packet seen.
 
         AES-EAX and AES-CTR packets share a single unified layout — VERSION,
@@ -412,7 +412,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         self._show_net_id = isinstance(pkt, UnencryptedPacket)
         self._show_coordinates = not pkt.location.fake
 
-        headers: List[str] = []
+        headers: list[str] = []
         if self._show_decrypt_status:
             headers.append("DECRYPT")
         headers.extend(
@@ -426,7 +426,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
 
         return headers
 
-    def _format_row(self, values: List) -> str:
+    def _format_row(self, values: list) -> str:
         """Format a row with fixed column widths."""
         parts = []
         for i, val in enumerate(values):
@@ -442,7 +442,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             parts.append("-" * width)
         return "+-" + "-+-".join(parts) + "-+"
 
-    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
         """Print a single packet row, printing header first if needed."""
         if not self._header_printed:
             self._headers = self._determine_columns(pkt)
@@ -452,8 +452,8 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             click.echo(self._make_separator())
             self._header_printed = True
 
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%H:%M:%S")
-        row: List = []
+        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
+        row: list = []
         if self._show_decrypt_status:
             row.append(_decrypt_status_cell(decrypt_status))
         row.extend([pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"])
@@ -511,7 +511,7 @@ class _StreamingJsonPrinter(_StreamingPrinterBase):
     def suppress_info_messages(self) -> bool:
         return True
 
-    def print_row(self, pkt, decrypt_status: Optional[str] = None) -> None:
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
         """Print a single packet as JSON."""
         status = decrypt_status if self._show_decrypt_status else None
         pkt_dict = self._to_dict_fn(pkt, self._payload_format, decrypt_status=status)
@@ -551,11 +551,11 @@ _STREAMING_PRINTERS = {
 def _sat_packet_to_dict(
     pkt: SatellitePacket,
     payload_format: str = "base64",
-    decrypt_status: Optional[str] = None,
+    decrypt_status: str | None = None,
     **_: object,
 ) -> dict:
     """Convert a SatellitePacket to a dictionary for JSON serialization."""
-    ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+    ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
     data = {
         "device_id": pkt.device_id,
         "seq_num": pkt.seq_num,
@@ -581,7 +581,7 @@ def _sat_packet_to_dict(
 class _SatStreamingTablePrinter(_StreamingPrinterBase):
     """Print satellite packet rows as they arrive."""
 
-    _COL_WIDTHS = {
+    _COL_WIDTHS: ClassVar[dict[str, int]] = {
         "DECRYPT": 8,
         "DEVICE_ID": 12,
         "SEQ": 6,
@@ -596,8 +596,8 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         "PAYLOAD": 20,
     }
 
-    _BASE_HEADERS = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
-    _DEBUG_HEADERS = ["RS_CORR", "SYM_MS", "GAP_MS"]
+    _BASE_HEADERS: ClassVar[list[str]] = ["DEVICE_ID", "SEQ", "TYPE", "TIME", "RSSI_DB", "CHANNEL", "FREQ_OFFSET", "PAYLOAD"]
+    _DEBUG_HEADERS: ClassVar[list[str]] = ["RS_CORR", "SYM_MS", "GAP_MS"]
 
     def __init__(self, payload_format: str = "base64", show_decrypt_status: bool = False, show_debug_cols: bool = False):
         super().__init__(show_decrypt_status=show_decrypt_status)
@@ -607,7 +607,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         headers = list(self._BASE_HEADERS) + (self._DEBUG_HEADERS if show_debug_cols else [])
         self._headers = ["DECRYPT", *headers] if show_decrypt_status else headers
 
-    def _format_row(self, values: List) -> str:
+    def _format_row(self, values: list) -> str:
         parts = []
         for i, val in enumerate(values):
             width = self._COL_WIDTHS.get(self._headers[i], 10)
@@ -626,7 +626,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         text = f"! {msg}"
         return "| " + text.ljust(inner_width) + " |"
 
-    def print_row(self, pkt: SatellitePacket, decrypt_status: Optional[str] = None) -> None:
+    def print_row(self, pkt: SatellitePacket, decrypt_status: str | None = None) -> None:
         if not self._header_printed:
             click.echo("")
             click.echo(self._make_separator())
@@ -634,8 +634,8 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
             click.echo(self._make_separator())
             self._header_printed = True
 
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
-        row: List = []
+        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
+        row: list = []
         if self._show_decrypt_status:
             row.append(_decrypt_status_cell(decrypt_status))
         row.extend([
@@ -673,7 +673,7 @@ _SAT_STREAMING_PRINTERS = {
 }
 
 
-def _print_packets_tabular(pkts: List, payload_format: str = "base64") -> None:
+def _print_packets_tabular(pkts: list, payload_format: str = "base64") -> None:
     """Print packets in a formatted table using tabulate."""
     if not pkts:
         click.echo("No packets!")
@@ -693,7 +693,7 @@ def _print_packets_tabular(pkts: List, payload_format: str = "base64") -> None:
 
     rows = []
     for pkt in pkts:
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
         row = [pkt.timestamp, ts, pkt.rssi if pkt.rssi is not None else "None"]
 
         if is_decrypted:
@@ -714,7 +714,7 @@ def _print_packets_tabular(pkts: List, payload_format: str = "base64") -> None:
 def _print_packets_csv(pkts, payload_format: str = "base64") -> None:
     click.echo("timestamp, datetime, latitude, longitude, payload")
     for pkt in pkts:
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
         payload_str = _format_payload(pkt.payload, payload_format)
         click.echo(
             f'{pkt.timestamp}, {ts}, {pkt.location.lat:.6f}, {pkt.location.lon:.6f}, "{payload_str}"'
@@ -741,7 +741,7 @@ def _print_device(dev: Device) -> None:
     click.echo(f'id: "{dev.id}", ', nl=False)
     click.echo(f'name: "{dev.name}", ', nl=False)
     click.echo(f"tags: {dev.tags!s}, ", nl=False)
-    ts = datetime.fromtimestamp(dev.created_ts).strftime("%c")
+    ts = datetime.fromtimestamp(dev.created_ts, tz=timezone.utc).astimezone().strftime("%c")
     click.echo(f'created: "{ts}", ', nl=False)
     click.echo(f"active: {dev.active!s}", nl=False)
     if dev.key:
@@ -870,8 +870,8 @@ def ble() -> None:
 @click.pass_context
 def ble_detect(
     ctx,
-    timeout: Optional[int] = None,
-    key: str = None,
+    timeout: int | None = None,
+    key: str | None = None,
     days: int = 2,
     counter_mode: str = "UNIX_TIME",
     period_exponent: int = 0,
@@ -966,7 +966,7 @@ def ble_detect(
         decrypted_pkt = None
         if isinstance(pkt, AesEaxPacket):
             d = eax_detector.decrypt(
-                decrypt_fn=lambda exp: decrypt_eax(
+                decrypt_fn=lambda exp, pkt=pkt: decrypt_eax(
                     decoded_key, pkt, period_exponent=exp
                 ),
                 cache_key=pkt.eid,
@@ -975,7 +975,7 @@ def ble_detect(
             decrypted_pkt = d.result
         elif isinstance(pkt, EncryptedPacket):
             d = ctr_detector.decrypt(
-                decrypt_fn=lambda **kw: decrypt(decoded_key, pkt, **kw),
+                decrypt_fn=lambda pkt=pkt, **kw: decrypt(decoded_key, pkt, **kw),
                 cache_key=pkt.eid,
             )
             _announce_detection(d.label, suppress=use_json)
@@ -984,7 +984,7 @@ def ble_detect(
 
         if decrypted_pkt:
             # If we can decrypt it, output success
-            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp).strftime(
+            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp, tz=timezone.utc).astimezone().strftime(
                 "%c"
             )
             logger.info("Packet decrypted successfully!")
@@ -1097,11 +1097,11 @@ def ble_detect(
 @click.pass_context
 def ble_scan(
     ctx,
-    timeout: Optional[int] = None,
-    count: Optional[int] = None,
-    network_id: Optional[int] = None,
+    timeout: int | None = None,
+    count: int | None = None,
+    network_id: int | None = None,
     ingest: bool = False,
-    key: Optional[str] = None,
+    key: str | None = None,
     days: int = 2,
     counter_mode: str = "UNIX_TIME",
     period_exponent: int = 0,
@@ -1152,7 +1152,7 @@ def ble_scan(
     deadline = None if timeout is None else start + timeout
 
     # Pre-decode the key if provided
-    decoded_key: Optional[bytearray] = None
+    decoded_key: bytearray | None = None
     if key:
         try:
             decoded_key = bytearray(_parse_key(key))
@@ -1216,7 +1216,7 @@ def ble_scan(
             elif isinstance(pkt, AesEaxPacket):
                 if decoded_key:
                     d = eax_detector.decrypt(
-                        decrypt_fn=lambda exp: decrypt_eax(
+                        decrypt_fn=lambda exp, pkt=pkt: decrypt_eax(
                             decoded_key, pkt, period_exponent=exp
                         ),
                         cache_key=pkt.eid,
@@ -1234,7 +1234,7 @@ def ble_scan(
             elif isinstance(pkt, EncryptedPacket):
                 if decoded_key:
                     d = ctr_detector.decrypt(
-                        decrypt_fn=lambda **kw: decrypt(decoded_key, pkt, **kw),
+                        decrypt_fn=lambda pkt=pkt, **kw: decrypt(decoded_key, pkt, **kw),
                         cache_key=pkt.eid,
                     )
                     _announce_detection(
@@ -1289,7 +1289,7 @@ def ble_scan(
     help="Output results as JSON",
 )
 def ble_check_time(
-    timeout: Optional[int] = None, key: str = None, json_output: bool = False
+    timeout: int | None = None, key: str | None = None, json_output: bool = False
 ) -> int:
     """
     Scan for BLE packets and check if the device's UTC time is out of spec.
@@ -1328,7 +1328,7 @@ def ble_check_time(
         # Check which time counter the packet resolves for
         delta = find_time_counter_delta(decoded_key, pkt)
 
-        ts = datetime.fromtimestamp(pkt.timestamp).strftime("%c")
+        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
 
         if delta is None:
             # Could not resolve the packet with this key
@@ -1586,7 +1586,7 @@ def ready() -> None:
     default=None,
     help="Filter results to specific device MAC address",
 )
-def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: Optional[str] = None) -> None:
+def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: str | None = None) -> None:
     """
     Scan for Hubble Ready devices advertising 0xFCA7.
 
@@ -1600,7 +1600,7 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: O
       hubblenetwork ready scan --address AA:BB:CC:DD:EE:FF
     """
     use_json = output_format.lower() == "json"
-    devices_found: List[ready_mod.HubbleReadyDevice] = []
+    devices_found: list[ready_mod.HubbleReadyDevice] = []
     device_count = 0
     header_printed = False
     start_time = time.monotonic()
@@ -1702,8 +1702,8 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: O
 
 
 def _select_ready_device(
-    devices: List[ready_mod.HubbleReadyDevice],
-) -> Optional[ready_mod.HubbleReadyDevice]:
+    devices: list[ready_mod.HubbleReadyDevice],
+) -> ready_mod.HubbleReadyDevice | None:
     """Present interactive device selection using questionary."""
     import questionary
 
@@ -1747,7 +1747,7 @@ def _select_ready_device(
     help="Output format",
 )
 def ready_info(
-    address: Optional[str] = None, timeout: float = 10.0, output_format: str = "tabular"
+    address: str | None = None, timeout: float = 10.0, output_format: str = "tabular"
 ) -> None:
     """
     Connect to a Hubble Ready device and show characteristics.
@@ -2240,7 +2240,7 @@ def ready_read_time(
         sys.exit(2)
 
     if use_json:
-        timestamp_iso = datetime.fromtimestamp(timestamp).isoformat()
+        timestamp_iso = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().isoformat()
         result = {
             "timestamp": timestamp,
             "timestamp_iso": timestamp_iso,
@@ -2258,8 +2258,8 @@ def ready_read_time(
     click.echo("")
     click.secho("Epoch Time Characteristic", bold=True)
     click.echo("")
-    timestamp_iso = datetime.fromtimestamp(timestamp).isoformat()
-    timestamp_human = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S %Z")
+    timestamp_iso = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().isoformat()
+    timestamp_human = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     click.echo(f"  Unix Timestamp: {timestamp}")
     click.echo(f"  ISO 8601:       {timestamp_iso}")
     click.echo(f"  Human:          {timestamp_human}")
@@ -2571,7 +2571,7 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
     show_default=True,
     help="Output format",
 )
-def ready_write_time(address: str, timestamp: Optional[int], timeout: float, output_format: str):
+def ready_write_time(address: str, timestamp: int | None, timeout: float, output_format: str):
     """Write epoch time to a Hubble Ready device.
 
     This command writes a Unix timestamp to the Epoch Time characteristic.
@@ -2733,8 +2733,8 @@ def ready_provision(
     timeout: float = 10.0,
     eid_type: str = "utc",
     verbose: bool = False,
-    org_id: Optional[str] = None,
-    token: Optional[str] = None,
+    org_id: str | None = None,
+    token: str | None = None,
 ) -> None:
     """
     Provision a Hubble Ready device.
@@ -3162,14 +3162,14 @@ def _enable_sat_debug_logging(debug: bool) -> None:
 def _run_sat_scan(
     *,
     mock: bool,
-    timeout: Optional[int],
-    count: Optional[int],
+    timeout: int | None,
+    count: int | None,
     output_format: str,
     poll_interval: float,
     payload_format: str,
-    key: Optional[str] = None,
+    key: str | None = None,
     days: int = 2,
-    pluto_uri: Optional[str] = None,
+    pluto_uri: str | None = None,
     debug: bool = False,
     counter_mode: str = UNIX_TIME,
     auto_detect_ctr: bool = False,
@@ -3190,7 +3190,7 @@ def _run_sat_scan(
     )
 
     # Pre-decode the key if provided.
-    decoded_key: Optional[bytes] = None
+    decoded_key: bytes | None = None
     if key:
         try:
             decoded_key = _parse_key(key)
@@ -3254,7 +3254,7 @@ def _run_sat_scan(
                     # Satellite streams have no per-packet EID; omitting cache_key
                     # lets the detector share one per-stream slot for the scan.
                     d = ctr_detector.decrypt(
-                        decrypt_fn=lambda **kw: decrypt_satellite(
+                        decrypt_fn=lambda pkt=pkt, **kw: decrypt_satellite(
                             decoded_key,
                             seq_no=pkt.seq_num,
                             auth_tag=pkt.auth_tag,
@@ -3298,9 +3298,9 @@ def _run_sat_one_shot(
     mode: str,
     duration: float,
     *,
-    output_path: Optional[str],
+    output_path: str | None,
     mock: bool,
-    pluto_uri: Optional[str],
+    pluto_uri: str | None,
     debug: bool,
 ) -> None:
     """Shared implementation for the one-shot ``sat record`` / ``sat signal-report`` commands.
@@ -3532,7 +3532,7 @@ def sat_signal_report(duration, output_path, mock, pluto_uri, debug) -> None:
     )
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """
     Entry point used by console_scripts.
 

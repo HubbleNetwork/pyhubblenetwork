@@ -5,7 +5,7 @@ import base64
 import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -91,11 +91,11 @@ def cloud_request(
     method: str,
     path: str,
     env: Environment,
-    credentials: Optional[Credentials] = None,
+    credentials: Credentials | None = None,
     json: Any = None,
     timeout_s: float = 10.0,
-    params: Optional[MutableMapping[str, Any]] = None,
-    continuation_token: Optional[str] = None,
+    params: MutableMapping[str, Any] | None = None,
+    continuation_token: str | None = None,
 ) -> Any:
     """
     Make a single HTTP request to the Hubble Cloud API and return parsed JSON.
@@ -140,9 +140,7 @@ def cloud_request(
     # Parse JSON body
     try:
         continuation_token = (
-            resp.headers["Continuation-Token"]
-            if "Continuation-Token" in resp.headers
-            else None
+            resp.headers.get("Continuation-Token", None)
         )
         return (resp.json(), continuation_token)
     except ValueError as e:
@@ -150,7 +148,7 @@ def cloud_request(
         raise BackendError(f"Non-JSON response from {url}") from e
 
 
-def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
+def get_env_from_credentials(credentials: Credentials) -> Environment | None:
     for env in _ENVIRONMENTS:
         try:
             # If this call fails then we know we don't have the
@@ -172,9 +170,9 @@ def register_device(
     credentials: Credentials,
     env: Environment,
     encryption: str = "AES-256-CTR",
-    counter_source: Optional[str] = None,
-    period_in_seconds: Optional[int] = None,
-    period_exponent: Optional[int] = None,
+    counter_source: str | None = None,
+    period_in_seconds: int | None = None,
+    period_exponent: int | None = None,
 ) -> Any:
     """Create a new device and return it."""
     data: dict = {
@@ -336,7 +334,7 @@ def device_metrics(
     credentials: Credentials,
     env: Environment,
     days_back: int = 1,
-    time_interval: Optional[str] = None,
+    time_interval: str | None = None,
 ) -> dict:
     """Fetch device metrics (registered, active, never-active counts)."""
     params: MutableMapping[str, Any] = {

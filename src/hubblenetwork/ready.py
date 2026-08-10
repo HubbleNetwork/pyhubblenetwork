@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Callable
 
 from bleak import BleakClient, BleakScanner
 
@@ -42,14 +42,14 @@ CHAR_NAMES = {
 class HubbleReadyDevice:
     """A device advertising the Hubble Provisioning Service (0xFCA7)."""
 
-    name: Optional[str]
+    name: str | None
     address: str
     rssi: int
 
 
-async def _scan_ready_devices_async(timeout: float) -> List[HubbleReadyDevice]:
+async def _scan_ready_devices_async(timeout: float) -> list[HubbleReadyDevice]:
     """Async implementation of Hubble Ready device scan."""
-    devices: List[HubbleReadyDevice] = []
+    devices: list[HubbleReadyDevice] = []
     seen_addresses: set[str] = set()
 
     def on_detect(device, adv_data) -> None:
@@ -86,7 +86,7 @@ async def _scan_ready_devices_async(timeout: float) -> List[HubbleReadyDevice]:
     return devices
 
 
-def scan_ready_devices(timeout: float = 10.0) -> List[HubbleReadyDevice]:
+def scan_ready_devices(timeout: float = 10.0) -> list[HubbleReadyDevice]:
     """
     Scan for BLE devices advertising the Hubble Provisioning Service (0xFCA7).
 
@@ -114,7 +114,7 @@ def scan_ready_devices(timeout: float = 10.0) -> List[HubbleReadyDevice]:
         )
 
 
-async def scan_ready_devices_async(timeout: float = 10.0) -> List[HubbleReadyDevice]:
+async def scan_ready_devices_async(timeout: float = 10.0) -> list[HubbleReadyDevice]:
     """
     Async version of scan_ready_devices() for use in async environments.
 
@@ -127,9 +127,9 @@ async def scan_ready_devices_async(timeout: float = 10.0) -> List[HubbleReadyDev
 async def _scan_ready_devices_streaming_async(
     timeout: float,
     on_device: Callable[[HubbleReadyDevice], None],
-) -> List[HubbleReadyDevice]:
+) -> list[HubbleReadyDevice]:
     """Async scan that calls on_device callback for each discovered device."""
-    devices: List[HubbleReadyDevice] = []
+    devices: list[HubbleReadyDevice] = []
     seen_addresses: set[str] = set()
 
     def on_detect(device, adv_data) -> None:
@@ -165,7 +165,7 @@ async def _scan_ready_devices_streaming_async(
 def scan_ready_devices_streaming(
     timeout: float,
     on_device: Callable[[HubbleReadyDevice], None],
-) -> List[HubbleReadyDevice]:
+) -> list[HubbleReadyDevice]:
     """
     Scan for Hubble Ready devices with streaming output.
 
@@ -632,7 +632,7 @@ def write_config(
 
 async def _write_time_async(
     address: str,
-    timestamp: Optional[int] = None,
+    timestamp: int | None = None,
     timeout: float = 30.0
 ) -> WriteResult:
     """Async implementation of write_time."""
@@ -671,7 +671,7 @@ async def _write_time_async(
 
 def write_time(
     address: str,
-    timestamp: Optional[int] = None,
+    timestamp: int | None = None,
     timeout: float = 30.0
 ) -> WriteResult:
     """
@@ -761,8 +761,8 @@ class WriteResult:
 
     success: bool
     characteristic_name: str
-    error_code: Optional[int] = None
-    error_message: Optional[str] = None
+    error_code: int | None = None
+    error_message: str | None = None
     duration_ms: int = 0
 
     def to_dict(self) -> dict:
@@ -786,8 +786,8 @@ class TestResult:
     name: str
     status: str  # "passed", "failed", "skipped"
     duration_ms: int = 0
-    details: Optional[str] = None
-    error: Optional[str] = None
+    details: str | None = None
+    error: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -808,8 +808,8 @@ class ValidationResult:
     """Result of a validation test suite run."""
 
     device_address: str
-    device_name: Optional[str]
-    tests: List[TestResult]
+    device_name: str | None
+    tests: list[TestResult]
 
     @property
     def summary(self) -> dict:
@@ -848,7 +848,7 @@ class CharacteristicInfo:
     uuid: str
     name: str
     raw_value: bytes
-    parsed_value: Optional[str]
+    parsed_value: str | None
 
 
 def _parse_device_config(data: bytes) -> str:
@@ -887,9 +887,9 @@ def _parse_epoch_time(data: bytes) -> str:
 
 async def _connect_and_read_characteristics_async(
     address: str, timeout: float = 30.0
-) -> List[CharacteristicInfo]:
+) -> list[CharacteristicInfo]:
     """Connect to device and read all Hubble Provisioning Service characteristics."""
-    results: List[CharacteristicInfo] = []
+    results: list[CharacteristicInfo] = []
 
     async with BleakClient(address, timeout=timeout) as client:
         # Read each characteristic in order
@@ -907,7 +907,7 @@ async def _connect_and_read_characteristics_async(
                 data = bytes(data)
 
                 # Parse based on characteristic type
-                parsed: Optional[str] = None
+                parsed: str | None = None
                 if uuid == CHAR_STATUS_UUID:
                     try:
                         status = StatusCharacteristic.from_bytes(data)
@@ -946,7 +946,7 @@ async def _connect_and_read_characteristics_async(
 
 def connect_and_read_characteristics(
     address: str, timeout: float = 30.0
-) -> List[CharacteristicInfo]:
+) -> list[CharacteristicInfo]:
     """
     Connect to a Hubble Ready device and read all provisioning characteristics.
 
@@ -1008,17 +1008,17 @@ class ProvisioningResult:
     device_name: str
     device_key_base64: str
     encryption_type: str
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 async def _provision_device_async(
     address: str,
     org: Organization,  # Forward reference to avoid circular import
-    device_name: Optional[str] = None,
-    scanned_device_name: Optional[str] = None,
+    device_name: str | None = None,
+    scanned_device_name: str | None = None,
     eid_type: str = "utc",
     timeout: float = 30.0,
-    log_callback: Optional[callable] = None,
+    log_callback: callable | None = None,
 ) -> ProvisioningResult:
     """
     Async implementation of full device provisioning flow.
@@ -1080,7 +1080,7 @@ async def _provision_device_async(
         final_name = device_name
         if not final_name:
             # Try to read DIS Serial Number
-            serial_number: Optional[str] = None
+            serial_number: str | None = None
             try:
                 log("Reading Device Information Service...")
                 serial_data = bytes(await client.read_gatt_char(DIS_SERIAL_NUMBER_UUID))
@@ -1195,11 +1195,11 @@ async def _provision_device_async(
 def provision_device(
     address: str,
     org: Organization,
-    device_name: Optional[str] = None,
-    scanned_device_name: Optional[str] = None,
+    device_name: str | None = None,
+    scanned_device_name: str | None = None,
     eid_type: str = "utc",
     timeout: float = 30.0,
-    log_callback: Optional[callable] = None,
+    log_callback: callable | None = None,
 ) -> ProvisioningResult:
     """
     Provision a Hubble Ready device.

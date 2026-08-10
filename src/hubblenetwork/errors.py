@@ -10,7 +10,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 # ----- Base classes ---------------------------------------------------------
 
@@ -69,7 +69,7 @@ class SatelliteError(HubbleError):
 class BleError(HubbleError):
     """BLE operation failed (connection, GATT read/write, etc.)."""
 
-    def __init__(self, message: str, att_error_code: Optional[int] = None):
+    def __init__(self, message: str, att_error_code: int | None = None):
         super().__init__(message)
         self.att_error_code = att_error_code
 
@@ -106,7 +106,7 @@ ATT_ERROR_NAMES = {
 }
 
 
-def extract_att_error_code(error_message: str) -> Optional[int]:
+def extract_att_error_code(error_message: str) -> int | None:
     """
     Extract ATT error code from a BleakError message.
 
@@ -182,7 +182,7 @@ __all__ = [
 # ----- Helpers for HTTP client code ----------------------------------------
 
 
-def map_http_status(status_code: int, detail: Optional[str] = None) -> BackendError:
+def map_http_status(status_code: int, detail: str | None = None) -> BackendError:
     """
     Map an HTTP status code to a concrete exception instance.
     `detail` should be a short server-provided error message if available.

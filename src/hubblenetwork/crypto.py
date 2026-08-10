@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
@@ -93,7 +92,7 @@ def decrypt_eax(
     pkt: AesEaxPacket,
     period_exponent: int = 0,
     pool_size: int = 128,
-) -> Optional[DecryptedPacket]:
+) -> DecryptedPacket | None:
     """Decrypt an AES-EAX packet by trying candidate counters.
 
     Generates candidate EIDs for each counter and matches against
@@ -181,7 +180,7 @@ def decrypt(
     encrypted_pkt: EncryptedPacket,
     days: int = 2,
     counter_mode: str = UNIX_TIME,
-) -> Optional[DecryptedPacket]:
+) -> DecryptedPacket | None:
     counter_mode = _normalize_counter_mode(counter_mode, days)
 
     parsed = ParsedPacket(encrypted_pkt)
@@ -222,10 +221,10 @@ def decrypt_satellite(
     seq_no: int,
     auth_tag: bytes,
     encrypted_payload: bytes,
-    timestamp: Optional[float] = None,
+    timestamp: float | None = None,
     days: int = 2,
     counter_mode: str = UNIX_TIME,
-) -> Optional[bytes]:
+) -> bytes | None:
     """Decrypt a satellite packet's encrypted customer payload.
 
     Satellite packets deliver the sequence number, 4-byte auth tag, and
@@ -265,7 +264,7 @@ def decrypt_satellite(
 
 def find_time_counter_delta(
     key: bytes, encrypted_pkt: EncryptedPacket, max_days_back: int = 365
-) -> Optional[int]:
+) -> int | None:
     """
     Find which day counter (time_counter) the key resolves for.
 
