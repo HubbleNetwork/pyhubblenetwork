@@ -259,7 +259,7 @@ class TestGetClient:
         good_sock.touch()
 
         bad_client = MagicMock()
-        bad_client.ping.side_effect = Exception("connection refused")
+        bad_client.ping.side_effect = docker.errors.DockerException("connection refused")
         good_client = MagicMock()
 
         mock_client_cls.side_effect = [bad_client, good_client]
@@ -294,9 +294,11 @@ class TestDockerHelpers:
 
     @patch("hubblenetwork.sat._get_client")
     def test_pull_image_failure(self, mock_get_client):
+        import docker
+
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-        mock_client.images.pull.side_effect = Exception("network error")
+        mock_client.images.pull.side_effect = docker.errors.DockerException("network error")
         with pytest.raises(DockerError, match="Failed to pull"):
             sat.pull_image("test:latest")
 
@@ -387,7 +389,7 @@ class TestScanMockMode:
         mock_start.assert_called_once_with(
             image=sat.DOCKER_IMAGE,
             port=sat.API_PORT,
-            environment=None,
+            environment={},
             privileged=True,
             name=sat.CONTAINER_NAME,
         )

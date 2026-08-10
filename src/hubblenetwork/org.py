@@ -1,14 +1,14 @@
 # hubble/org.py
 from __future__ import annotations
+
 import base64
-from typing import Optional, List
+from typing import List, Optional
 
 from . import cloud
-from .packets import DecryptedPacket, EncryptedPacket, Location
+from .crypto import DEVICE_UPTIME, UNIX_TIME
 from .device import Device
-from .crypto import UNIX_TIME, DEVICE_UPTIME
 from .errors import InvalidCredentialsError, ValidationError
-
+from .packets import DecryptedPacket, EncryptedPacket, Location
 
 _VALID_COUNTER_SOURCES = {UNIX_TIME, DEVICE_UPTIME}
 

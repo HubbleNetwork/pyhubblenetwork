@@ -57,5 +57,5 @@ markers = [
 dev = [
   "pytest>=7",
   "pytest-cov",
-  "ruff",
+  "ruff==0.16.2",
 ]

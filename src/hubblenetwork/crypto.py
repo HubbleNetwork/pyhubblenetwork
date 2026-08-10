@@ -1,11 +1,13 @@
 from __future__ import annotations
+
+from datetime import datetime, timezone
 from typing import Optional
+
 from Crypto.Cipher import AES
 from Crypto.Hash import CMAC
 from Crypto.Protocol.KDF import SP800_108_Counter
-from datetime import datetime, timezone
 
-from .packets import EncryptedPacket, DecryptedPacket, AesEaxPacket
+from .packets import AesEaxPacket, DecryptedPacket, EncryptedPacket
 
 UNIX_TIME = "UNIX_TIME"
 DEVICE_UPTIME = "DEVICE_UPTIME"
@@ -18,7 +20,7 @@ _HUBBLE_AES_TAG_SIZE = 4
 class ParsedPacket:
     """Parsed components from an EncryptedPacket's BLE advertisement payload."""
 
-    __slots__ = ("seq_no", "auth_tag", "encrypted_payload")
+    __slots__ = ("auth_tag", "encrypted_payload", "seq_no")
 
     def __init__(self, encrypted_pkt: EncryptedPacket) -> None:
         ble_adv = encrypted_pkt.payload

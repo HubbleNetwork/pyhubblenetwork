@@ -1,37 +1,52 @@
 # hubblenetwork/cli.py
 from __future__ import annotations
 
-import click
-import os
+import base64
+import binascii
 import json
+import logging
+import os
 import signal
 import sys
 import time
-import base64
-import binascii
-import logging
 import uuid
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
-from typing import Optional, List
+from typing import List, Optional
+
+import click
 from tabulate import tabulate
-from hubblenetwork import Organization
-from hubblenetwork import Device, DecryptedPacket, EncryptedPacket, decrypt_eax
-from hubblenetwork.packets import SatellitePacket, UnencryptedPacket, AesEaxPacket, UnknownPacket
+
+from hubblenetwork import (
+    DEVICE_UPTIME,
+    UNIX_TIME,
+    DecryptedPacket,
+    Device,
+    EncryptedPacket,
+    InvalidCredentialsError,
+    Organization,
+    cloud,
+    decrypt,
+    decrypt_eax,
+    decrypt_satellite,
+)
 from hubblenetwork import ble as ble_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
-from hubblenetwork import decrypt, decrypt_satellite, UNIX_TIME, DEVICE_UPTIME
 from hubblenetwork.crypto import find_time_counter_delta
 from hubblenetwork.detect import (
     CtrCounterModeDetector,
     EaxExponentDetector,
     detect_eid_type,
 )
-from hubblenetwork import cloud
-from hubblenetwork import InvalidCredentialsError
 from hubblenetwork.errors import BackendError
+from hubblenetwork.packets import (
+    AesEaxPacket,
+    SatellitePacket,
+    UnencryptedPacket,
+    UnknownPacket,
+)
 
 # Set up logger for CLI (outputs to stderr)
 logger = logging.getLogger(__name__)
@@ -349,7 +364,6 @@ class _StreamingPrinterBase:
 
     def finalize(self) -> None:
         """Called when scanning is complete. Override in subclasses if needed."""
-        pass
 
     @property
     def packet_count(self) -> int:
@@ -417,7 +431,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         parts = []
         for i, val in enumerate(values):
             width = self._COL_WIDTHS.get(self._headers[i], 10)
-            parts.append(f"{str(val):<{width}}")
+            parts.append(f"{val!s:<{width}}")
         return "| " + " | ".join(parts) + " |"
 
     def _make_separator(self) -> str:
@@ -597,7 +611,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         parts = []
         for i, val in enumerate(values):
             width = self._COL_WIDTHS.get(self._headers[i], 10)
-            parts.append(f"{str(val):<{width}}")
+            parts.append(f"{val!s:<{width}}")
         return "| " + " | ".join(parts) + " |"
 
     def _make_separator(self) -> str:
@@ -726,10 +740,10 @@ def _print_packets(pkts, output: str = "tabular", payload_format: str = "base64"
 def _print_device(dev: Device) -> None:
     click.echo(f'id: "{dev.id}", ', nl=False)
     click.echo(f'name: "{dev.name}", ', nl=False)
-    click.echo(f"tags: {str(dev.tags)}, ", nl=False)
+    click.echo(f"tags: {dev.tags!s}, ", nl=False)
     ts = datetime.fromtimestamp(dev.created_ts).strftime("%c")
     click.echo(f'created: "{ts}", ', nl=False)
-    click.echo(f"active: {str(dev.active)}", nl=False)
+    click.echo(f"active: {dev.active!s}", nl=False)
     if dev.key:
         click.secho(f', key: "{dev.key}"')
     else:
@@ -739,10 +753,10 @@ def _print_device(dev: Device) -> None:
 def _get_version() -> str:
     """Return package version, with fallback for development installs."""
     try:
-        from importlib.metadata import version
+        from importlib.metadata import PackageNotFoundError, version
 
         return version("pyhubblenetwork")
-    except Exception:
+    except PackageNotFoundError:
         return "dev"
 
 
@@ -935,9 +949,9 @@ def ble_detect(
         # Scan for a single packet
         try:
             pkt = ble_mod.scan_single(timeout=this_timeout)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
             logger.error(f"BLE scanning error: {e}")
-            _output_error(f"BLE scanning error: {str(e)}")
+            _output_error(f"BLE scanning error: {e!s}")
             return
 
         # Check if packet was found
@@ -1642,7 +1656,7 @@ def ready_scan(timeout: float = 10.0, output_format: str = "tabular", address: O
         ready_mod.scan_ready_devices_streaming(timeout=timeout, on_device=on_device)
     except KeyboardInterrupt:
         pass
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         error_occurred = e
 
     duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -1763,7 +1777,7 @@ def ready_info(
                 address, timeout=timeout
             )
             duration_ms = int((time.monotonic() - start_time) * 1000)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
             duration_ms = int((time.monotonic() - start_time) * 1000)
             if use_json:
                 json_output = _format_ready_json_error(
@@ -1850,7 +1864,7 @@ def ready_info(
     try:
         characteristics = ready_mod.connect_and_read_characteristics(selected.address, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
             json_output = _format_ready_json_error(
@@ -1944,7 +1958,7 @@ def ready_read_status(
     try:
         status = ready_mod.read_status(address, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
             json_output = _format_ready_json_error(
@@ -2043,7 +2057,7 @@ def ready_read_key_info(
     try:
         key_info = ready_mod.read_key_info(address, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
             json_output = _format_ready_json_error(
@@ -2127,7 +2141,7 @@ def ready_read_config(
     try:
         config = ready_mod.read_config(address, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
             json_output = _format_ready_json_error(
@@ -2211,7 +2225,7 @@ def ready_read_time(
     try:
         timestamp = ready_mod.read_time(address, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
             json_output = _format_ready_json_error(
@@ -2319,7 +2333,7 @@ def ready_write_key(
     try:
         result = ready_mod.write_key(address, key_bytes, timeout=timeout)
         duration_ms = int((time.monotonic() - start_time) * 1000)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if use_json:
             json_output = _format_ready_json_error(
@@ -2421,10 +2435,11 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
       hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type utc
       hubblenetwork ready write-config --address AA:BB:CC:DD:EE:FF --eid-type counter
     """
-    import time
     import sys
-    from .ready import write_config
+    import time
+
     from .errors import BleError
+    from .ready import write_config
 
     start_time = time.monotonic()
 
@@ -2512,7 +2527,7 @@ def ready_write_config(address: str, eid_type: str, timeout: float, output_forma
             click.secho(f"✗ BLE Error: {e}", fg="red", bold=True, err=True)
         sys.exit(2)
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if output_format == "json":
             error_obj = _format_ready_json_error(
@@ -2566,11 +2581,12 @@ def ready_write_time(address: str, timestamp: Optional[int], timeout: float, out
       hubblenetwork ready write-time --address AA:BB:CC:DD:EE:FF
       hubblenetwork ready write-time --address AA:BB:CC:DD:EE:FF --timestamp 1735603200
     """
-    import time
     import sys
+    import time
     from datetime import datetime, timezone
-    from .ready import write_time
+
     from .errors import BleError
+    from .ready import write_time
 
     start_time = time.monotonic()
 
@@ -2658,7 +2674,7 @@ def ready_write_time(address: str, timestamp: Optional[int], timeout: float, out
             click.secho(f"✗ BLE Error: {e}", fg="red", bold=True, err=True)
         sys.exit(2)
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         duration_ms = int((time.monotonic() - start_time) * 1000)
         if output_format == "json":
             error_obj = _format_ready_json_error(
@@ -2792,7 +2808,7 @@ def ready_provision(
             timeout=timeout,
             log_callback=log_step,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
         click.secho(f"\n[ERROR] Provisioning failed: {e}", fg="red", err=True)
         sys.exit(2)
 
@@ -3531,7 +3547,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         click.echo("", err=True)
         click.secho(f"Error: {e.format_message()}", fg="red", bold=True, err=True)
         return e.exit_code
-    except Exception as e:  # safety net to avoid tracebacks in user CLI
+    except Exception as e:  # noqa: BLE001 - safety net to avoid tracebacks in user CLI
         click.secho(f"Unexpected error: {e}", fg="red", err=True)
         return 2
     return 0

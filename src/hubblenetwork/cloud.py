@@ -1,18 +1,21 @@
 # hubble/cloud_api.py
 from __future__ import annotations
-from dataclasses import dataclass
-import httpx
-import time
+
 import base64
-from typing import Any, Optional
+import time
 from collections.abc import MutableMapping
-from .packets import EncryptedPacket
+from dataclasses import dataclass
+from typing import Any, Optional
+
+import httpx
+
 from .errors import (
+    APITimeout,
     BackendError,
     NetworkError,
-    APITimeout,
     raise_for_response,
 )
+from .packets import EncryptedPacket
 
 # Default values for location metadata when ingesting packets
 # These are placeholders when actual accuracy/altitude data is unavailable
@@ -130,7 +133,7 @@ def cloud_request(
         body = None
         try:
             body = resp.json()
-        except Exception:
+        except ValueError:  # response body may not be JSON; fall back to raw text
             body = resp.text
         raise_for_response(resp.status_code, body=body)
 
@@ -159,7 +162,7 @@ def get_env_from_credentials(credentials: Credentials) -> Optional[Environment]:
                 env=env,
             )
             return env
-        except Exception:
+        except BackendError:  # cloud_request() only ever raises BackendError subclasses
             pass
     return None
 

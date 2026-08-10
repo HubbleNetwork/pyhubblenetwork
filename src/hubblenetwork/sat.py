@@ -14,9 +14,10 @@ import json
 import logging
 import os
 import time
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Dict, Generator, Iterator, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -101,7 +102,7 @@ def _get_client():
                 client = docker.DockerClient(base_url=f"unix://{sock}")
                 client.ping()
                 return client
-            except Exception:
+            except docker.errors.DockerException:
                 continue
 
     raise DockerError(
@@ -114,29 +115,35 @@ def _get_client():
 
 def ensure_docker_available() -> None:
     """Verify that Docker is installed and the daemon is running."""
+    import docker
+
     client = _get_client()
     try:
         client.ping()
-    except Exception:
+    except docker.errors.DockerException:
         raise DockerError("Docker daemon is not responding")
 
 
 def _image_exists_locally(image: str) -> bool:
+    import docker
+
     try:
         _get_client().images.get(image)
         return True
-    except Exception:
+    except docker.errors.DockerException:
         return False
 
 
 def pull_image(image: str = DOCKER_IMAGE) -> None:
     """Pull *image*, ensuring the latest version is fetched.
     """
+    import docker
+
     logger.info("Pulling %s …", image)
     client = _get_client()
     try:
         client.images.pull(image)
-    except Exception as exc:
+    except docker.errors.DockerException as exc:
         raise DockerError(f"Failed to pull image {image}: {exc}")
 
 
@@ -144,7 +151,7 @@ def start_container(
     image: str = DOCKER_IMAGE,
     port: int = API_PORT,
     *,
-    environment: Optional[Dict[str, str]] = None,
+    environment: dict[str, str] | None = None,
     privileged: bool = True,
     name: str = CONTAINER_NAME,
 ) -> str:
@@ -153,6 +160,8 @@ def start_container(
     The container is started with ``auto_remove=True`` so it is
     automatically removed when stopped.
     """
+    import docker
+
     client = _get_client()
     try:
         container = client.containers.run(
@@ -166,17 +175,19 @@ def start_container(
         )
         logger.debug("Started container %s", container.short_id)
         return container.id
-    except Exception as exc:
+    except docker.errors.DockerException as exc:
         raise DockerError(f"Failed to start container: {exc}")
 
 
 def stop_container(container_id: str) -> None:
     """Stop *container_id* (best-effort, errors are swallowed)."""
+    import docker
+
     try:
         client = _get_client()
         container = client.containers.get(container_id)
         container.stop(timeout=5)
-    except Exception:
+    except docker.errors.DockerException:
         pass  # best-effort cleanup
 
 
@@ -461,7 +472,7 @@ def scan(
 
 
 def _run_one_shot(
-    action: Callable[[int], "bytes | str"],
+    action: Callable[[int], bytes | str],
     *,
     action_status: str,
     port: int = API_PORT,
@@ -469,7 +480,7 @@ def _run_one_shot(
     mock: bool = False,
     pluto_uri: Optional[str] = None,
     on_status: Optional[Callable[[str], None]] = None,
-) -> "bytes | str":
+) -> bytes | str:
     """Run *action* against a freshly started receiver container, then tear it down.
 
     Shared lifecycle for the one-shot ``record``/``signal_report`` operations, which

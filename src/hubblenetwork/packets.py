@@ -1,7 +1,8 @@
 # hubble/packets.py
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Dict, Optional
 
 
 @dataclass(frozen=True)

@@ -1,18 +1,19 @@
 # hubblenetwork/ble.py
 from __future__ import annotations
+
 import asyncio
 import struct
 from datetime import datetime, timezone
-from typing import Optional, List, Union
+from typing import List, Optional, Union
 
 from bleak import BleakScanner
 
 # Import your dataclass
 from .packets import (
-    Location,
-    EncryptedPacket,
-    UnencryptedPacket,
     AesEaxPacket,
+    EncryptedPacket,
+    Location,
+    UnencryptedPacket,
     UnknownPacket,
 )
 

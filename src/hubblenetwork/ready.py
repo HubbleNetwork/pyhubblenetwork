@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, List, Optional
 
-from bleak import BleakScanner, BleakClient
+from bleak import BleakClient, BleakScanner
 
 # Type hint import for Organization (avoid circular import at runtime)
 if TYPE_CHECKING:
@@ -210,7 +210,7 @@ class StatusCharacteristic:
     epoch_time_written: bool
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "StatusCharacteristic":
+    def from_bytes(cls, data: bytes) -> StatusCharacteristic:
         """Parse Status characteristic from raw bytes."""
         if len(data) < 4:
             raise ValueError(f"Status data too short: {len(data)} bytes, need at least 4")
@@ -300,7 +300,7 @@ class DeviceKeyInfo:
     encryption_mode_code: int  # 0x01 for AES-256-CTR, 0x02 for AES-128-CTR
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "DeviceKeyInfo":
+    def from_bytes(cls, data: bytes) -> DeviceKeyInfo:
         """Parse Device Key info from raw bytes."""
         if len(data) < 1:
             raise ValueError("Device Key data too short")
@@ -441,8 +441,10 @@ def read_time(address: str, timeout: float = 30.0) -> int:
 async def _write_key_async(address: str, key: bytes, timeout: float = 30.0) -> WriteResult:
     """Async implementation of write_key."""
     import time
-    from .errors import BleError, extract_att_error_code
+
     from bleak.exc import BleakError as BleBleakError
+
+    from .errors import BleError, extract_att_error_code
 
     start_time = time.monotonic()
 
@@ -524,13 +526,15 @@ async def _write_config_async(
 ) -> WriteResult:
     """Async implementation of write_config."""
     import time
+
+    from bleak.exc import BleakError as BleBleakError
+
     from .errors import (
-        BleError,
-        extract_att_error_code,
         ATT_INVALID_EID_TYPE,
         ATT_INVALID_ROTATION_PERIOD,
+        BleError,
+        extract_att_error_code,
     )
-    from bleak.exc import BleakError as BleBleakError
 
     start_time = time.monotonic()
 
@@ -633,8 +637,10 @@ async def _write_time_async(
 ) -> WriteResult:
     """Async implementation of write_time."""
     import time
-    from .errors import BleError, extract_att_error_code
+
     from bleak.exc import BleakError as BleBleakError
+
+    from .errors import BleError, extract_att_error_code
 
     start_time = time.monotonic()
 
@@ -713,7 +719,7 @@ class DeviceConfig:
     raw_bytes: str  # Hex representation of raw bytes
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "DeviceConfig":
+    def from_bytes(cls, data: bytes) -> DeviceConfig:
         """Parse Device Configuration characteristic from raw bytes."""
         if len(data) < 12:
             raise ValueError(f"Device Configuration data too short: {len(data)} bytes, need 12")
@@ -906,23 +912,23 @@ async def _connect_and_read_characteristics_async(
                     try:
                         status = StatusCharacteristic.from_bytes(data)
                         parsed = status.to_display_string()
-                    except Exception:
+                    except ValueError:  # malformed bytes shouldn't crash the read; show a parse error instead
                         parsed = f"Parse error: {data.hex()}"
                 elif uuid == CHAR_DEVICE_KEY_UUID:
                     try:
                         key_info = DeviceKeyInfo.from_bytes(data)
                         parsed = key_info.to_display_string()
-                    except Exception:
+                    except ValueError:  # malformed bytes shouldn't crash the read; show a parse error instead
                         parsed = f"Parse error: {data.hex()}"
                 elif uuid == CHAR_DEVICE_CONFIG_UUID:
                     try:
                         parsed = _parse_device_config(data)
-                    except Exception:
+                    except ValueError:  # malformed bytes shouldn't crash the read; show a parse error instead
                         parsed = f"Parse error: {data.hex()}"
                 elif uuid == CHAR_EPOCH_TIME_UUID:
                     try:
                         parsed = _parse_epoch_time(data)
-                    except Exception:
+                    except ValueError:  # malformed bytes shouldn't crash the read; show a parse error instead
                         parsed = f"Parse error: {data.hex()}"
                 else:
                     parsed = data.hex()
@@ -930,7 +936,7 @@ async def _connect_and_read_characteristics_async(
                 results.append(
                     CharacteristicInfo(uuid=uuid, name=name, raw_value=data, parsed_value=parsed)
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - one bad characteristic shouldn't abort reading the rest
                 results.append(
                     CharacteristicInfo(uuid=uuid, name=name, raw_value=b"", parsed_value=f"Read error: {e}")
                 )
@@ -1007,7 +1013,7 @@ class ProvisioningResult:
 
 async def _provision_device_async(
     address: str,
-    org: "Organization",  # Forward reference to avoid circular import
+    org: Organization,  # Forward reference to avoid circular import
     device_name: Optional[str] = None,
     scanned_device_name: Optional[str] = None,
     eid_type: str = "utc",
@@ -1080,7 +1086,7 @@ async def _provision_device_async(
                 serial_data = bytes(await client.read_gatt_char(DIS_SERIAL_NUMBER_UUID))
                 serial_number = serial_data.decode("utf-8").strip("\x00")
                 log(f"  Serial Number: {serial_number}")
-            except Exception:
+            except UnicodeDecodeError:  # serial number bytes may not be valid utf-8
                 log("  Serial Number: Not available")
 
             if serial_number:
@@ -1188,7 +1194,7 @@ async def _provision_device_async(
 
 def provision_device(
     address: str,
-    org: "Organization",
+    org: Organization,
     device_name: Optional[str] = None,
     scanned_device_name: Optional[str] = None,
     eid_type: str = "utc",

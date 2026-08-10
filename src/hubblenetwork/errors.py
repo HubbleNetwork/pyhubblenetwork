@@ -9,8 +9,8 @@ Usage:
 """
 
 from __future__ import annotations
-from typing import Any, Optional
 
+from typing import Any, Optional
 
 # ----- Base classes ---------------------------------------------------------
 
@@ -150,32 +150,32 @@ class FlashError(RuntimeError):
 
 
 __all__ = [
-    "HubbleError",
-    "BackendError",
-    "RequestError",
-    "InternalServerError",
-    "NetworkError",
-    "APITimeout",
-    "InvalidCredentialsError",
-    "ValidationError",
-    "ScanError",
-    "DecryptionError",
-    "DockerError",
-    "SatelliteError",
-    "BleError",
-    "InvalidDeviceError",
-    "ElfFetchError",
-    "FlashError",
-    "ATT_INVALID_ATTRIBUTE_LENGTH",
+    "ATT_ERROR_NAMES",
     "ATT_INSUFFICIENT_ENCRYPTION",
+    "ATT_INVALID_ATTRIBUTE_LENGTH",
+    "ATT_INVALID_EID_PARAMETER",
+    "ATT_INVALID_EID_TYPE",
     "ATT_INVALID_POOL_SIZE",
     "ATT_INVALID_ROTATION_PERIOD",
-    "ATT_INVALID_EID_TYPE",
-    "ATT_INVALID_EID_PARAMETER",
-    "ATT_ERROR_NAMES",
+    "APITimeout",
+    "BackendError",
+    "BleError",
+    "DecryptionError",
+    "DockerError",
+    "ElfFetchError",
+    "FlashError",
+    "HubbleError",
+    "InternalServerError",
+    "InvalidCredentialsError",
+    "InvalidDeviceError",
+    "NetworkError",
+    "RequestError",
+    "SatelliteError",
+    "ScanError",
+    "ValidationError",
     "extract_att_error_code",
-    "raise_for_response",
     "map_http_status",
+    "raise_for_response",
 ]
 
 
