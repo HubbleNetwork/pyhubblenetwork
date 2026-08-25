@@ -1,6 +1,8 @@
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from hubblenetwork.cloud import register_device, Credentials, Environment
+
+from hubblenetwork.cloud import Credentials, Environment, register_device
 
 
 @pytest.fixture
@@ -88,4 +90,61 @@ class TestRegisterDeviceRequestBody:
                 "counter_source": "DEVICE_UPTIME",
                 "period_exponent": 15,
             },
+        }
+
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_tags_included_as_single_element_list(self, mock_request, credentials, env):
+        mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
+        register_device(
+            credentials=credentials,
+            env=env,
+            tags={"satellite": "next-pass"},
+        )
+        body = mock_request.call_args.kwargs["json"]
+        assert body == {
+            "n_devices": 1,
+            "encryption": "AES-256-CTR",
+            "tags": [{"satellite": "next-pass"}],
+        }
+
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_tags_omitted_when_not_provided(self, mock_request, credentials, env):
+        mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
+        register_device(credentials=credentials, env=env)
+        body = mock_request.call_args.kwargs["json"]
+        assert "tags" not in body
+
+
+class TestUpdateDeviceRequestBody:
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_name_only_omits_set_tags(self, mock_request, credentials, env):
+        from hubblenetwork.cloud import update_device
+
+        mock_request.return_value = ({"id": "d1", "name": "named"}, None)
+        update_device(
+            credentials=credentials,
+            env=env,
+            device_id="d1",
+            name="named",
+        )
+        body = mock_request.call_args.kwargs["json"]
+        assert body == {"set_name": "named"}
+        assert "set_tags" not in body
+
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_explicit_tags_included(self, mock_request, credentials, env):
+        from hubblenetwork.cloud import update_device
+
+        mock_request.return_value = ({"id": "d1", "name": "named"}, None)
+        update_device(
+            credentials=credentials,
+            env=env,
+            device_id="d1",
+            name="named",
+            tags={"satellite": "next-pass"},
+        )
+        body = mock_request.call_args.kwargs["json"]
+        assert body == {
+            "set_name": "named",
+            "set_tags": {"satellite": "next-pass"},
         }

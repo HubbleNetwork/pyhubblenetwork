@@ -173,8 +173,15 @@ def register_device(
     counter_source: str | None = None,
     period_in_seconds: int | None = None,
     period_exponent: int | None = None,
+    tags: dict[str, str] | None = None,
 ) -> Any:
-    """Create a new device and return it."""
+    """Create a new device and return it.
+
+    Args:
+        tags: Optional custom tags for the new device. The Cloud API accepts a
+            per-device tags map in a list matching ``n_devices``; when provided
+            here it is sent as a single-element list.
+    """
     data: dict = {
         "n_devices": 1,
         "encryption": encryption or "AES-256-CTR",
@@ -186,6 +193,8 @@ def register_device(
         if period_exponent is not None:
             eid_rotation["period_exponent"] = period_exponent
         data["eid_rotation"] = eid_rotation
+    if tags is not None:
+        data["tags"] = [tags]
     return cloud_request(
         method="POST",
         env=env,
@@ -201,12 +210,19 @@ def update_device(
     env: Environment,
     name: str,
     device_id: str,
+    tags: dict[str, str] | None = None,
 ) -> Any:
-    """Update a device."""
-    data = {
+    """Update a device.
+
+    ``set_tags`` is a full replace on the Cloud API. Only include it when the
+    caller explicitly passes ``tags``; an empty ``set_tags`` would wipe existing
+    tags (including ones applied at registration).
+    """
+    data: dict = {
         "set_name": name,
-        "set_tags": {},
     }
+    if tags is not None:
+        data["set_tags"] = tags
     return cloud_request(
         method="PATCH",
         env=env,

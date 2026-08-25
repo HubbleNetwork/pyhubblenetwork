@@ -1,7 +1,9 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from hubblenetwork.org import Organization
+
 from hubblenetwork.errors import ValidationError
+from hubblenetwork.org import Organization
 
 
 @pytest.fixture
@@ -85,3 +87,17 @@ class TestForwardingToCloud:
         kwargs = mock_reg.call_args.kwargs
         assert kwargs["period_exponent"] == 15
         assert kwargs["period_in_seconds"] is None
+
+    @patch("hubblenetwork.org.cloud.register_device")
+    def test_tags_forwarded(self, mock_reg, org):
+        mock_reg.return_value = {"devices": [{"device_id": "d1", "key": "YWJj"}]}
+        org.register_device(tags={"satellite": "next-pass"})
+        kwargs = mock_reg.call_args.kwargs
+        assert kwargs["tags"] == {"satellite": "next-pass"}
+
+    @patch("hubblenetwork.org.cloud.register_device")
+    def test_tags_default_none(self, mock_reg, org):
+        mock_reg.return_value = {"devices": [{"device_id": "d1", "key": "YWJj"}]}
+        org.register_device()
+        kwargs = mock_reg.call_args.kwargs
+        assert kwargs["tags"] is None
