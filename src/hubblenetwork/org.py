@@ -52,6 +52,7 @@ class Organization:
         counter_source: str | None = None,
         period_seconds: int | None = None,
         period_exponent: int | None = None,
+        tags: dict[str, str] | None = None,
     ) -> Device:
         """
         Register a new device in this organization and return it.
@@ -66,6 +67,7 @@ class Organization:
             period_exponent: EID rotation period exponent (period = 2^n seconds). Only valid
                              when encryption='AES-128-EAX' and counter_source='DEVICE_UPTIME'.
                              Mutually exclusive with period_seconds.
+            tags: Optional custom key/value tags applied at registration.
         """
         if counter_source is not None and counter_source not in _VALID_COUNTER_SOURCES:
             raise ValidationError(
@@ -91,6 +93,7 @@ class Organization:
             counter_source=counter_source,
             period_in_seconds=period_seconds,
             period_exponent=period_exponent,
+            tags=tags,
         )
         device = resp["devices"][0]
         key_bytes = base64.b64decode(device["key"]) if device.get("key") else None
