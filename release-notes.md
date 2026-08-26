@@ -1,5 +1,21 @@
 # Release Notes
 
+## [0.14.0] - 2026-08-26
+
+### Added
+- feat: support tags on register_device; stop wiping tags on rename
+- feat(cli): add doctor, and document that there is no telemetry
+- feat(cli): degrade glyphs for terminals that cannot render them, honour NO_COLOR
+- feat(ble): show the sequence number on packets that never decrypted
+- feat(cli): rebuild scan output, org streaming, help and error recovery
+
+### Fixed
+- fix(cli): make credentials discoverable, correct the README's SDK claim
+
+### Documentation
+- docs(plugins): fix skill docs that documented flags the CLI never had
+- docs: correct README inaccuracies, add auto payload format to ble detect
+
 ## [0.13.0] - 2026-08-10
 
 ### Added
