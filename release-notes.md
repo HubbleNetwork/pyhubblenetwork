@@ -16,6 +16,9 @@
 - docs(plugins): fix skill docs that documented flags the CLI never had
 - docs: correct README inaccuracies, add auto payload format to ble detect
 
+### Tests
+- test(cli): make doctor receiver check test independent of host Docker
+
 ## [0.13.0] - 2026-08-10
 
 ### Added
