@@ -141,10 +141,20 @@ class TestExitCode:
 
 
 class TestReport:
-    def test_receiver_is_only_asked_about_when_docker_answered(self):
-        res = _run()
+    def test_receiver_is_skipped_when_docker_is_down(self):
+        with patch("hubblenetwork.cli._doctor_docker",
+                   return_value=(_CHECK_FAIL, "not reachable", [])):
+            res = _run()
         assert "Docker" in res.stdout
-        assert "Receiver" not in res.stdout  # Docker is down on this machine
+        assert "Receiver" not in res.stdout
+
+    def test_receiver_is_asked_about_when_docker_answers(self):
+        with patch("hubblenetwork.cli._doctor_docker",
+                   return_value=(_CHECK_OK, "reachable", [])), \
+             patch("hubblenetwork.cli.sat_mod._image_exists_locally", return_value=True):
+            res = _run()
+        assert "Docker" in res.stdout
+        assert "Receiver" in res.stdout
 
     def test_tally_reconciles_with_the_marks(self):
         import re
