@@ -13,6 +13,7 @@ import signal
 import sys
 import time
 import uuid
+import warnings
 from dataclasses import replace
 from datetime import datetime, timezone
 from functools import partial
@@ -318,7 +319,7 @@ _GROUP_ORDER = ["org", "ble", "ready", "sat", "metrics"]
 _GROUP_BLURB = {
     "org": "your devices in the Hubble Cloud",
     "ble": "nearby devices over Bluetooth",
-    "ready": "provision a device over GATT",
+    "ready": "provision a device over GATT (in development)",
     "sat": "satellite packets via PlutoSDR",
     "metrics": "fleet counts",
 }
@@ -2539,7 +2540,20 @@ def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int
 
 @cli.group(cls=HubbleGroup)
 def ready() -> None:
-    """Provision a Hubble Ready device over a GATT connection."""
+    """Provision a Hubble Ready device over a GATT connection.
+
+    IN DEVELOPMENT. The provisioning flow is not finished: these commands may
+    change, may not work against current firmware, and are not covered by the
+    stability promise the other groups get. Every run prints a reminder.
+    """
+    # The library says the same thing through ReadyInDevelopmentWarning, but a
+    # raw UserWarning traceback line is not what a CLI user should be reading.
+    warnings.filterwarnings("ignore", category=ready_mod.ReadyInDevelopmentWarning)
+    click.secho(
+        "[WARN] `ready` is in development -- commands may change or fail.",
+        fg="yellow",
+        err=True,
+    )
 
 
 @ready.command("scan", short_help="Find Hubble Ready devices to provision")

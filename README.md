@@ -77,7 +77,6 @@ Every command lives inside a group, so it is always `hubblenetwork <group> <comm
 
 * **`org`** — your devices in the Hubble Cloud
 * **`ble`** — nearby devices over Bluetooth
-* **`ready`** — provision a device over GATT
 * **`sat`** — satellite packets via PlutoSDR
 * **`metrics`** — fleet counts
 
@@ -361,7 +360,7 @@ Check whichever route you used with `hubblenetwork validate-credentials` or
 ## Requirements
 
 - Python **3.10+** (3.11/3.12 recommended)
-- **Bluetooth**, for the `ble` and `ready` groups:
+- **Bluetooth**, for the `ble` group:
   - **macOS**: CoreBluetooth. Run from a real terminal app and grant it Bluetooth
     access when prompted. macOS kills any process whose executable has no
     `NSBluetoothAlwaysUsageDescription` in an Info.plist, and a bare Python binary
@@ -386,7 +385,7 @@ for a stable surface:
 
 ```python
 from hubblenetwork import (
-    ble, cloud, ready, sat,
+    ble, cloud, sat,
     Organization, Device, Credentials, Environment,
     EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket,
     DecryptedPacket, SatellitePacket, Location,

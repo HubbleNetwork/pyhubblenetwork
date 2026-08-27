@@ -1,14 +1,28 @@
 # hubblenetwork/ready.py
 """
-Hubble Ready device provisioning module.
+Hubble Ready device provisioning module -- IN DEVELOPMENT.
 
 This module handles provisioning of devices advertising the Hubble Provisioning
 Service (0xFCA7). Unlike beacon scanning (0xFCA6) which is passive, provisioning
 involves active GATT connections and characteristic writes.
+
+**This module is not finished.** The provisioning flow is still being built out:
+its API may change without a major version bump, it may not work against current
+firmware, and it is not covered by the stability promise the rest of the package
+gets. Every public entry point raises `ReadyInDevelopmentWarning` when called.
+Silence it with::
+
+    import warnings
+    from hubblenetwork.ready import ReadyInDevelopmentWarning
+
+    warnings.filterwarnings("ignore", category=ReadyInDevelopmentWarning)
 """
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -37,6 +51,41 @@ CHAR_NAMES = {
     CHAR_DEVICE_CONFIG_UUID: "Device Configuration",
     CHAR_EPOCH_TIME_UUID: "Epoch Time",
 }
+
+
+class ReadyInDevelopmentWarning(UserWarning):
+    """The `ready` provisioning API is unfinished and may change or fail."""
+
+
+_IN_DEVELOPMENT_NOTE = (
+    "hubblenetwork.ready is in development: the provisioning flow is not "
+    "finished, its API may change without a major version bump, and it may not "
+    "work against current firmware. Silence with warnings.filterwarnings("
+    '"ignore", category=hubblenetwork.ready.ReadyInDevelopmentWarning).'
+)
+
+
+def _in_development(fn):
+    """Warn, at every public entry point, that this module is not finished.
+
+    A docstring nobody reads is not a warning. Async entry points get an async
+    wrapper so `inspect.iscoroutinefunction` keeps answering truthfully.
+    """
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            warnings.warn(_IN_DEVELOPMENT_NOTE, ReadyInDevelopmentWarning, stacklevel=2)
+            return await fn(*args, **kwargs)
+
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        warnings.warn(_IN_DEVELOPMENT_NOTE, ReadyInDevelopmentWarning, stacklevel=2)
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 @dataclass(frozen=True)
@@ -87,6 +136,7 @@ async def _scan_ready_devices_async(timeout: float) -> list[HubbleReadyDevice]:
     return devices
 
 
+@_in_development
 def scan_ready_devices(timeout: float = 10.0) -> list[HubbleReadyDevice]:
     """
     Scan for BLE devices advertising the Hubble Provisioning Service (0xFCA7).
@@ -115,6 +165,7 @@ def scan_ready_devices(timeout: float = 10.0) -> list[HubbleReadyDevice]:
         )
 
 
+@_in_development
 async def scan_ready_devices_async(timeout: float = 10.0) -> list[HubbleReadyDevice]:
     """
     Async version of scan_ready_devices() for use in async environments.
@@ -163,6 +214,7 @@ async def _scan_ready_devices_streaming_async(
     return devices
 
 
+@_in_development
 def scan_ready_devices_streaming(
     timeout: float,
     on_device: Callable[[HubbleReadyDevice], None],
@@ -262,6 +314,7 @@ async def _read_status_async(address: str, timeout: float = 30.0) -> StatusChara
         return StatusCharacteristic.from_bytes(bytes(data))
 
 
+@_in_development
 def read_status(address: str, timeout: float = 30.0) -> StatusCharacteristic:
     """
     Read the Status characteristic from a Hubble Ready device.
@@ -332,6 +385,7 @@ async def _read_key_info_async(address: str, timeout: float = 30.0) -> DeviceKey
         return DeviceKeyInfo.from_bytes(bytes(data))
 
 
+@_in_development
 def read_key_info(address: str, timeout: float = 30.0) -> DeviceKeyInfo:
     """
     Read the Device Key characteristic from a Hubble Ready device.
@@ -370,6 +424,7 @@ async def _read_config_async(address: str, timeout: float = 30.0) -> DeviceConfi
         return DeviceConfig.from_bytes(bytes(data))
 
 
+@_in_development
 def read_config(address: str, timeout: float = 30.0) -> DeviceConfig:
     """
     Read the Device Configuration characteristic from a Hubble Ready device.
@@ -408,6 +463,7 @@ async def _read_time_async(address: str, timeout: float = 30.0) -> int:
         return int.from_bytes(bytes(data), byteorder="little")
 
 
+@_in_development
 def read_time(address: str, timeout: float = 30.0) -> int:
     """
     Read the Epoch Time characteristic from a Hubble Ready device.
@@ -484,6 +540,7 @@ async def _write_key_async(address: str, key: bytes, timeout: float = 30.0) -> W
         raise BleError(str(e), att_error_code=att_error_code) from e
 
 
+@_in_development
 def write_key(address: str, key: bytes, timeout: float = 30.0) -> WriteResult:
     """
     Write an encryption key to the Device Key characteristic.
@@ -591,6 +648,7 @@ async def _write_config_async(
         raise BleError(str(e), att_error_code=att_error_code) from e
 
 
+@_in_development
 def write_config(
     address: str,
     eid_type: str,
@@ -670,6 +728,7 @@ async def _write_time_async(
         raise BleError(str(e), att_error_code=att_error_code) from e
 
 
+@_in_development
 def write_time(
     address: str,
     timestamp: int | None = None,
@@ -945,6 +1004,7 @@ async def _connect_and_read_characteristics_async(
     return results
 
 
+@_in_development
 def connect_and_read_characteristics(
     address: str, timeout: float = 30.0
 ) -> list[CharacteristicInfo]:
@@ -1193,6 +1253,7 @@ async def _provision_device_async(
     )
 
 
+@_in_development
 def provision_device(
     address: str,
     org: Organization,
