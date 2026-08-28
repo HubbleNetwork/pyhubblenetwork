@@ -6,8 +6,8 @@
 
 **`hubblenetwork` is the command-line tool for Hubble Network IoT devices.** Watch
 nearby devices report over Bluetooth, pick their satellite uplink off the air with an
-SDR, provision a device, decrypt payloads locally with a device key, and manage your
-fleet in the Hubble Cloud — no embedded firmware knowledge required.
+SDR, decrypt payloads locally with a device key, and manage your fleet in the Hubble
+Cloud — no embedded firmware knowledge required.
 
 It is also an importable Python SDK: everything the CLI does is available as a
 library. See [Using it as a Python library](#using-it-as-a-python-library).
@@ -64,7 +64,6 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | Check my setup is working | [`doctor`](#check-your-setup-with-doctor) |
 | Watch nearby devices report | [`ble scan`](#watch-nearby-devices-report) |
 | Prove one device works end to end | [`ble validate`](#prove-one-device-works-end-to-end) |
-| Put a key and config onto a new device | [`ready provision`](#provision-a-device-over-bluetooth) |
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
 | Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
@@ -82,7 +81,6 @@ Almost every command lives inside a group, so it is usually
 
 * **`org`** — your devices in the Hubble Cloud
 * **`ble`** — nearby devices over Bluetooth
-* **`ready`** — provision a device over GATT
 * **`sat`** — satellite packets via PlutoSDR
 * **`metrics`** — fleet counts
 
@@ -202,43 +200,10 @@ If a step fails, the command prints targeted debugging tips. A common cause of a
 failed scan is a slow advertising interval combined with OS-level BLE scan
 optimizations — simply running the command again often resolves it.
 
-
-## Provision a device over Bluetooth
-
-The `ready` group talks to a Hubble Ready device over a GATT connection (UUID 0xFCA7)
-rather than just listening to its advertisements. `ready provision` is the whole flow
-in one command: it scans, lets you pick a device, registers it with the Hubble Cloud,
-then writes the key, the EID configuration and the clock, and reads each one back to
-verify it. The encryption mode (AES-256-CTR or AES-128-CTR) is read off the device,
-not guessed.
-
-```bash
-hubblenetwork ready scan                    # what's advertising 0xFCA7 nearby?
-hubblenetwork ready provision               # the whole flow, interactive
-hubblenetwork ready provision -v            # with per-step progress
-```
-
-The individual steps are there too, for when you want one characteristic rather than
-the whole flow. Each takes `-a`/`--address` — required everywhere except `ready info`,
-which scans if you omit it — plus `-t`/`--timeout` and `-o`/`--format`:
-
-```bash
-hubblenetwork ready info -a AA:BB:CC:DD:EE:FF       # every characteristic
-hubblenetwork ready read-status -a <addr>           # status flags
-hubblenetwork ready read-key-info -a <addr>         # which key and cipher are loaded
-hubblenetwork ready read-config -a <addr>           # EID type, rotation period, pool size
-hubblenetwork ready read-time -a <addr>
-
-hubblenetwork ready write-key -a <addr> -k <key>
-hubblenetwork ready write-config -a <addr> --eid-type utc
-hubblenetwork ready write-time -a <addr>            # defaults to now
-```
-
-Two related checks live on the `ble` side, because they read advertisements instead of
-connecting: `ble check-time -k <key>` reports how many days a device's clock is off
-real UTC (more than 2 is out of spec), and `ble detect -k <key>` answers just the
-"which EID mode is this key using?" question that `ble scan` folds into its
-auto-detection.
+Two narrower checks sit alongside it, both reading advertisements rather than the
+cloud: `ble check-time -k <key>` reports how many days a device's clock is off real
+UTC (more than 2 is out of spec), and `ble detect -k <key>` answers just the "which
+EID mode is this key using?" question that `ble scan` folds into its auto-detection.
 
 
 ## Work with your fleet in the cloud
@@ -477,7 +442,7 @@ Check whichever route you used with `hubblenetwork validate-credentials` or
 ## Requirements
 
 - Python **3.10+** (3.11/3.12 recommended)
-- **Bluetooth**, for the `ble` and `ready` groups:
+- **Bluetooth**, for the `ble` group:
   - **macOS**: CoreBluetooth. Run from a real terminal app and grant it Bluetooth
     access when prompted. macOS kills any process whose executable has no
     `NSBluetoothAlwaysUsageDescription` in an Info.plist, and a bare Python binary
@@ -502,7 +467,7 @@ for a stable surface:
 
 ```python
 from hubblenetwork import (
-    ble, cloud, ready, sat,
+    ble, cloud, sat,
     Organization, Device, Credentials, Environment,
     EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket,
     DecryptedPacket, SatellitePacket, Location,
@@ -560,8 +525,8 @@ for pkt in ble.scan(timeout=5.0):
 ```
 
 `counter_mode` accepts `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"`
-(counter values 0–127, fixed pool size of 128). BLE and provisioning functions each
-have sync and async variants — `ble.scan()` / `ble.scan_async()`.
+(counter values 0–127, fixed pool size of 128). The BLE functions have sync and async
+variants — `ble.scan()` / `ble.scan_async()`.
 
 The CLI's auto-detection is available too, in `hubblenetwork.detect`:
 `detect_eid_type()` classifies a key's rotation mode from a batch of packets, and
@@ -661,8 +626,8 @@ pytest
 
 **There is none.** The CLI makes no network call except the ones a command explicitly
 needs: the Hubble Cloud API for the commands that use credentials (`org`, `metrics`,
-`doctor`, `validate-credentials`, `ble validate`, `ble scan --ingest` and
-`ready provision`); `localhost` for the satellite receiver container; and Docker
+`doctor`, `validate-credentials`, `ble validate` and `ble scan --ingest`);
+`localhost` for the satellite receiver container; and Docker
 pulling that container image from `ghcr.io` on first `sat` use. Nothing is reported
 anywhere about how you use it.
 
