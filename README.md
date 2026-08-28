@@ -7,10 +7,8 @@
 **`hubblenetwork` is the command-line tool for Hubble Network IoT devices.** Watch
 nearby devices report over Bluetooth, pick their satellite uplink off the air with an
 SDR, decrypt payloads locally with a device key, and manage your fleet in the Hubble
-Cloud — no embedded firmware knowledge required.
-
-It is also an importable Python SDK: everything the CLI does is available as a
-library. See [Using it as a Python library](#using-it-as-a-python-library).
+Cloud — no embedded firmware knowledge required. Everything it does is also available
+as an importable [Python SDK](#using-it-as-a-python-library).
 
 Links: [PyPI](https://pypi.org/project/pyhubblenetwork/) ·
 [Hubble docs](https://docs.hubble.com/docs/intro) ·
@@ -29,16 +27,14 @@ pipx install pyhubblenetwork
 
 ## Check your setup with `doctor`
 
-Set your credentials, then check the machine is actually able to do the work:
-
 ```bash
 export HUBBLE_ORG_ID=<your org id>
 export HUBBLE_API_TOKEN=<your api token>
 hubblenetwork doctor
 ```
 
-`doctor` is the setup step. It checks credentials, Bluetooth, Docker and the cached
-satellite receiver image, and names the fix for anything broken:
+`doctor` checks credentials, Bluetooth, Docker and the cached satellite receiver
+image, and names the fix for anything broken:
 
 ```
   ✗ Credentials    not set
@@ -76,51 +72,28 @@ Reference: [Reading the output](#reading-the-output) ·
 [Python library](#using-it-as-a-python-library) ·
 [Troubleshooting](#troubleshooting)
 
-Almost every command lives inside a group, so it is usually
-`hubblenetwork <group> <command>`:
+Commands live in groups — **`org`** (your devices in the Hubble Cloud), **`ble`**
+(nearby devices over Bluetooth), **`sat`** (satellite packets via PlutoSDR) and
+**`metrics`** (fleet counts) — so it is usually `hubblenetwork <group> <command>`. The
+two setup commands, `doctor` and `validate-credentials`, sit at the top level.
 
-* **`org`** — your devices in the Hubble Cloud
-* **`ble`** — nearby devices over Bluetooth
-* **`sat`** — satellite packets via PlutoSDR
-* **`metrics`** — fleet counts
-
-The two setup commands sit at the top level instead, because they are what you run
-before you have anything working: `hubblenetwork doctor` and
-`hubblenetwork validate-credentials`.
-
-`hubblenetwork --help` prints the full list with a one-line description and the
-required arguments for each, and every command takes `--help` for its own options.
-
-You don't have to remember which group a command is in. If you type one at the wrong
-level the CLI searches the whole tree and finds it for you:
-
-```
-$ hubblenetwork list-devices
-
-Usage: hubblenetwork [OPTIONS] COMMAND [ARGS]...
-Try 'hubblenetwork --help' for help.
-
-Error: No such command 'list-devices'.
-
-  Did you mean:  hubblenetwork org list-devices
-```
-
-The same applies to missing arguments (they say how to find the value), unknown
-options (they list what the command accepts), and missing credentials (they name the
-environment variables and the flags).
+`hubblenetwork --help` lists everything; every command takes `--help` for its own
+options. You don't have to remember which group a command is in: type one at the wrong
+level and the CLI searches the whole tree and points you at it (`Did you mean:
+hubblenetwork org list-devices`). Missing arguments say how to find the value, unknown
+options list what the command accepts, and missing credentials name the environment
+variables and the flags.
 
 
 ## Watch nearby devices report
 
 `ble scan` listens for Hubble beacon advertisements (UUID 0xFCA6) and prints one line
-per packet as it arrives. No credentials needed — this is purely local.
+per packet as it arrives. No credentials needed — this is purely local. It runs until
+Ctrl+C unless you bound it.
 
 ```bash
 hubblenetwork ble scan
 ```
-
-It runs until Ctrl+C unless you bound it. Pass `--key` and the payloads are decrypted
-locally as they arrive.
 
 | Flag | Takes | Description |
 |------|-------|-------------|
@@ -139,54 +112,32 @@ locally as they arrive.
 | `--payload-format` | `auto`, `base64`, `hex`, `string` | How to render payloads — see [Payload format](#payload-format). |
 | `--debug` | — | Add the `EPOCH`, `TAG` and `SALT` forensic columns. |
 
-With `--key` and neither of those two flags given, the decryption strategy is worked
-out from the packets themselves, so you don't have to know how the device was
-provisioned. A `[WARN]` line says the sweep has started, and the first packet that
-decrypts prints what it found, once, on stderr:
+With `--key` and neither `--counter-mode` nor `--period-exponent` given, the
+decryption strategy is worked out from the packets themselves, so you don't have to
+know how the device was provisioned. The first packet that decrypts prints what it
+found, once, on stderr — `[INFO] Detected: AES-256-CTR,
+counter_source=DEVICE_UPTIME`. Passing either flag pins that half of the detection and
+skips its sweep.
 
-```
-[INFO] Detected: AES-256-CTR, counter_source=DEVICE_UPTIME
-```
-
-Passing `--counter-mode` or `--period-exponent` pins that half of the detection and
-skips its sweep. Two rules come with it: `--counter-mode DEVICE_UPTIME` requires
-`--key`, and it cannot be combined with `--days`, which only means something for the
-day-based `UNIX_TIME` counter. Both are rejected with a usage error rather than
-quietly ignored. `sat scan` behaves the same way.
+`--counter-mode DEVICE_UPTIME` requires `--key` and cannot be combined with `--days`,
+which only means something for the day-based `UNIX_TIME` counter; both are rejected
+with a usage error rather than quietly ignored. `sat scan` behaves the same way.
 
 
 ## Prove one device works end to end
 
 `ble validate` is the quickest way to answer "is my device working?". It walks the
-whole chain — your credentials, the device's registration, its advertisements, the
-key, and the cloud round trip — and stops at the first failure.
-
-It validates the **terrestrial** path: the device advertising over Bluetooth, this
-machine acting as the gateway, and the packet reaching the cloud and coming back. It
-says nothing about whether the device is reaching the satellite network — for that,
-hear the uplink yourself with [`sat scan`](#receive-a-devices-satellite-uplink).
+whole chain and stops at the first failure: key and device-ID formats → credentials →
+organization → the device's registration → BLE advertisements → decrypting a packet
+(reporting the EID type as `UNIX_TIME`, `DEVICE_UPTIME`, or `AMBIGUOUS` when a packet
+resolves under both, usually several devices in range with different configs) →
+ingesting it and reading it back.
 
 ```bash
 hubblenetwork ble validate \
   --key "a562a2f7e4c62bed52ab09633878f62b" \
   --device-id "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"
 ```
-
-The steps, in order:
-
-1. **Validates input formats** — the device key (hex or base64, 16- or 32-byte)
-   and the device ID (standard 8-4-4-4-12 UUID).
-2. **Loads credentials** — from `--org-id`/`--token` or the `HUBBLE_ORG_ID` and
-   `HUBBLE_API_TOKEN` environment variables.
-3. **Validates the organization credentials** against the backend.
-4. **Confirms the device is registered** in your organization.
-5. **Scans for BLE advertisements** from Hubble-compatible devices.
-6. **Decrypts a received packet** with the provided key and reports the detected
-   EID type: `UNIX_TIME`, `DEVICE_UPTIME`, or `AMBIGUOUS` when a packet resolves
-   under both — usually several devices in range with different configs, so it
-   prints a note telling you to check the device config.
-7. **Ingests the packet** into the backend and **reads it back** to confirm the
-   full round trip succeeded.
 
 | Option | Description |
 |--------|-------------|
@@ -196,9 +147,14 @@ The steps, in order:
 | `--token` | API token (defaults to the `HUBBLE_API_TOKEN` env var). |
 | `--timeout`, `-t` | BLE scan timeout in seconds (default: 30). |
 
-If a step fails, the command prints targeted debugging tips. A common cause of a
-failed scan is a slow advertising interval combined with OS-level BLE scan
-optimizations — simply running the command again often resolves it.
+This is the **terrestrial** path only — the device advertising over Bluetooth, this
+machine as the gateway, and the round trip through the cloud. It says nothing about
+whether the device is reaching the satellite network; for that, hear the uplink
+yourself with [`sat scan`](#receive-a-devices-satellite-uplink).
+
+A failing step prints targeted debugging tips. A failed scan is often just a slow
+advertising interval meeting OS-level BLE scan optimizations — running it again
+usually resolves it.
 
 Two narrower checks sit alongside it, both reading advertisements rather than the
 cloud: `ble check-time -k <key>` reports how many days a device's clock is off real
@@ -225,17 +181,15 @@ hubblenetwork org set-device-name <id> <name>
 hubblenetwork org delete-device <id>
 ```
 
-In the default tabular output, `list-devices` and `get-packets` stream rows as pages
-arrive, so the first rows appear in about a second rather than after the whole window
-downloads. A busy device can hold tens of thousands of packets; Ctrl+C stops early and
-still prints a summary, and `--limit`/`-n` caps the run. It always says how it
-stopped, never silently.
+In tabular output, `list-devices` and `get-packets` stream rows as pages arrive, so
+the first rows appear in about a second rather than after the whole window downloads.
+A busy device can hold tens of thousands of packets; Ctrl+C stops early and still
+prints a summary, `--limit`/`-n` caps the run, and it always says how it stopped.
 
-`-o json` and `-o csv` keep their byte-for-byte output, so they buffer instead: the
-whole result is collected before anything is printed, and there is no summary. For
-`get-packets` that also means `--limit` trims the result after the download rather
-than stopping it, so `-n 50 -o json` still fetches the full window. Use the tabular
-output when you want the run itself bounded.
+`-o json` and `-o csv` keep their byte-for-byte output, so they buffer the whole
+result and print no summary. For `get-packets`, `--limit` then trims after the
+download rather than stopping it — `-n 50 -o json` still fetches the full window. Use
+tabular output when you want the run itself bounded.
 
 `register-device` takes `--encryption`, `--counter-source`, and — for AES-128-EAX on
 `DEVICE_UPTIME` — either `--period-seconds` or `--period-exponent` (period = 2ⁿ
@@ -247,11 +201,8 @@ exclusive.
 
 The `sat` group listens, on the ground, to the transmissions a device sends up to the
 satellite network. Nothing is received *from* a satellite: a PlutoSDR beside you picks
-the uplink out of the air, which is how you confirm a device is transmitting on the
-satellite path at all. It runs a Docker container
-([`ghcr.io/hubblenetwork/sdr-docker`](https://ghcr.io/hubblenetwork/sdr-docker)) that
-handles RF reception and decoding, polls that container's HTTP API, and streams
-decoded packets to stdout.
+the uplink out of the air, confirming the device is transmitting on the satellite path
+at all.
 
 **Needs Docker running and an ADALM-PLUTO plugged in over USB.** `hubblenetwork doctor`
 checks the Docker half.
@@ -274,23 +225,23 @@ hubblenetwork sat scan --key "<key>" --show-failed-decryption
 hubblenetwork sat mock-scan
 ```
 
-Decryption uses the same AES-CTR scheme as BLE and supports both counter sources. The
-source is auto-detected from the packets and announced, unless `--counter-mode` is
-given. For `UNIX_TIME`, `--days` controls how many days around each packet's timestamp
-are searched (default 2). Packets the key cannot decrypt are hidden unless
-`--show-failed-decryption` is given.
+Decryption uses the same AES-CTR scheme as BLE, with the counter source auto-detected
+and announced unless `--counter-mode` is given. `--days` (default 2) controls how many
+days around each packet's timestamp are searched in `UNIX_TIME` mode, and packets the
+key cannot decrypt are hidden unless `--show-failed-decryption` is given.
 
-`sat scan` handles the container for you: it verifies Docker, pulls the image if it
-isn't cached, starts the container privileged so it can reach USB, waits for the
-receiver API and for the SDR to connect, deduplicates packets by device ID and
-sequence number, then stops and removes the container on exit.
+`sat scan` handles the Docker container
+([`ghcr.io/hubblenetwork/sdr-docker`](https://ghcr.io/hubblenetwork/sdr-docker)) for
+you: it verifies Docker, pulls the image if it isn't cached, starts the container
+privileged so it can reach USB, waits for the receiver API and the SDR, polls the
+container's HTTP API and deduplicates by device ID and sequence number, then stops and
+removes the container on exit.
 
 ### One-shot capture (`record` / `signal-report`)
 
-Alongside the live stream, two commands record for a fixed duration, save a single
-file, and exit. Both accept `--output PATH` (default: an auto-generated timestamped
-name), `--mock` (use the simulated receiver — no PlutoSDR required), `--pluto-uri`,
-and `--debug`.
+Two commands record for a fixed duration, save a single file, and exit. Both accept
+`--output PATH` (default: an auto-generated timestamped name), `--mock` (simulated
+receiver — no PlutoSDR required), `--pluto-uri`, and `--debug`.
 
 ```bash
 # Capture 10 s of raw IQ samples to a .npy file
@@ -302,12 +253,12 @@ hubblenetwork sat signal-report 10
 hubblenetwork sat signal-report 10 --output report.txt --mock
 ```
 
-- **`record`** captures the raw radio signal only — no decoding. The output is a
-  NumPy `.npy` file of IQ samples.
+- **`record`** captures the raw radio signal only — no decoding. Output is a NumPy
+  `.npy` file of IQ samples.
 - **`signal-report`** records IQ, then re-analyzes it offline into a plain-text
   **link-health diagnostic**: per-symbol timing/drift, channel-hopping validation,
-  amplitude/SNR, and chipset metrics. It reports on signal quality and does **not**
-  contain decoded packet payloads — to receive payloads, use `sat scan --key`.
+  amplitude/SNR, chipset metrics. It holds no decoded payloads — for those, use
+  `sat scan --key`.
 
 
 ## Reading the output
@@ -322,10 +273,10 @@ Commands that print packet data (`ble scan`, `sat scan`, `ble detect`,
 * `hex` — display payloads as hexadecimal
 * `string` — decode payloads as UTF-8 (falls back to `<invalid UTF-8>`)
 
-All four work with every output format, but the **default** differs, because a person
-and a program want different things. Tabular output defaults to `auto`, so a decrypted
-payload reads as `T=21.4` rather than `VD0yMS40`. JSON and CSV default to `base64` so
-the machine contract stays stable. An explicit `--payload-format` always wins.
+All four work with every output format, but the **default** differs: tabular output
+defaults to `auto`, so a decrypted payload reads as `T=21.4` rather than `VD0yMS40`,
+while JSON and CSV default to `base64` so the machine contract stays stable. An
+explicit `--payload-format` always wins.
 
 ### Scan layout
 
@@ -343,27 +294,24 @@ a summary:
 3 packets  ·  2 decrypted, 1 failed  ·  RSSI -62 to -74 dBm  ·  12s
 ```
 
-The bar next to RSSI is signal strength: length is the magnitude, so you can watch it
-shrink as you walk away from a device. The `✓`/`✗` mark only appears with
-`--show-failed-decryption`, and it carries the state on its own, so the output still
-reads correctly without colour.
+The bar's length is signal magnitude, so you can watch it shrink as you walk away from
+a device. The `✓`/`✗` mark only appears with `--show-failed-decryption`, and it carries
+the state on its own, so the output still reads correctly without colour.
 
-`V` is the protocol version, and it decides what the two columns after it hold. `0` is
-AES-CTR: a 4-byte EID, and a `CTR/SEQ` showing the day counter once a packet decrypts
-(`20693` above) or the advertisement's own sequence number when it doesn't (`302`).
-`1` is the unencrypted protocol, which has no EID at all, so a `NET_ID` column takes
-that space instead. `2` is AES-EAX: an 8-byte EID, and a `CTR/SEQ` that stays `-`,
-because the only counter-shaped value it carries is a random per-message nonce salt
-and it already has its own `SALT` column under `--debug`.
+`V` is the protocol version, and it decides what the two columns after it hold:
+
+* **`0`, AES-CTR** — a 4-byte EID, and a `CTR/SEQ` showing the day counter once a
+  packet decrypts (`20693` above) or the advertisement's own sequence number when it
+  doesn't (`302`).
+* **`1`, unencrypted** — no EID at all, so a `NET_ID` column takes that space.
+* **`2`, AES-EAX** — an 8-byte EID, and a `CTR/SEQ` that stays `-`: its only
+  counter-shaped value is a random per-message nonce salt, which has its own `SALT`
+  column under `--debug`.
 
 Packet rows go to **stdout** and everything else — the scanning notice, detection
-lines, the summary — goes to **stderr**, so this captures data only:
-
-```bash
-hubblenetwork ble scan > packets.txt
-```
-
-The same split applies to `org list-devices` and `org get-packets`.
+lines, the summary — goes to **stderr**, so `hubblenetwork ble scan > packets.txt`
+captures data only. The same split applies to `org list-devices` and
+`org get-packets`.
 
 Pass `--debug` for the forensic columns: `EPOCH`, `TAG` and `SALT` on `ble scan`,
 `RS_CORR`, `SYM_MS` and `GAP_MS` on `sat scan`, `EPOCH`, `CTR` and `SEQ` on
@@ -371,33 +319,16 @@ Pass `--debug` for the forensic columns: `EPOCH`, `TAG` and `SALT` on `ble scan`
 
 ### Terminals that can't do box-drawing
 
-Not every terminal can render `─` and `█`. Writing them to a stdout using a legacy
-code page raises `UnicodeEncodeError`, and because most of them are East Asian Width
-"Ambiguous" they render double-width under a CJK terminal configuration, which shears
-every column.
-
-Pass `--ascii` (or set `HUBBLE_ASCII=1`) for a pure-ASCII rendering of the same rows,
-with identical column widths:
-
-```
-    TIME     RSSI       V EID              CTR/SEQ PAYLOAD
------------------------------------------------------------------------------
-+   00:06:40  -62 ###=  0 9c4e2ab7           20693 T=21.4,B=87
-+   00:06:43  -66 ##=   0 9c4e2ab7           20693 T=21.4,B=87
-x   00:06:49  -74 ##=   0 51d7be04             302 D307912C66BA4018E5
------------------------------------------------------------------------------
-
-3 packets  |  2 decrypted, 1 failed  |  RSSI -62 to -74 dBm  |  12s
-```
-
-Every substitution is the same display width as the glyph it replaces, so the columns
-line up either way. The one thing that changes is the bar's precision: ASCII has no
-sub-cell fill, so the eight partial blocks collapse to a single `=` tier and two
-nearby readings can land on the same bar. The exact dBm is in the column beside it.
+Not every terminal can render `─` and `█`: a legacy code page raises
+`UnicodeEncodeError`, and a CJK configuration renders them double-width, which shears
+every column. Pass `--ascii` (or set `HUBBLE_ASCII=1`) for a pure-ASCII rendering with
+identical column widths — every substitution is the same display width as the glyph it
+replaces. Only the bar's precision changes: ASCII has no sub-cell fill, so the eight
+partial blocks collapse to one `=` tier and two nearby readings can land on the same
+bar. The exact dBm is in the column beside it.
 
 The encoding case is detected automatically, so you only need the flag for the
-double-width one. `--no-ascii` forces the Unicode rendering if the detection is wrong
-for you.
+double-width one; `--no-ascii` forces the Unicode rendering back.
 
 Colour is a separate axis: `--no-color`, a non-empty `NO_COLOR`, or a non-TTY stdout
 all disable it, and `FORCE_COLOR` keeps it on where a pipe would otherwise strip it
@@ -408,12 +339,9 @@ all disable it, and `FORCE_COLOR` keeps it on where a pipe would otherwise strip
 
 Two environment variables carry your credentials:
 
-* `HUBBLE_ORG_ID` — your organization id
-* `HUBBLE_API_TOKEN` — your API token, passed through as a bearer token
-
 ```bash
-export HUBBLE_ORG_ID=org_123
-export HUBBLE_API_TOKEN=sk_XXXX
+export HUBBLE_ORG_ID=org_123     # your organization id
+export HUBBLE_API_TOKEN=sk_XXXX  # passed through as a bearer token
 ```
 
 Four more change how the CLI behaves, and none of them are required:
@@ -434,9 +362,7 @@ hubblenetwork org --org-id <id> --token <token> list-devices
 ```
 
 Check whichever route you used with `hubblenetwork validate-credentials` or
-`hubblenetwork doctor`.
-
-**The SDK does not read the environment** — see below.
+`hubblenetwork doctor`. **The SDK does not read the environment** — see below.
 
 
 ## Requirements
@@ -462,8 +388,7 @@ Check whichever route you used with `hubblenetwork validate-credentials` or
 
 ## Using it as a Python library
 
-Everything the CLI does is available as a library. Import from the package top-level
-for a stable surface:
+Import from the package top-level for a stable surface:
 
 ```python
 from hubblenetwork import (
@@ -496,16 +421,14 @@ for pkt in org.iter_packets(new_dev):     # ditto; both take on_page(page, total
     print(pkt.rssi, pkt.payload)
 ```
 
-`iter_devices()` and `iter_packets()` are generators that yield as each API page
-arrives instead of accumulating, so you can start processing immediately on a device
-with tens of thousands of packets. `list_devices()` and `retrieve_packets()` are
-`list()` wrappers over them and still return lists.
+The iterators yield as each API page arrives instead of accumulating, so you can start
+processing immediately on a device with tens of thousands of packets.
+`list_devices()` and `retrieve_packets()` are `list()` wrappers over them.
 
-Scanning and local decryption. `ble.scan()` returns a mixed list — the unencrypted
-protocol and AES-EAX have their own packet types — so filter to `EncryptedPacket`
-before handing anything to `decrypt()`, which only understands AES-CTR. It returns
-`None` rather than raising on a packet it can't handle, so an unfiltered loop looks
-like a wrong key:
+`ble.scan()` returns a mixed list — the unencrypted protocol and AES-EAX have their
+own packet types — so filter to `EncryptedPacket` before handing anything to
+`decrypt()`, which only understands AES-CTR. It returns `None` rather than raising on
+a packet it can't handle, so an unfiltered loop looks like a wrong key:
 
 ```python
 from hubblenetwork import ble, decrypt, decrypt_eax, AesEaxPacket, EncryptedPacket
@@ -526,12 +449,10 @@ for pkt in ble.scan(timeout=5.0):
 
 `counter_mode` accepts `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"`
 (counter values 0–127, fixed pool size of 128). The BLE functions have sync and async
-variants — `ble.scan()` / `ble.scan_async()`.
-
-The CLI's auto-detection is available too, in `hubblenetwork.detect`:
-`detect_eid_type()` classifies a key's rotation mode from a batch of packets, and
-`CtrCounterModeDetector` / `EaxExponentDetector` are the per-scan objects that own the
-sweep and its cache.
+variants — `ble.scan()` / `ble.scan_async()`. The CLI's auto-detection is available
+too, in `hubblenetwork.detect`: `detect_eid_type()` classifies a key's rotation mode
+from a batch of packets, and `CtrCounterModeDetector` / `EaxExponentDetector` are the
+per-scan objects that own the sweep and its cache.
 
 Satellite, which manages the Docker container for you:
 
@@ -554,10 +475,10 @@ iq_bytes: bytes = sat.record(10.0)                     # raw IQ (.npy file body)
 report: str = sat.signal_report(10.0)                  # plain-text RF diagnostic
 ```
 
-Note the return types differ: `decrypt()` and `decrypt_eax()` hand back a
-`DecryptedPacket`, while `decrypt_satellite()` hands back the plaintext `bytes`
-directly, because a satellite packet's metadata never left the `SatellitePacket` you
-already have. Both return `None` on failure.
+The return types differ: `decrypt()` and `decrypt_eax()` hand back a
+`DecryptedPacket`, while `decrypt_satellite()` hands back plaintext `bytes` directly,
+because a satellite packet's metadata never left the `SatellitePacket` you already
+have. Both return `None` on failure.
 
 `SatellitePacket` fields: `device_id`, `seq_num`, `device_type`, `timestamp`,
 `rssi_dB`, `channel_num`, `freq_offset_hz`, `payload` (bytes), `auth_tag` (bytes or
@@ -566,35 +487,28 @@ already have. Both return `None` on failure.
 (`SYM_MS`) and `gap_mean_ms` (`GAP_MS`).
 
 The two satellite exceptions live in `hubblenetwork.errors` rather than the top-level
-surface, so import them from there:
+surface. `sat.scan()` raises `DockerError` when Docker is missing, not running, or the
+container fails to start, and `SatelliteError` when the container starts but the
+receiver API or the SDR never comes up. Both descend from `HubbleError`, alongside the
+backend, network, validation, BLE and decryption errors in the same module.
 
 ```python
 from hubblenetwork.errors import DockerError, SatelliteError
 ```
 
-`sat.scan()` raises `DockerError` when Docker is missing, not running, or the
-container fails to start, and `SatelliteError` when the container starts but the
-receiver API or the SDR never comes up. Both descend from `HubbleError`, alongside the
-backend, network, validation, BLE and decryption errors in the same module.
-
-See the code for the full surface.
-
 
 ## Troubleshooting
 
-* **macOS: `ble scan` crashes instead of prompting for Bluetooth** — you'll see
-  `Termination Reason: Namespace TCC` and a message about a missing
-  `NSBluetoothAlwaysUsageDescription` key. macOS refuses CoreBluetooth to any
-  executable without that key in an Info.plist, and Homebrew's `python3` binary has
-  no Info.plist at all. Run from a real terminal app (Terminal, iTerm) rather than an
-  embedded IDE shell and grant it Bluetooth under System Settings → Privacy &
-  Security → Bluetooth. If it still aborts, run the CLI through a small app bundle
-  that carries the key; the framework build at
-  `$(brew --prefix)/Frameworks/Python.framework/Versions/<ver>/Resources/Python.app`
-  is a usable starting point to copy and amend.
+* **macOS: `ble scan` crashes instead of prompting for Bluetooth** (`Termination
+  Reason: Namespace TCC`, missing `NSBluetoothAlwaysUsageDescription`) — macOS refuses
+  CoreBluetooth to any executable without that key in an Info.plist, and Homebrew's
+  `python3` has no Info.plist at all. Run from a real terminal app (Terminal, iTerm)
+  rather than an embedded IDE shell, and grant it Bluetooth under System Settings →
+  Privacy & Security → Bluetooth. If it still aborts, run the CLI through a small app
+  bundle carrying the key — copy and amend
+  `$(brew --prefix)/Frameworks/Python.framework/Versions/<ver>/Resources/Python.app`.
 * **`ble scan` finds nothing**: verify BLE permissions and adapter state, and try a
-  longer `--timeout`. Slow advertising intervals plus OS-level scan optimizations mean
-  a second attempt often succeeds.
+  longer `--timeout`. A second attempt often succeeds.
 * **Auth errors**: run `hubblenetwork doctor`. `validate-credentials` reports which
   environment accepted them and exits 1 if neither did, so it is safe in a script.
 * **Import errors**: ensure you installed into the Python you're running
@@ -626,28 +540,16 @@ pytest
 
 **There is none.** The CLI makes no network call except the ones a command explicitly
 needs: the Hubble Cloud API for the commands that use credentials (`org`, `metrics`,
-`doctor`, `validate-credentials`, `ble validate` and `ble scan --ingest`);
-`localhost` for the satellite receiver container; and Docker
-pulling that container image from `ghcr.io` on first `sat` use. Nothing is reported
-anywhere about how you use it.
+`doctor`, `validate-credentials`, `ble validate` and `ble scan --ingest`); `localhost`
+for the satellite receiver container; and Docker pulling that container image from
+`ghcr.io` on first `sat` use. Nothing is reported anywhere about how you use it.
 
-If that changes, these are the constraints it would have to meet, recorded here so
-the bar is set before anyone writes the code:
-
-* **Opt-in only.** Off by default, no collection before an explicit yes, and no
-  dark-pattern prompt that treats a dismissed dialog as consent.
-* **Nothing sensitive, ever.** No API tokens, org IDs, device IDs, encryption keys,
-  payloads, coordinates, hostnames, or file paths. This tool handles customer device
-  keys, so the bar is higher than for a typical CLI. Command name, exit status, and
-  version is the ceiling.
-* **Documented in this file**, listing every field actually sent, not a link to a
-  policy page.
-* **Killable two ways**, a flag and an environment variable, both honoured on every
-  command.
-* **Never blocks or slows a command.** No network call on the critical path, and
-  silent failure when offline.
-* **Tested.** A test asserting the payload contains no credential and no device
-  identifier, so a future field cannot quietly widen it.
+If that ever changes, it would have to be opt-in and off by default; carry nothing
+sensitive (no tokens, org or device IDs, keys, payloads, coordinates, hostnames or
+paths — command name, exit status and version is the ceiling); list every field sent
+in this file; be killable by both a flag and an environment variable; never sit on a
+command's critical path; and be covered by a test asserting the payload holds no
+credential and no device identifier.
 
 
 ## Releases & versioning
