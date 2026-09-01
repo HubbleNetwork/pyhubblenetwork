@@ -325,11 +325,11 @@ class TestDecryptEax:
 
 
 class TestCliAesEaxScan:
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_aes_eax_no_key_tabular(self, mock_scan):
         """AES-EAX packet without key shows parsed fields in tabular output."""
         pkt = _make_dummy_aes_eax_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1"])
@@ -339,11 +339,11 @@ class TestCliAesEaxScan:
         assert " V " in result.output
         assert f"{pkt.eid:x}" in result.output
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_aes_eax_no_key_json(self, mock_scan):
         """AES-EAX packet without key shows parsed fields in JSON output."""
         pkt = _make_dummy_aes_eax_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "-o", "json"])
@@ -355,11 +355,11 @@ class TestCliAesEaxScan:
         assert "nonce_salt" in parsed[0]
 
     @patch("hubblenetwork.cli.decrypt_eax")
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_aes_eax_with_key_decrypts(self, mock_scan, mock_decrypt):
         """AES-EAX packet with key attempts decryption."""
         pkt = _make_dummy_aes_eax_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
         mock_decrypt.return_value = DecryptedPacket(
             timestamp=1700000000, device_id="", device_name="",
             location=Location(lat=90, lon=0, fake=True), tags={},
@@ -375,11 +375,11 @@ class TestCliAesEaxScan:
         assert parsed[0]["counter"] == 7
 
     @patch("hubblenetwork.cli.decrypt_eax")
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_aes_eax_auth_fail_skipped_by_default(self, mock_scan, mock_decrypt):
         """Packets failing AES-EAX auth are skipped when --show-failed-decryption is off."""
         pkt = _make_dummy_aes_eax_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
         mock_decrypt.return_value = None  # auth failure
 
         runner = CliRunner()
@@ -390,11 +390,11 @@ class TestCliAesEaxScan:
         assert parsed == []
 
     @patch("hubblenetwork.cli.decrypt_eax")
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_aes_eax_auth_fail_shown_when_flag_set(self, mock_scan, mock_decrypt):
         """With --show-failed-decryption, failing packets are shown with fail status."""
         pkt = _make_dummy_aes_eax_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
         mock_decrypt.return_value = None  # auth failure
 
         runner = CliRunner()
@@ -410,11 +410,11 @@ class TestCliAesEaxScan:
         assert parsed[0]["protocol_version"] == 2
 
     @patch("hubblenetwork.cli.decrypt_eax")
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_aes_eax_success_shows_ok_when_flag_set(self, mock_scan, mock_decrypt):
         """With --show-failed-decryption, successful decrypts carry ok status."""
         pkt = _make_dummy_aes_eax_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
         mock_decrypt.return_value = DecryptedPacket(
             timestamp=1700000000, device_id="", device_name="",
             location=Location(lat=90, lon=0, fake=True), tags={},
@@ -432,11 +432,11 @@ class TestCliAesEaxScan:
         assert len(parsed) == 1
         assert parsed[0]["decrypt_status"] == "ok"
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_unknown_packet_tabular(self, mock_scan):
         """Unknown version packet shows version in tabular output."""
         pkt = _make_dummy_unknown_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1"])
@@ -444,11 +444,11 @@ class TestCliAesEaxScan:
         assert " V " in result.output
         assert str(pkt.protocol_version) in result.output
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_unknown_packet_json(self, mock_scan):
         """Unknown version packet shows version and payload in JSON output."""
         pkt = _make_dummy_unknown_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "-o", "json"])
@@ -457,11 +457,11 @@ class TestCliAesEaxScan:
         assert len(parsed) == 1
         assert parsed[0]["protocol_version"] == 5
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_scan_unknown_packet_hidden_with_key(self, mock_scan):
         """With --key, unknown (non-decryptable) packets are not shown."""
         pkt = _make_dummy_unknown_packet()
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         key_b64 = "AAAAAAAAAAAAAAAAAAAAAA=="
@@ -506,11 +506,11 @@ _EAX_KEY_HEX = _EAX_KEY.hex()
 
 
 class TestCliAesEaxAutoDetect:
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_auto_detect_finds_correct_exponent(self, mock_scan):
         """Without -e, auto-detect resolves period_exponent and decrypts."""
         pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=12, plaintext=b"hi-eax")
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "--key", _EAX_KEY_HEX])
@@ -522,11 +522,11 @@ class TestCliAesEaxAutoDetect:
         # decrypted payload appears in the table
         assert "hi-eax" in result.stdout or "aGktZWF4" in result.stdout  # raw or base64
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_auto_detect_uses_cache_for_same_eid(self, mock_scan):
         """Second packet with same EID hits cache (no extra detection banner)."""
         pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=5, plaintext=b"a")
-        mock_scan.side_effect = [pkt, pkt, None]
+        mock_scan.return_value = [pkt, pkt]
 
         from hubblenetwork.crypto import decrypt_eax as real_decrypt_eax
         from unittest.mock import MagicMock
@@ -541,11 +541,11 @@ class TestCliAesEaxAutoDetect:
         # Detection banner emitted exactly once.
         assert result.stderr.count("[INFO] Detected:") == 1
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_no_warn_when_both_flags_provided(self, mock_scan):
         """With explicit -e and --counter-mode, no auto-detect warning or banner."""
         pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=7, plaintext=b"x")
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(
@@ -561,11 +561,11 @@ class TestCliAesEaxAutoDetect:
         assert "[WARN]" not in result.stderr
         assert "[INFO] Detected:" not in result.stderr
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_warn_only_mentions_active_axes(self, mock_scan):
         """Passing -e but not --counter-mode → warning mentions only CTR axis."""
         pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=7, plaintext=b"x")
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(
@@ -578,11 +578,11 @@ class TestCliAesEaxAutoDetect:
         # No EAX detection banner since EAX is not auto-detecting.
         assert "[INFO] Detected:" not in result.stderr
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_silent_in_json_mode(self, mock_scan):
         """JSON output stays parse-clean even with auto-detect."""
         pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=4, plaintext=b"j")
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(
@@ -596,13 +596,13 @@ class TestCliAesEaxAutoDetect:
         assert "[WARN]" not in result.stderr
         assert "[INFO] Detected:" not in result.stderr
 
-    @patch("hubblenetwork.cli.ble_mod.scan_single")
+    @patch("hubblenetwork.cli.ble_mod.scan_stream")
     def test_detection_failure_with_show_failed(self, mock_scan):
         """No exponent matches → no banner, packet shown as fail when flag set."""
         # Build packet with one key, scan with another → all 16 candidates fail.
         wrong_key = bytes(range(16, 32))
         pkt = _build_eax_packet_at_exponent(_EAX_KEY, period_exponent=3, plaintext=b"w")
-        mock_scan.side_effect = [pkt, None]
+        mock_scan.return_value = [pkt]
 
         runner = CliRunner()
         result = runner.invoke(

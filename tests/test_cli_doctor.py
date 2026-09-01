@@ -17,6 +17,7 @@ from hubblenetwork.cli import (
     _CHECK_FAIL,
     _CHECK_OK,
     _CHECK_SKIP,
+    _bluetooth_linux,
     _doctor_bluetooth,
     _doctor_credentials,
     cli,
@@ -104,11 +105,138 @@ class TestBluetoothCheck:
             status, _, _ = _doctor_bluetooth()
         assert status == _CHECK_SKIP
 
-    def test_non_macos_is_skipped(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "linux")
+    def test_unsupported_platform_is_skipped(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
         status, summary, _ = _doctor_bluetooth()
         assert status == _CHECK_SKIP
-        assert "linux" in summary
+        assert "win32" in summary
+
+    def test_linux_gets_a_real_check_not_a_skip(self, monkeypatch, linux_ok):
+        """Linux used to fall through to SKIP, so `doctor` had nothing to say
+        to the one platform where BLE setup actually goes wrong."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        status, _, _ = _doctor_bluetooth()
+        assert status != _CHECK_SKIP
+
+
+@pytest.fixture
+def linux_ok(tmp_path, monkeypatch):
+    """A fixture tree that looks like a healthy BlueZ box."""
+    from hubblenetwork import cli as cli_mod
+
+    sysfs = tmp_path / "bluetooth"
+    (sysfs / "hci0").mkdir(parents=True)
+    rfkill = tmp_path / "rfkill"
+    rfkill.mkdir()
+    socket = tmp_path / "system_bus_socket"
+    socket.touch()
+
+    monkeypatch.setattr(cli_mod, "_SYSFS_BLUETOOTH", str(sysfs))
+    monkeypatch.setattr(cli_mod, "_SYSFS_RFKILL", str(rfkill))
+    monkeypatch.setattr(cli_mod, "_DBUS_SYSTEM_SOCKET", str(socket))
+    monkeypatch.delenv("DBUS_SYSTEM_BUS_ADDRESS", raising=False)
+    # No 'bluetooth' group: the Arch/Fedora shape, which must not fail.
+    monkeypatch.setattr("grp.getgrnam", _raise_keyerror)
+    return tmp_path
+
+
+def _raise_keyerror(_name):
+    raise KeyError(_name)
+
+
+def _add_rfkill(root, kind, value, rf_type="bluetooth"):
+    entry = root / f"rfkill{len(list(root.glob('rfkill*')))}"
+    entry.mkdir()
+    (entry / "type").write_text(rf_type + "\n")
+    for k in ("soft", "hard"):
+        (entry / k).write_text(("1" if k == kind else "0") + "\n")
+    return entry
+
+
+class TestLinuxBluetoothCheck:
+    """What `doctor` should have been telling Linux users all along.
+
+    Every answer is read from sysfs, /run and the group database. Nothing here
+    opens the adapter, for the same reason the macOS check reads a plist.
+    """
+
+    def test_healthy_box_passes(self, linux_ok):
+        status, summary, _ = _bluetooth_linux()
+        assert status == _CHECK_OK
+        assert "hci0" in summary
+
+    def test_no_adapter_fails(self, linux_ok, monkeypatch):
+        from hubblenetwork import cli as cli_mod
+
+        empty = linux_ok / "empty"
+        empty.mkdir()
+        monkeypatch.setattr(cli_mod, "_SYSFS_BLUETOOTH", str(empty))
+        status, summary, fix = _bluetooth_linux()
+        assert status == _CHECK_FAIL
+        assert "no Bluetooth adapter" in summary
+        assert any("lsusb" in line for line in fix)
+
+    def test_soft_blocked_adapter_fails(self, linux_ok):
+        _add_rfkill(linux_ok / "rfkill", "soft", 1)
+        status, summary, fix = _bluetooth_linux()
+        assert status == _CHECK_FAIL
+        assert "soft-blocked" in summary
+        assert any("rfkill unblock" in line for line in fix)
+
+    def test_non_bluetooth_rfkill_is_ignored(self, linux_ok):
+        """A blocked wifi switch says nothing about Bluetooth."""
+        _add_rfkill(linux_ok / "rfkill", "soft", 1, rf_type="wlan")
+        status, _, _ = _bluetooth_linux()
+        assert status == _CHECK_OK
+
+    def test_missing_dbus_socket_fails(self, linux_ok, monkeypatch):
+        """The container and WSL shape: adapter fine, no system bus."""
+        from hubblenetwork import cli as cli_mod
+
+        monkeypatch.setattr(
+            cli_mod, "_DBUS_SYSTEM_SOCKET", str(linux_ok / "nope")
+        )
+        status, summary, _ = _bluetooth_linux()
+        assert status == _CHECK_FAIL
+        assert "D-Bus" in summary
+
+    def test_dbus_env_var_substitutes_for_the_default_socket(
+        self, linux_ok, monkeypatch
+    ):
+        from hubblenetwork import cli as cli_mod
+
+        monkeypatch.setattr(
+            cli_mod, "_DBUS_SYSTEM_SOCKET", str(linux_ok / "nope")
+        )
+        monkeypatch.setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/somewhere/else")
+        status, _, _ = _bluetooth_linux()
+        assert status == _CHECK_OK
+
+    def test_missing_group_from_the_user_fails(self, linux_ok, monkeypatch):
+        """Debian and Ubuntu gate BlueZ's D-Bus policy on this group."""
+        group = type("G", (), {"gr_gid": 4242})()
+        monkeypatch.setattr("grp.getgrnam", lambda _n: group)
+        monkeypatch.setattr("os.getgroups", lambda: [20, 1000])
+        monkeypatch.setattr("os.geteuid", lambda: 1000)
+        status, summary, fix = _bluetooth_linux()
+        assert status == _CHECK_FAIL
+        assert "'bluetooth' group" in summary
+        assert any("usermod -aG bluetooth" in line for line in fix)
+
+    def test_absent_group_is_not_a_failure(self, linux_ok, monkeypatch):
+        """Arch and Fedora ship a polkit rule and no 'bluetooth' group at all,
+        so its absence must not be reported as the Debian problem."""
+        monkeypatch.setattr("os.geteuid", lambda: 1000)
+        status, _, _ = _bluetooth_linux()
+        assert status == _CHECK_OK
+
+    def test_root_is_never_told_to_join_a_group(self, linux_ok, monkeypatch):
+        group = type("G", (), {"gr_gid": 4242})()
+        monkeypatch.setattr("grp.getgrnam", lambda _n: group)
+        monkeypatch.setattr("os.getgroups", lambda: [0])
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        status, _, _ = _bluetooth_linux()
+        assert status == _CHECK_OK
 
 
 class TestExitCode:

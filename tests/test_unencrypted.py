@@ -133,11 +133,11 @@ def _make_unencrypted_packet(**overrides):
     return UnencryptedPacket(**defaults)
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_auto_detects_unencrypted_tabular(mock_scan):
     """ble scan should auto-detect unencrypted packets and show NET_ID column."""
     pkt = _make_unencrypted_packet()
-    mock_scan.side_effect = [pkt, None]
+    mock_scan.return_value = [pkt]
 
     runner = CliRunner()
     result = runner.invoke(cli, ["ble", "scan", "--timeout", "1"])
@@ -146,11 +146,11 @@ def test_scan_auto_detects_unencrypted_tabular(mock_scan):
     assert "NET_ID" in result.output
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_auto_detects_unencrypted_json(mock_scan):
     """ble scan JSON output should contain unencrypted packet fields."""
     pkt = _make_unencrypted_packet()
-    mock_scan.side_effect = [pkt, None]
+    mock_scan.return_value = [pkt]
 
     runner = CliRunner()
     result = runner.invoke(cli, ["ble", "scan", "--timeout", "1", "-o", "json"])
@@ -162,12 +162,12 @@ def test_scan_auto_detects_unencrypted_json(mock_scan):
     assert "payload" in parsed[0]
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_network_id_filter(mock_scan):
     """--network-id should filter out non-matching unencrypted packets."""
     pkt_match = _make_unencrypted_packet(network_id=111)
     pkt_other = _make_unencrypted_packet(network_id=222)
-    mock_scan.side_effect = [pkt_other, pkt_match, None]
+    mock_scan.return_value = [pkt_other, pkt_match]
 
     runner = CliRunner()
     result = runner.invoke(
@@ -179,11 +179,11 @@ def test_scan_network_id_filter(mock_scan):
     assert parsed[0]["network_id"] == 111
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_count_with_unencrypted(mock_scan):
     """-n should stop after N packets (including unencrypted)."""
     pkt = _make_unencrypted_packet()
-    mock_scan.side_effect = [pkt, pkt, pkt, None]
+    mock_scan.return_value = [pkt, pkt, pkt]
 
     runner = CliRunner()
     result = runner.invoke(
@@ -198,11 +198,11 @@ def test_scan_count_with_unencrypted(mock_scan):
 _KEY_B64 = "AAAAAAAAAAAAAAAAAAAAAA=="
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_with_key_hides_unencrypted(mock_scan):
     """With --key, version-1 (unencrypted) packets are not shown."""
     pkt = _make_unencrypted_packet()
-    mock_scan.side_effect = [pkt, None]
+    mock_scan.return_value = [pkt]
 
     runner = CliRunner()
     result = runner.invoke(
@@ -213,11 +213,11 @@ def test_scan_with_key_hides_unencrypted(mock_scan):
     assert parsed == []
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_with_key_hides_unencrypted_even_with_show_failed(mock_scan):
     """--show-failed-decryption is about encrypted packets; v1 stays hidden with a key."""
     pkt = _make_unencrypted_packet()
-    mock_scan.side_effect = [pkt, None]
+    mock_scan.return_value = [pkt]
 
     runner = CliRunner()
     result = runner.invoke(
@@ -232,11 +232,11 @@ def test_scan_with_key_hides_unencrypted_even_with_show_failed(mock_scan):
     assert parsed == []
 
 
-@patch("hubblenetwork.cli.ble_mod.scan_single")
+@patch("hubblenetwork.cli.ble_mod.scan_stream")
 def test_scan_without_key_still_shows_unencrypted(mock_scan):
     """Without a key, version-1 packets are shown as before."""
     pkt = _make_unencrypted_packet()
-    mock_scan.side_effect = [pkt, None]
+    mock_scan.return_value = [pkt]
 
     runner = CliRunner()
     result = runner.invoke(

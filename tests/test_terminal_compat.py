@@ -38,8 +38,8 @@ _CTR_RAW = bytes([0x01, 0x2C]) + bytes(range(2, 16))
 
 
 def _scan(args, charset="utf-8"):
-    with patch("hubblenetwork.cli.ble_mod.scan_single") as m:
-        m.side_effect = [_make_packet(_CTR_RAW, -62), None]
+    with patch("hubblenetwork.cli.ble_mod.scan_stream") as m:
+        m.return_value = [_make_packet(_CTR_RAW, -62)]
         return CliRunner(charset=charset).invoke(cli, ["ble", "scan", "-t", "1", *args])
 
 
@@ -286,8 +286,8 @@ class TestColorControl:
             "from hubblenetwork.cli import main\n"
             "from hubblenetwork.ble import _make_packet\n"
             "raw = bytes([0x01, 0x2C]) + bytes(range(2, 16))\n"
-            "with patch('hubblenetwork.cli.ble_mod.scan_single') as m:\n"
-            "    m.side_effect = [_make_packet(raw, -62), None]\n"
+            "with patch('hubblenetwork.cli.ble_mod.scan_stream') as m:\n"
+            "    m.return_value = [_make_packet(raw, -62)]\n"
             "    sys.exit(main(sys.argv[1:]))\n"
         )
         try:

@@ -40,7 +40,11 @@
     `NSBluetoothAlwaysUsageDescription` in an Info.plist, and a bare Python binary
     has none — see [Troubleshooting](#troubleshooting) if you hit a crash rather
     than a permission prompt.
-  - **Linux**: BlueZ required; user must have permission to access the BLE adapter (often `bluetooth` group).
+  - **Linux**: BlueZ and a running `bluetoothd` on the system D-Bus. On Debian and
+    Ubuntu your user needs to be in the `bluetooth` group (`sudo usermod -aG bluetooth
+    $USER`, then log out and back in); Arch and Fedora ship a polkit rule instead and
+    have no such group. Containers and WSL often have no system bus at all. Run
+    `hubblenetwork doctor` and it will name whichever of these is missing.
   - **Windows**: Requires a compatible BLE stack/adapter.
 - Satellite scanning prerequisites (only needed if you use `sat.scan()`):
   - **Docker**: [Docker Desktop](https://www.docker.com/get-started/) (macOS/Windows) or Docker Engine (Linux) must be installed and running.
@@ -79,6 +83,20 @@ if len(pkts) > 0:
 else:
     print("No packet seen within timeout")
 ```
+
+`ble.scan()` buffers the whole window. To handle packets as they land, use
+`ble.scan_stream()`, which holds one scanner open and yields as it goes:
+
+```python
+from hubblenetwork import ble
+
+for pkt in ble.scan_stream(timeout=60):
+    print(pkt.rssi, pkt.payload.hex())
+```
+
+Don't call `ble.scan_single()` in a loop to do this. Each call starts and stops a
+scanner, which on Linux is a full round trip to `bluetoothd` per packet, and any
+advert arriving between calls is lost.
 
 ### Manage devices and query packets
 
@@ -508,7 +526,10 @@ Key objects & functions:
 * `DecryptedPacket` a packet that has been successfully decrypted either locally or by the backend.
 * `SatellitePacket` a packet decoded by the satellite receiver (PlutoSDR).
 * `Location` data about where a packet was seen.
-* `ble.scan` function for locally scanning for devices with BLE.
+* `ble.scan` function for locally scanning for devices with BLE (buffers the window).
+* `ble.scan_stream` generator that holds one scanner open and yields packets as they
+  arrive; `scan_stream_async` for async callers. Prefer these over calling
+  `ble.scan_single` repeatedly.
 * `sat.scan` generator for receiving satellite packets via PlutoSDR (requires Docker).
 * `Organization.iter_devices()` / `iter_packets()` generators that yield as each API
   page arrives instead of accumulating, so you can start processing immediately on a
@@ -547,6 +568,14 @@ ruff check src
   that carries the key; the framework build at
   `$(brew --prefix)/Frameworks/Python.framework/Versions/<ver>/Resources/Python.app`
   is a usable starting point to copy and amend.
+* **Linux: `ble scan` dies after a few packets** with a D-Bus or dbus-fast traceback
+  (`org.bluez.Error.InProgress`, `Event loop is closed`, or `Task was destroyed but it
+  is pending`). Older versions restarted the scanner once per packet, and BlueZ
+  serialises discovery state for the whole machine, so the failure arrived after
+  roughly as many packets as there had been restarts. Upgrade to the latest release,
+  and if you are calling the SDK directly, replace any `ble.scan_single()` loop with
+  `ble.scan_stream()`. Also make sure `bleak` is 0.22 or newer: older versions share
+  one BlueZ manager across event loops.
 * **Auth errors**: confirm `Organization(org_id, api_token)` or env vars are set; check
   token scope/expiry. `hubblenetwork validate-credentials` reports which environment
   accepted them and exits 1 if neither did, so it is safe to use in a script.

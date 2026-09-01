@@ -1504,6 +1504,102 @@ def _bluetooth_usage_description() -> tuple:
     return None, "no Info.plist found for this interpreter"
 
 
+# Named so tests can point them at a fixture tree instead of the real machine.
+_SYSFS_BLUETOOTH = "/sys/class/bluetooth"
+_SYSFS_RFKILL = "/sys/class/rfkill"
+_DBUS_SYSTEM_SOCKET = "/run/dbus/system_bus_socket"
+
+
+def _bluetooth_linux() -> tuple:
+    """Whether BlueZ looks usable for scanning, without touching the adapter.
+
+    Static for the same reason the macOS check is: the point is to report the
+    problem, not to reproduce it. Every answer here comes from sysfs, /run and
+    the group database.
+
+    Ordered so the first thing reported is the thing to fix first.
+    """
+    import grp
+
+    sysfs = pathlib.Path(_SYSFS_BLUETOOTH)
+    adapters = sorted(sysfs.glob("hci*")) if sysfs.exists() else []
+    if not adapters:
+        return (
+            _CHECK_FAIL,
+            "no Bluetooth adapter found",
+            ["Nothing in /sys/class/bluetooth. Check the adapter is present:",
+             "  lsusb ; dmesg | grep -i bluetooth",
+             "In a VM or container, pass the adapter through to the guest."],
+        )
+
+    blocked = _rfkill_blocked()
+    if blocked:
+        return (
+            _CHECK_FAIL,
+            f"adapter is {blocked}-blocked by rfkill",
+            ["BlueZ will accept the scan and never report a device.",
+             "  rfkill unblock bluetooth"],
+        )
+
+    bus = os.environ.get("DBUS_SYSTEM_BUS_ADDRESS")
+    if not bus and not pathlib.Path(_DBUS_SYSTEM_SOCKET).exists():
+        return (
+            _CHECK_FAIL,
+            "no system D-Bus socket",
+            ["bleak talks to bluetoothd over the system bus, and there isn't one.",
+             "Common in containers and WSL. Start D-Bus and bluetoothd, or set",
+             "DBUS_SYSTEM_BUS_ADDRESS if the socket lives elsewhere."],
+        )
+
+    # Debian and Ubuntu gate BlueZ's D-Bus policy on a 'bluetooth' group.
+    # Arch and Fedora ship a polkit rule instead and have no such group, so a
+    # missing group is not a problem, only a group you are missing from.
+    try:
+        group = grp.getgrnam("bluetooth")
+    except KeyError:
+        group = None
+    if group is not None and os.geteuid() != 0 and group.gr_gid not in os.getgroups():
+        return (
+            _CHECK_FAIL,
+            "not in the 'bluetooth' group",
+            ["BlueZ will refuse the D-Bus call that starts discovery.",
+             "  sudo usermod -aG bluetooth $USER",
+             "Then log out and back in, or run: newgrp bluetooth"],
+        )
+
+    names = ", ".join(a.name for a in adapters)
+    return (_CHECK_OK, f"BlueZ adapter present ({names})", [])
+
+
+def _rfkill_blocked() -> str | None:
+    """'soft', 'hard', or None, for the first blocked Bluetooth rfkill switch."""
+    root = pathlib.Path(_SYSFS_RFKILL)
+    if not root.exists():
+        return None
+    for entry in sorted(root.glob("rfkill*")):
+        try:
+            if (entry / "type").read_text().strip() != "bluetooth":
+                continue
+            for kind in ("hard", "soft"):
+                if (entry / kind).read_text().strip() == "1":
+                    return kind
+        except OSError:
+            continue
+    return None
+
+
+def _close_stream(stream) -> None:
+    """Close a packet stream if it is closeable.
+
+    Guarded because tests hand the commands a plain list, and because the
+    important case is the real generator: abandoning one mid-iteration leaves
+    the scanner running until it is collected.
+    """
+    close = getattr(stream, "close", None)
+    if close is not None:
+        close()
+
+
 def _doctor_credentials(org_id, token) -> tuple:
     if not org_id and not token:
         return (
@@ -1531,6 +1627,8 @@ def _doctor_credentials(org_id, token) -> tuple:
 
 
 def _doctor_bluetooth() -> tuple:
+    if sys.platform.startswith("linux"):
+        return _bluetooth_linux()
     if sys.platform != "darwin":
         return (_CHECK_SKIP, f"not checked on {sys.platform}", [])
     has_key, where = _bluetooth_usage_description()
@@ -1833,86 +1931,92 @@ def ble_detect(
         auto_detect=auto_detect_eax, fixed_exponent=period_exponent
     )
 
-    # Set up timeout tracking
-    start = time.monotonic()
-    deadline = None if timeout is None else start + timeout
-
     if timeout:
         logger.debug(f"Starting BLE scan with {timeout}s timeout")
     else:
         logger.debug("Starting BLE scan (no timeout)")
 
-    # Continuously scan until we find a packet we can decrypt or timeout
-    while deadline is None or time.monotonic() < deadline:
-        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+    # One scanner for the whole window, pulled a packet at a time. Sampling
+    # through repeated scanner restarts both churned BlueZ and skewed
+    # detection, because every advert that arrived between scans was lost.
+    stream = iter(ble_mod.scan_stream(timeout=timeout))
+    saw_packet = False
+    try:
+        while True:
+            # Pull one packet at a time so a BLE failure stays distinguishable
+            # from a decryption failure further down the body.
+            try:
+                pkt = next(stream)
+            except StopIteration:
+                break
+            except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
+                logger.error(f"BLE scanning error: {e}")
+                _output_error(f"BLE scanning error: {e!s}")
+                return
 
-        # Scan for a single packet
-        try:
-            pkt = ble_mod.scan_single(timeout=this_timeout)
-        except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
-            logger.error(f"BLE scanning error: {e}")
-            _output_error(f"BLE scanning error: {e!s}")
-            return
+            saw_packet = True
+            logger.debug("Packet received, attempting decryption...")
 
-        # Check if packet was found
-        if not pkt:
-            # Timeout reached without finding any packet
-            logger.error("Timeout: No BLE packets found")
-            _output_error("No BLE packets found within timeout period")
-            return
-
-        logger.debug("Packet received, attempting decryption...")
-
-        decrypted_pkt = None
-        if isinstance(pkt, AesEaxPacket):
-            d = eax_detector.decrypt(
-                decrypt_fn=lambda exp, pkt=pkt: decrypt_eax(
-                    decoded_key, pkt, period_exponent=exp
-                ),
-                cache_key=pkt.eid,
-            )
-            _announce_detection(d.label, suppress=use_json)
-            decrypted_pkt = d.result
-        elif isinstance(pkt, EncryptedPacket):
-            d = ctr_detector.decrypt(
-                decrypt_fn=lambda pkt=pkt, **kw: decrypt(decoded_key, pkt, **kw),
-                cache_key=pkt.eid,
-            )
-            _announce_detection(d.label, suppress=use_json)
-            decrypted_pkt = d.result
-        # UnencryptedPacket and UnknownPacket fall through, keep scanning.
-
-        if decrypted_pkt:
-            # If we can decrypt it, output success
-            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp, tz=timezone.utc).astimezone().strftime(
-                "%c"
-            )
-            logger.info("Packet decrypted successfully!")
-
-            payload_str = _format_payload(decrypted_pkt.payload, payload_format)
-            if use_json:
-                result = {
-                    "success": True,
-                    "packet": {
-                        "datetime": datetime_str,
-                        "rssi": decrypted_pkt.rssi,
-                        "payload": payload_str,
-                        "counter": decrypted_pkt.counter,
-                    },
-                }
-                click.echo(json.dumps(result))
-            else:
-                click.secho("[SUCCESS] ", fg="green", nl=False)
-                click.echo(
-                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, payload: {payload_str}, counter: {decrypted_pkt.counter}"
+            decrypted_pkt = None
+            if isinstance(pkt, AesEaxPacket):
+                d = eax_detector.decrypt(
+                    decrypt_fn=lambda exp, pkt=pkt: decrypt_eax(
+                        decoded_key, pkt, period_exponent=exp
+                    ),
+                    cache_key=pkt.eid,
                 )
-            return
+                _announce_detection(d.label, suppress=use_json)
+                decrypted_pkt = d.result
+            elif isinstance(pkt, EncryptedPacket):
+                d = ctr_detector.decrypt(
+                    decrypt_fn=lambda pkt=pkt, **kw: decrypt(decoded_key, pkt, **kw),
+                    cache_key=pkt.eid,
+                )
+                _announce_detection(d.label, suppress=use_json)
+                decrypted_pkt = d.result
+            # UnencryptedPacket and UnknownPacket fall through, keep scanning.
 
-        logger.debug(
-            "Decryption failed (doesn't match key), scanning for another packet..."
-        )
+            if decrypted_pkt:
+                # If we can decrypt it, output success
+                datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp, tz=timezone.utc).astimezone().strftime(
+                    "%c"
+                )
+                logger.info("Packet decrypted successfully!")
 
-    # If we exit the loop, it means we've exceeded the timeout without finding a valid packet
+                payload_str = _format_payload(decrypted_pkt.payload, payload_format)
+                if use_json:
+                    result = {
+                        "success": True,
+                        "packet": {
+                            "datetime": datetime_str,
+                            "rssi": decrypted_pkt.rssi,
+                            "payload": payload_str,
+                            "counter": decrypted_pkt.counter,
+                        },
+                    }
+                    click.echo(json.dumps(result))
+                else:
+                    click.secho("[SUCCESS] ", fg="green", nl=False)
+                    click.echo(
+                        f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, payload: {payload_str}, counter: {decrypted_pkt.counter}"
+                    )
+                return
+
+            logger.debug(
+                "Decryption failed (doesn't match key), scanning for another packet..."
+            )
+    finally:
+        # Closing the generator is what stops the scanner when we return early
+        # on the first packet that decrypts.
+        _close_stream(stream)
+
+    if not saw_packet:
+        # Timeout reached without seeing anything at all
+        logger.error("Timeout: No BLE packets found")
+        _output_error("No BLE packets found within timeout period")
+        return
+
+    # Packets arrived, but the key opened none of them
     _output_error("No valid packets found within timeout period")
 
 
@@ -2096,7 +2200,6 @@ def ble_scan(
             ) from None
 
     start = time.monotonic()
-    deadline = None if timeout is None else start + timeout
 
     # Pre-decode the key if provided
     decoded_key: bytearray | None = None
@@ -2137,20 +2240,12 @@ def ble_scan(
     decrypt_fail = 0
     rssis: list[int] = []
 
+    # One scanner held open for the whole window. Re-entering the scanner per
+    # packet is what crashed BlueZ, and it dropped every advert that landed
+    # between packets.
+    stream = ble_mod.scan_stream(timeout=timeout)
     try:
-        while deadline is None or time.monotonic() < deadline:
-            # Check if we've hit the count limit
-            if count is not None and printer.packet_count >= count:
-                break
-
-            this_timeout = (
-                None if deadline is None else max(deadline - time.monotonic(), 0)
-            )
-
-            pkt = ble_mod.scan_single(timeout=this_timeout)
-            if not pkt:
-                break
-
+        for pkt in stream:
             # When a key is supplied the user only wants packets the key can
             # validly decrypt. Version-1 packets are never encrypted and
             # unknown versions can't be decrypted, so skip both entirely.
@@ -2219,9 +2314,17 @@ def ble_scan(
             elif isinstance(pkt, UnknownPacket):
                 rssis.append(pkt.rssi)
                 printer.print_row(pkt)
+
+            if count is not None and printer.packet_count >= count:
+                break
     except KeyboardInterrupt:
         pass  # Just exit the loop, cleanup happens below
     finally:
+        # Ctrl+C leaves the generator suspended, and a suspended generator
+        # holds the scanner open until something collects it. Close it here so
+        # StopDiscovery happens on the way out rather than whenever GC runs.
+        _close_stream(stream)
+
         # Allow printer to finalize (e.g., close JSON array)
         printer.finalize()
 
@@ -2294,59 +2397,55 @@ def ble_check_time(
     if not json_output:
         click.secho("[INFO] Scanning for Hubble devices to check time sync...")
 
-    start = time.monotonic()
-    deadline = None if timeout is None else start + timeout
+    # One scanner for the whole window; see ble.scan_stream().
+    stream = ble_mod.scan_stream(timeout=timeout)
+    try:
+        for pkt in stream:
+            # Check which time counter the packet resolves for
+            delta = find_time_counter_delta(decoded_key, pkt)
 
-    while deadline is None or time.monotonic() < deadline:
-        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
+            ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
 
-        pkt = ble_mod.scan_single(timeout=this_timeout)
-        if not pkt:
-            break
-
-        # Check which time counter the packet resolves for
-        delta = find_time_counter_delta(decoded_key, pkt)
-
-        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
-
-        if delta is None:
-            # Could not resolve the packet with this key
-            if not json_output:
-                click.echo(
-                    f"{ts}  RSSI: {pkt.rssi} dBm  - Could not resolve packet with provided key"
-                )
-        else:
-            # Packet resolved - report the delta
-            if delta == 0:
-                status = "Device time is correct"
-                in_spec = True
-            elif delta > 0:
-                status = (
-                    f"Device time is {delta} day{'s' if abs(delta) != 1 else ''} ahead"
-                )
-                in_spec = abs(delta) <= 2
-            else:
-                status = f"Device time is {abs(delta)} day{'s' if abs(delta) != 1 else ''} behind"
-                in_spec = abs(delta) <= 2
-
-            if json_output:
-                click.echo(
-                    json.dumps(
-                        {
-                            "resolved": True,
-                            "delta_days": delta,
-                            "in_spec": in_spec,
-                            "rssi": pkt.rssi,
-                            "timestamp": ts,
-                        }
+            if delta is None:
+                # Could not resolve the packet with this key
+                if not json_output:
+                    click.echo(
+                        f"{ts}  RSSI: {pkt.rssi} dBm  - Could not resolve packet with provided key"
                     )
-                )
             else:
-                color = "green" if in_spec else "red"
-                spec_label = "" if in_spec else " [OUT OF SPEC]"
-                click.echo(f"{ts}  RSSI: {pkt.rssi} dBm  - ", nl=False)
-                click.secho(f"{status}{spec_label}", fg=color)
-            return 0
+                # Packet resolved - report the delta
+                if delta == 0:
+                    status = "Device time is correct"
+                    in_spec = True
+                elif delta > 0:
+                    status = (
+                        f"Device time is {delta} day{'s' if abs(delta) != 1 else ''} ahead"
+                    )
+                    in_spec = abs(delta) <= 2
+                else:
+                    status = f"Device time is {abs(delta)} day{'s' if abs(delta) != 1 else ''} behind"
+                    in_spec = abs(delta) <= 2
+
+                if json_output:
+                    click.echo(
+                        json.dumps(
+                            {
+                                "resolved": True,
+                                "delta_days": delta,
+                                "in_spec": in_spec,
+                                "rssi": pkt.rssi,
+                                "timestamp": ts,
+                            }
+                        )
+                    )
+                else:
+                    color = "green" if in_spec else "red"
+                    spec_label = "" if in_spec else " [OUT OF SPEC]"
+                    click.echo(f"{ts}  RSSI: {pkt.rssi} dBm  - ", nl=False)
+                    click.secho(f"{status}{spec_label}", fg=color)
+                return 0
+    finally:
+        _close_stream(stream)
 
     if json_output:
         click.echo(json.dumps({"resolved": False}))

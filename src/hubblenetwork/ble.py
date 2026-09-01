@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
 
 from bleak import BleakScanner
@@ -141,30 +143,157 @@ def _extract_hubble_service_data(adv_data) -> tuple | None:
     return None
 
 
+
 # ---------------------------------------------------------------------------
 # Scanning (auto-detects encrypted vs unencrypted)
 # ---------------------------------------------------------------------------
+#
+# One scanner, one event loop, for the whole scan.
+#
+# This used to work the other way round: every caller got a fresh
+# BleakScanner wrapped in its own asyncio.run(), and the CLI called that once
+# per packet. macOS tolerates it because CoreBluetooth is in-process, but on
+# Linux each iteration is a full round trip to bluetoothd over D-Bus (connect,
+# register match rules, StartDiscovery, StopDiscovery, drop rules, disconnect)
+# and BlueZ serialises discovery state for the whole machine. bleak also keys
+# its BlueZManager by event loop and force-finalises the dbus-fast bus of any
+# loop that has closed, so the crash arrived after roughly as many packets as
+# there had been loop teardowns. Holding the scanner open removes the churn,
+# and stops us dropping every advert that landed while no scanner was running.
 
 
-async def _scan_async(ttl: float) -> list[HubblePacket]:
-    """Async implementation of BLE scan."""
-    done = asyncio.Event()
-    packets: list[HubblePacket] = []
+class _PacketCollector:
+    """Turns BleakScanner detection callbacks into a queue of Hubble packets.
 
-    def on_detect(device, adv_data) -> None:
-        nonlocal packets
+    The queue is unbounded on purpose: the consumer only runs between yields,
+    so adverts that arrive while it is busy need somewhere to wait.
+    """
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[HubblePacket] = asyncio.Queue()
+
+    def on_detect(self, device, adv_data) -> None:
         extracted = _extract_hubble_service_data(adv_data)
         if extracted is not None:
             payload, rssi = extracted
-            packets.append(_make_packet(payload, rssi))
+            self.queue.put_nowait(_make_packet(payload, rssi))
 
-    async with BleakScanner(detection_callback=on_detect):
+
+def _reject_running_loop(sync_name: str, async_name: str) -> None:
+    """Fail loudly when a sync scan is called from inside an event loop.
+
+    Checked up front rather than inferred from a RuntimeError escaping the
+    scan, because BlueZ and dbus-fast raise RuntimeError too and the old code
+    could not tell the two apart: it silently re-ran the whole scan on a new
+    loop and never surfaced the real error.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(
+        f"{sync_name}() cannot run inside an existing async event loop. "
+        f"Use 'await ble.{async_name}()' instead, or install 'nest_asyncio' "
+        "for Jupyter support."
+    )
+
+
+def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Drain a loop the way asyncio.run() does, then close it.
+
+    Cancelling leftovers matters here: an abandoned dbus-fast task is what
+    produces "Task was destroyed but it is pending" on the way out.
+    """
+    try:
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True)
+            )
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+async def scan_stream_async(
+    timeout: float | None = None,
+) -> AsyncIterator[HubblePacket]:
+    """Yield Hubble packets as they arrive, holding one scanner open.
+
+    *timeout* is the whole scan window in seconds, not a per-packet wait.
+    None scans until the consumer stops asking.
+
+    Usage:
+        async for packet in ble.scan_stream_async(timeout=10):
+            ...
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    collector = _PacketCollector()
+
+    async with BleakScanner(detection_callback=collector.on_detect):
+        while True:
+            remaining = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+            try:
+                packet = await asyncio.wait_for(
+                    collector.queue.get(), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                return
+            yield packet
+
+
+def scan_stream(timeout: float | None = None) -> Iterator[HubblePacket]:
+    """Yield Hubble packets as they arrive, holding one scanner open.
+
+    *timeout* is the whole scan window in seconds, not a per-packet wait.
+    None scans until the consumer stops asking, so callers wanting a bounded
+    scan should either pass a timeout or break out of the loop.
+
+    For async environments (e.g. Jupyter), use scan_stream_async() instead.
+
+    Usage:
+        for packet in ble.scan_stream(timeout=10):
+            ...
+
+    Running the loop to completion stops the scanner. If you break out early,
+    or an exception leaves the loop, close the generator so discovery stops
+    then rather than whenever it is collected:
+
+        with contextlib.closing(ble.scan_stream()) as packets:
+            for packet in packets:
+                ...
+    """
+    # Validated here rather than in the generator body so a caller in the wrong
+    # context finds out when they call, not on their first next().
+    _reject_running_loop("scan_stream", "scan_stream_async")
+    return _scan_stream_iter(timeout)
+
+
+def _scan_stream_iter(timeout: float | None) -> Iterator[HubblePacket]:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    stream = scan_stream_async(timeout)
+    try:
+        while True:
+            try:
+                yield loop.run_until_complete(stream.__anext__())
+            except StopAsyncIteration:
+                return
+    finally:
+        # Closing the async generator is what runs BleakScanner's __aexit__,
+        # so the single StopDiscovery happens here even if the consumer broke
+        # out of the loop early.
         try:
-            await asyncio.wait_for(done.wait(), timeout=ttl)
-        except asyncio.TimeoutError:
-            pass
-
-    return packets
+            loop.run_until_complete(stream.aclose())
+        finally:
+            _shutdown_loop(loop)
 
 
 def scan(timeout: float) -> list[HubblePacket]:
@@ -172,24 +301,10 @@ def scan(timeout: float) -> list[HubblePacket]:
     Scan for BLE advertisements that include service data for UUID 0xFCA6.
     Automatically detects encrypted vs unencrypted protocol packets.
 
+    Buffers the whole window; use scan_stream() to handle packets as they land.
     For async environments (e.g., Jupyter), use scan_async() instead.
     """
-    try:
-        return asyncio.run(_scan_async(timeout))
-    except RuntimeError:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(_scan_async(timeout))
-            finally:
-                loop.close()
-        raise RuntimeError(
-            "Cannot run synchronous BLE scan inside an existing async event loop. "
-            "Use 'await ble.scan_async()' or install 'nest_asyncio' for Jupyter support."
-        )
+    return list(scan_stream(timeout))
 
 
 async def scan_async(timeout: float) -> list[HubblePacket]:
@@ -199,67 +314,39 @@ async def scan_async(timeout: float) -> list[HubblePacket]:
     Usage:
         packets = await ble.scan_async(timeout=5.0)
     """
-    return await _scan_async(timeout)
+    return [packet async for packet in scan_stream_async(timeout)]
 
 
-async def _scan_single_async(ttl: float) -> HubblePacket | None:
-    """Async implementation for scanning a single BLE packet."""
-    done = asyncio.Event()
-    packet: HubblePacket | None = None
-
-    def on_detect(device, adv_data) -> None:
-        nonlocal packet
-
-        if packet is not None:
-            return
-
-        extracted = _extract_hubble_service_data(adv_data)
-        if extracted is None:
-            return
-
-        payload, rssi = extracted
-        packet = _make_packet(payload, rssi)
-        done.set()
-
-    async with BleakScanner(detection_callback=on_detect):
-        try:
-            await asyncio.wait_for(done.wait(), timeout=ttl)
-        except asyncio.TimeoutError:
-            pass
-
-    return packet
-
-
-def scan_single(timeout: float) -> HubblePacket | None:
+def scan_single(timeout: float | None = None) -> HubblePacket | None:
     """
     Scan for a BLE advertisement that includes service data for UUID 0xFCA6
-    and return it. Automatically detects encrypted vs unencrypted protocol.
+    and return the first one. Automatically detects encrypted vs unencrypted
+    protocol.
+
+    Starts and stops a scanner per call, so use scan_stream() to read more than
+    one packet rather than calling this in a loop.
 
     For async environments (e.g., Jupyter), use scan_single_async() instead.
     """
+    stream = scan_stream(timeout)
     try:
-        return asyncio.run(_scan_single_async(timeout))
-    except RuntimeError:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(_scan_single_async(timeout))
-            finally:
-                loop.close()
-        raise RuntimeError(
-            "Cannot run synchronous BLE scan inside an existing async event loop. "
-            "Use 'await ble.scan_single_async()' or install 'nest_asyncio' for Jupyter support."
-        )
+        return next(stream, None)
+    finally:
+        stream.close()
 
 
-async def scan_single_async(timeout: float) -> HubblePacket | None:
+async def scan_single_async(timeout: float | None = None) -> HubblePacket | None:
     """
-    Async version of scan_single() for use in async environments like Jupyter notebooks.
+    Async version of scan_single() for use in async environments like Jupyter
+    notebooks.
 
     Usage:
         packet = await ble.scan_single_async(timeout=5.0)
     """
-    return await _scan_single_async(timeout)
+    stream = scan_stream_async(timeout)
+    try:
+        async for packet in stream:
+            return packet
+        return None
+    finally:
+        await stream.aclose()

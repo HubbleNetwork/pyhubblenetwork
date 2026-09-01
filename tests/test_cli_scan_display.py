@@ -79,8 +79,8 @@ def _scan(args, pkts, decrypted_for=None):
     The EAX detector sweeps exponents, so the mock must be keyed on the packet
     rather than a positional side_effect list.
     """
-    with patch("hubblenetwork.cli.ble_mod.scan_single") as scan:
-        scan.side_effect = [*pkts, None]
+    with patch("hubblenetwork.cli.ble_mod.scan_stream") as scan:
+        scan.return_value = list(pkts)
         if decrypted_for is None:
             return CliRunner().invoke(cli, ["ble", "scan", "-t", "1", *args])
         with patch(
@@ -307,7 +307,7 @@ class TestBleDetectPayloadFormat:
     @staticmethod
     def _detect(args):
         pkt = _eax()
-        with patch("hubblenetwork.cli.ble_mod.scan_single", return_value=pkt), \
+        with patch("hubblenetwork.cli.ble_mod.scan_stream", return_value=[pkt]), \
              patch("hubblenetwork.cli.decrypt_eax",
                    return_value=_decrypted(payload=b"T=21.4")):
             return CliRunner().invoke(
