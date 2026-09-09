@@ -148,3 +148,35 @@ class TestUpdateDeviceRequestBody:
             "set_name": "named",
             "set_tags": {"satellite": "next-pass"},
         }
+
+
+class TestRegisterDeviceClaimBody:
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_claim_mints_new_claim_using_device_id(self, mock_request, credentials, env):
+        mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
+        register_device(credentials=credentials, env=env, claim=True)
+        body = mock_request.call_args.kwargs["json"]
+        assert body["device_claims"] == [{"new_claim_using_device_id": True}]
+
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_claim_destination_org_pins_destination(self, mock_request, credentials, env):
+        mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
+        register_device(
+            credentials=credentials,
+            env=env,
+            claim=True,
+            claim_destination_org_id="11111111-2222-3333-4444-555555555555",
+        )
+        body = mock_request.call_args.kwargs["json"]
+        assert body["device_claims"] == [
+            {
+                "new_claim_using_device_id": True,
+                "destination_org_id": "11111111-2222-3333-4444-555555555555",
+            }
+        ]
+
+    @patch("hubblenetwork.cloud.cloud_request")
+    def test_device_claims_omitted_by_default(self, mock_request, credentials, env):
+        mock_request.return_value = ({"devices": [{"device_id": "d1", "key": "abc="}]}, None)
+        register_device(credentials=credentials, env=env)
+        assert "device_claims" not in mock_request.call_args.kwargs["json"]

@@ -4170,10 +4170,34 @@ def _format_period_exponent(n: int) -> str:
     show_default=False,
     help="EID rotation period exponent; period = 2^n seconds. Cloud accepts 10-15 (default 15).",
 )
+@click.option(
+    "--claim",
+    is_flag=True,
+    default=False,
+    help="Also mint a device claim for the new device; its claim_id equals the device id.",
+)
+@click.option(
+    "--claim-destination-org",
+    type=str,
+    default=None,
+    show_default=False,
+    metavar="<uuid>",
+    help="Pin the minted claim to this destination organization (requires --claim).",
+)
 @pass_orgcfg
-def register_device(org: Organization, encryption, counter_source, period_seconds, period_exponent) -> None:
+def register_device(
+    org: Organization,
+    encryption,
+    counter_source,
+    period_seconds,
+    period_exponent,
+    claim,
+    claim_destination_org,
+) -> None:
     if period_seconds is not None and period_exponent is not None:
         raise click.UsageError("provide at most one of --period-seconds / --period-exponent")
+    if claim_destination_org is not None and not claim:
+        raise click.UsageError("--claim-destination-org requires --claim")
 
     if encryption:
         click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
@@ -4194,13 +4218,31 @@ def register_device(org: Organization, encryption, counter_source, period_second
         click.secho(
             f'[INFO] Using default EID rotation period exponent: 15 ({_format_period_exponent(15)})'
         )
+    if claim:
+        destination = f" for organization {claim_destination_org}" if claim_destination_org else ""
+        click.secho(f"[INFO] Minting a device claim{destination}; claim_id will equal the device id")
 
-    click.secho(str(org.register_device(
-        encryption=encryption,
-        counter_source=counter_source,
-        period_seconds=period_seconds,
-        period_exponent=period_exponent,
-    )))
+    try:
+        device = org.register_device(
+            encryption=encryption,
+            counter_source=counter_source,
+            period_seconds=period_seconds,
+            period_exponent=period_exponent,
+            claim=claim,
+            claim_destination_org_id=claim_destination_org,
+        )
+    except BackendError as e:
+        # The cloud rejects claim minting with a 403 when the organization lacks
+        # the entitlement; that is a permissions problem, not an unexpected error.
+        if claim and str(e).startswith("403"):
+            raise click.ClickException(
+                "entitlement requirements not met\n"
+                "  Minting a device claim needs the can_create_device_claims "
+                "entitlement on this organization.\n"
+                "  Ask Hubble to enable it, or register without --claim."
+            ) from e
+        raise
+    click.secho(str(device))
 
 
 @org.command("delete-device", short_help="Delete a device from your organization")

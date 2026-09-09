@@ -177,6 +177,7 @@ hubblenetwork org get-packets <id> --days 30 --format csv
 hubblenetwork org get-packets <id> -n 50 --debug
 
 hubblenetwork org register-device           # returns the new device's key
+hubblenetwork org register-device --claim   # also mints a claim; prints claim_id
 hubblenetwork org set-device-name <id> <name>
 hubblenetwork org delete-device <id>
 ```
@@ -195,6 +196,11 @@ tabular output when you want the run itself bounded.
 `DEVICE_UPTIME` — either `--period-seconds` or `--period-exponent` (period = 2ⁿ
 seconds; the cloud accepts 10-15, default 15 ≈ 9h). The two period flags are mutually
 exclusive.
+
+`--claim` also mints a device claim for the new device and prints its `claim_id`,
+which equals the device id. `--claim-destination-org <uuid>` pins the claim's
+destination and requires `--claim`. Minting needs the `can_create_device_claims`
+entitlement; without it the command fails with `entitlement requirements not met`.
 
 
 ## Receive a device's satellite uplink
@@ -415,6 +421,7 @@ org = Organization(
 )
 
 new_dev = org.register_device()           # returns a Device, with its key
+claimed = org.register_device(claim=True) # also mints a claim; claimed.claim_id == claimed.id
 for d in org.iter_devices():              # streams as pages arrive
     print(d.id, d.name)
 for pkt in org.iter_packets(new_dev):     # ditto; both take on_page(page, total)

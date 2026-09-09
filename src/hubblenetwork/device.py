@@ -18,6 +18,7 @@ class Device:
     tags: dict[str, str] | None = None
     created_ts: int | None = None
     active: bool | None = False
+    claim_id: str | None = None
 
     def __str__(self) -> str:
         key_str = (
@@ -27,7 +28,8 @@ class Device:
         )
         return (
             f"Device(id={self.id!r}, key={key_str!r}, name={self.name!r}, "
-            f"tags={self.tags!r}, created_ts={self.created_ts!r}, active={self.active!r})"
+            f"tags={self.tags!r}, created_ts={self.created_ts!r}, active={self.active!r}, "
+            f"claim_id={self.claim_id!r})"
         )
 
     @classmethod

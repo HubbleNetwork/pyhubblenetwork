@@ -101,3 +101,35 @@ class TestForwardingToCloud:
         org.register_device()
         kwargs = mock_reg.call_args.kwargs
         assert kwargs["tags"] is None
+
+
+class TestClaim:
+    def test_destination_requires_claim(self, org):
+        with pytest.raises(ValidationError, match="claim_destination_org_id requires claim=True"):
+            org.register_device(claim_destination_org_id="11111111-2222-3333-4444-555555555555")
+
+    @patch("hubblenetwork.org.cloud.register_device")
+    def test_claim_forwarded(self, mock_reg, org):
+        mock_reg.return_value = {"devices": [{"device_id": "d1", "key": "YWJj"}]}
+        org.register_device(claim=True, claim_destination_org_id="11111111-2222-3333-4444-555555555555")
+        kwargs = mock_reg.call_args.kwargs
+        assert kwargs["claim"] is True
+        assert kwargs["claim_destination_org_id"] == "11111111-2222-3333-4444-555555555555"
+
+    @patch("hubblenetwork.org.cloud.register_device")
+    def test_claim_id_equals_device_id_when_claimed(self, mock_reg, org):
+        mock_reg.return_value = {"devices": [{"device_id": "d1", "key": "YWJj"}]}
+        device = org.register_device(claim=True)
+        assert device.claim_id == "d1"
+        assert "claim_id='d1'" in str(device)
+
+    @patch("hubblenetwork.org.cloud.register_device")
+    def test_claim_id_none_when_not_claimed(self, mock_reg, org):
+        mock_reg.return_value = {"devices": [{"device_id": "d1", "key": "YWJj"}]}
+        device = org.register_device()
+        assert device.claim_id is None
+        assert kwargs_claim(mock_reg) is False
+
+
+def kwargs_claim(mock_reg):
+    return mock_reg.call_args.kwargs["claim"]

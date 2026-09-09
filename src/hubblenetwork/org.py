@@ -53,10 +53,13 @@ class Organization:
         period_seconds: int | None = None,
         period_exponent: int | None = None,
         tags: dict[str, str] | None = None,
+        claim: bool = False,
+        claim_destination_org_id: str | None = None,
     ) -> Device:
         """
         Register a new device in this organization and return it.
-        Returned Device will have an ID and provisioned key.
+        Returned Device will have an ID and provisioned key, and a claim_id
+        when a claim was minted.
 
         Args:
             encryption: Encryption type ("AES-256-CTR", "AES-128-CTR", "AES-128-EAX", or "NONE").
@@ -68,7 +71,13 @@ class Organization:
                              when encryption='AES-128-EAX' and counter_source='DEVICE_UPTIME'.
                              Mutually exclusive with period_seconds.
             tags: Optional custom key/value tags applied at registration.
+            claim: Mint a device claim for the new device (claim_id equals the
+                   device id). Requires the can_create_device_claims entitlement.
+            claim_destination_org_id: Pin the minted claim to a destination
+                                      organization. Requires claim=True.
         """
+        if claim_destination_org_id is not None and not claim:
+            raise ValidationError("claim_destination_org_id requires claim=True")
         if counter_source is not None and counter_source not in _VALID_COUNTER_SOURCES:
             raise ValidationError(
                 f"counter_source must be one of {sorted(_VALID_COUNTER_SOURCES)}, got {counter_source!r}"
@@ -94,10 +103,17 @@ class Organization:
             period_in_seconds=period_seconds,
             period_exponent=period_exponent,
             tags=tags,
+            claim=claim,
+            claim_destination_org_id=claim_destination_org_id,
         )
         device = resp["devices"][0]
         key_bytes = base64.b64decode(device["key"]) if device.get("key") else None
-        return Device(id=device["device_id"], key=key_bytes)
+        device_id = device["device_id"]
+        return Device(
+            id=device_id,
+            key=key_bytes,
+            claim_id=device_id if claim else None,
+        )
 
     def set_device_name(self, device_id: str, name: str) -> Device:
         """
