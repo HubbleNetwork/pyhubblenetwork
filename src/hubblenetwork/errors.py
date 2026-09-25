@@ -44,6 +44,18 @@ class InvalidCredentialsError(BackendError):
     """Invalid credentials passed in"""
 
 
+class PermissionDeniedError(BackendError):
+    """The credentials are valid but lack the scope this call needs (HTTP 403)."""
+
+
+class NotFoundError(BackendError):
+    """The requested resource does not exist in this organization (HTTP 404)."""
+
+
+class RateLimitError(BackendError):
+    """The Hubble Cloud API is rate-limiting these credentials (HTTP 429)."""
+
+
 # Request/response semantics
 class ValidationError(BackendError):
     """The request was invalid (schema/semantics)."""
@@ -169,6 +181,9 @@ __all__ = [
     "InvalidCredentialsError",
     "InvalidDeviceError",
     "NetworkError",
+    "NotFoundError",
+    "PermissionDeniedError",
+    "RateLimitError",
     "RequestError",
     "SatelliteError",
     "ScanError",
@@ -182,6 +197,10 @@ __all__ = [
 # ----- Helpers for HTTP client code ----------------------------------------
 
 
+# Validation failures can come back as very large bodies; keep errors readable.
+_MAX_ERROR_DETAIL = 300
+
+
 def map_http_status(status_code: int, detail: str | None = None) -> BackendError:
     """
     Map an HTTP status code to a concrete exception instance.
@@ -191,6 +210,12 @@ def map_http_status(status_code: int, detail: str | None = None) -> BackendError
 
     if status_code == 400:
         return RequestError(msg)
+    if status_code == 403:
+        return PermissionDeniedError(msg)
+    if status_code == 404:
+        return NotFoundError(msg)
+    if status_code == 429:
+        return RateLimitError(msg)
     if status_code == 500:
         return InternalServerError(msg)
     return BackendError(msg)
@@ -221,5 +246,7 @@ def raise_for_response(
 
     if not detail:
         detail = default_message or None
+    elif len(detail) > _MAX_ERROR_DETAIL:
+        detail = detail[:_MAX_ERROR_DETAIL] + f"... ({len(detail)} chars)"
 
     raise map_http_status(status_code, detail)

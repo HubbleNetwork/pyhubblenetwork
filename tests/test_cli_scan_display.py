@@ -235,6 +235,18 @@ class TestEmptyAndHiddenStates:
         assert "1 packet(s) failed to decrypt and were hidden" in res.stderr
         assert "--show-failed-decryption" in res.stderr
 
+    def test_hidden_failures_are_not_tallied_as_zero_failed(self):
+        res = _scan(["--key", KEY_HEX], [_eax(), _eax(1)],
+                    decrypted_for={_eax().eid: _decrypted()})
+        err = ANSI.sub("", res.stderr)
+        assert "1 decrypted" in err
+        assert "0 failed" not in err
+
+    def test_shown_failures_keep_the_full_tally(self):
+        res = _scan(["--key", KEY_HEX, "--show-failed-decryption"],
+                    [_eax(), _eax(1)], decrypted_for={_eax().eid: _decrypted()})
+        assert "1 decrypted, 1 failed" in ANSI.sub("", res.stderr)
+
     def test_no_hidden_notice_when_flag_is_set(self):
         res = _scan(["--key", KEY_HEX, "--show-failed-decryption"],
                     [_eax(), _eax(1)], decrypted_for={_eax().eid: _decrypted()})

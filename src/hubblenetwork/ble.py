@@ -118,6 +118,7 @@ def _make_packet(raw: bytes, rssi: int) -> HubblePacket:
             payload=payload,
             auth_tag=auth_tag,
             rssi=rssi,
+            raw=bytes(raw),
         )
 
     return UnknownPacket(

@@ -73,6 +73,10 @@ class AesEaxPacket:
     payload: bytes  # 0-9 bytes encrypted
     auth_tag: bytes  # 4 bytes AEAD tag
     rssi: int
+    # The advertisement's service data exactly as received, which the Hubble
+    # Cloud decode endpoint needs byte for byte. Populated by the BLE parser;
+    # None for packets built by hand (see ``cloud.packet_to_advertisement``).
+    raw: bytes | None = None
 
 
 @dataclass(frozen=True)

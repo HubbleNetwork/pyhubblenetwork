@@ -60,6 +60,7 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | Check my setup is working | [`doctor`](#check-your-setup-with-doctor) |
 | Watch nearby devices report | [`ble scan`](#watch-nearby-devices-report) |
 | Prove one device works end to end | [`ble validate`](#prove-one-device-works-end-to-end) |
+| See which of my devices are nearby, no key needed | [`ble decode`](#decrypt-nearby-packets-in-the-cloud) |
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
 | Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
@@ -124,14 +125,49 @@ which only means something for the day-based `UNIX_TIME` counter; both are rejec
 with a usage error rather than quietly ignored. `sat scan` behaves the same way.
 
 
+## Decrypt nearby packets in the cloud
+
+`ble decode` scans like `ble scan`, but sends each encrypted advertisement (AES-CTR
+and AES-EAX) to the Hubble Cloud to be decrypted with the keys registered to your
+organization. You don't need a device key, and each row says which device sent it.
+Packets from devices outside your org stay undecrypted and are hidden unless you ask
+for them. The cloud also stores what it decrypts, as any gateway would.
+
+```bash
+hubblenetwork ble decode --timeout 30
+```
+
+| Flag | Takes | Description |
+|------|-------|-------------|
+| `-t`, `--timeout` | seconds | Stop after this long. Default: no timeout. |
+| `--show-failed` | — | Also show packets the cloud couldn't decrypt, with a `✓`/`✗` mark per row. |
+| `-o`, `--format` | `tabular` or `json` | Output format. Default: `tabular`. |
+| `--payload-format` | `auto`, `base64`, `hex`, `string` | How to render payloads — see [Payload format](#payload-format). |
+| `--org-id` | ID | Organization ID. Env: `HUBBLE_ORG_ID`. |
+| `--token` | token | API token, with the `read-packets` scope. Env: `HUBBLE_API_TOKEN`. |
+
+Packets go up in batches of at most 25, sent whenever a batch fills or two seconds
+pass, so rows appear as you go rather than at the end. A device repeats each
+advertisement, and each distinct one is sent once.
+
+
 ## Prove one device works end to end
 
 `ble validate` is the quickest way to answer "is my device working?". It walks the
-whole chain and stops at the first failure: key and device-ID formats → credentials →
-organization → the device's registration → BLE advertisements → decrypting a packet
-(reporting the EID type as `UNIX_TIME`, `DEVICE_UPTIME`, or `AMBIGUOUS` when a packet
-resolves under both, usually several devices in range with different configs) →
-ingesting it and reading it back.
+whole chain and stops at the first failure: device-ID format → credentials →
+organization → device registered in this org → BLE advertisements → the Hubble
+Cloud decrypting a packet as this device. No key is needed: the cloud decrypts with
+the key the device was registered with. A device ID that isn't in this org fails
+in about a second, before any scanning.
+
+```bash
+hubblenetwork ble validate --device-id "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"
+```
+
+Pass the key as well to also check encryption locally, before the cloud sees
+anything. That step reports the EID type (`UNIX_TIME`, `DEVICE_UPTIME`, `AMBIGUOUS`
+when a packet resolves under both — usually several devices in range with different
+configs — or AES-EAX with its period exponent), and fails if the key decrypts nothing.
 
 ```bash
 hubblenetwork ble validate \
@@ -141,10 +177,10 @@ hubblenetwork ble validate \
 
 | Option | Description |
 |--------|-------------|
-| `--key`, `-k` | Device key, used to test packet encryption (required). Accepts hex or base64, 16- or 32-byte. |
 | `--device-id`, `-d` | Device UUID, used to test the backend (required). |
+| `--key`, `-k` | Device key, to also test packet encryption locally (optional). Accepts hex or base64, 16- or 32-byte. |
 | `--org-id` | Organization ID (defaults to the `HUBBLE_ORG_ID` env var). |
-| `--token` | API token (defaults to the `HUBBLE_API_TOKEN` env var). |
+| `--token` | API token (defaults to the `HUBBLE_API_TOKEN` env var). Needs the `read-packets` scope. |
 | `--timeout`, `-t` | BLE scan timeout in seconds (default: 30). |
 
 This is the **terrestrial** path only — the device advertising over Bluetooth, this
@@ -265,7 +301,7 @@ hubblenetwork sat signal-report 10 --output report.txt --mock
 
 ### Payload format
 
-Commands that print packet data (`ble scan`, `sat scan`, `ble detect`,
+Commands that print packet data (`ble scan`, `ble decode`, `sat scan`, `ble detect`,
 `org get-packets`) take `--payload-format`:
 
 * `auto` — printable ASCII shows as text, anything else as uppercase hex
@@ -447,6 +483,23 @@ for pkt in ble.scan(timeout=5.0):
         print(decrypted.payload)                              # a DecryptedPacket
 ```
 
+Or let the cloud decrypt, with no key at all. `org.decode_packets()` takes any number
+of `EncryptedPacket` / `AesEaxPacket`, sends them in batches of 25, and returns one
+entry per input, in order: a `DecryptedPacket` carrying `device_id` and
+`device_name`, or `None` where the cloud couldn't decrypt it for your org. Any other
+packet type raises `ValueError`, so filter first. The API key needs the
+`read-packets` scope; the cloud stores what it decodes; and packets heard more than
+72 hours ago are not sent (they come back `None`):
+
+```python
+from hubblenetwork import ble, AesEaxPacket, EncryptedPacket
+
+pkts = [p for p in ble.scan(timeout=10.0) if isinstance(p, (EncryptedPacket, AesEaxPacket))]
+for pkt, result in zip(pkts, org.decode_packets(pkts)):
+    if result:
+        print(result.device_name or result.device_id, result.payload)
+```
+
 `counter_mode` accepts `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"`
 (counter values 0–127, fixed pool size of 128). The BLE functions have sync and async
 variants — `ble.scan()` / `ble.scan_async()`. The CLI's auto-detection is available
@@ -540,7 +593,8 @@ pytest
 
 **There is none.** The CLI makes no network call except the ones a command explicitly
 needs: the Hubble Cloud API for the commands that use credentials (`org`, `metrics`,
-`doctor`, `validate-credentials`, `ble validate` and `ble scan --ingest`); `localhost`
+`doctor`, `validate-credentials`, `ble validate`, `ble decode` and
+`ble scan --ingest`); `localhost`
 for the satellite receiver container; and Docker pulling that container image from
 `ghcr.io` on first `sat` use. Nothing is reported anywhere about how you use it.
 

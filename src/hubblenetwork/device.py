@@ -33,7 +33,7 @@ class Device:
     @classmethod
     def from_json(cls, json):
         return cls(
-            id=str(json.get("id")),
+            id=str(json.get("id") or json.get("device_id")),
             name=json.get("name"),
             tags=json.get("tags"),
             created_ts=json.get("created_ts"),
