@@ -472,11 +472,12 @@ class TestRunningContainer:
     @patch("hubblenetwork.sat.start_container")
     @patch("hubblenetwork.sat.pull_image")
     @patch("hubblenetwork.sat.ensure_docker_available")
-    def test_skips_pull_when_image_exists_locally(
+    def test_pulls_even_when_image_exists_locally(
         self, mock_ensure, mock_pull, mock_start, mock_wait, mock_wait_sdr, mock_stop,
         mock_image_exists,
     ):
         mock_start.return_value = "container789"
+        messages = []
 
         with sat._running_container(
             port=sat.API_PORT,
@@ -485,12 +486,14 @@ class TestRunningContainer:
             privileged=True,
             name=sat.CONTAINER_NAME,
             wait_for_sdr=True,
-            on_status=None,
+            on_status=messages.append,
         ):
             pass
 
         mock_image_exists.assert_called_once_with("sdr-docker:dev")
-        mock_pull.assert_not_called()
+        mock_pull.assert_called_once_with("sdr-docker:dev")
+        assert "Checking for updates to sdr-docker:dev..." in messages
+        assert "Pulling Docker image..." not in messages
 
     @patch("hubblenetwork.sat._image_exists_locally", return_value=False)
     @patch("hubblenetwork.sat.stop_container")

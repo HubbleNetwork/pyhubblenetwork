@@ -232,10 +232,10 @@ key cannot decrypt are hidden unless `--show-failed-decryption` is given.
 
 `sat scan` handles the Docker container
 ([`ghcr.io/hubblenetwork/sdr-docker`](https://ghcr.io/hubblenetwork/sdr-docker)) for
-you: it verifies Docker, pulls the image if it isn't cached, starts the container
-privileged so it can reach USB, waits for the receiver API and the SDR, polls the
-container's HTTP API and deduplicates by device ID and sequence number, then stops and
-removes the container on exit.
+you: it verifies Docker, pulls the latest image (only changed layers are downloaded
+when a copy is already cached), starts the container privileged so it can reach USB,
+waits for the receiver API and the SDR, polls the container's HTTP API and deduplicates
+by device ID and sequence number, then stops and removes the container on exit.
 
 ### One-shot capture (`record` / `signal-report`)
 
