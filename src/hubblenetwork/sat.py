@@ -135,6 +135,9 @@ def _image_exists_locally(image: str) -> bool:
 
 def pull_image(image: str = DOCKER_IMAGE) -> None:
     """Pull *image*, ensuring the latest version is fetched.
+
+    If the latest version is already stored locally, the image
+    is not re-downloaded.
     """
     import docker
 
@@ -375,11 +378,13 @@ def _running_container(
 
     ensure_docker_available()
 
+    # Always pull so a cached image picks up new receiver builds; the
+    # message only tells the user whether to expect a full download.
     if _image_exists_locally(image):
-        _emit(f"Using local image {image}...")
+        _emit(f"Checking for updates to {image}...")
     else:
         _emit("Pulling Docker image...")
-        pull_image(image)
+    pull_image(image)
 
     _emit("Starting container...")
     container_id = start_container(
