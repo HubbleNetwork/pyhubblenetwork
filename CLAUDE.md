@@ -99,6 +99,8 @@ The SDK uses a src layout with the main package at `src/hubblenetwork/`. Public 
 
 - **EID modes**: Two EID rotation modes — UNIX_TIME and DEVICE_UPTIME. Device-uptime mode uses a fixed pool size of 128. The `decrypt()` function's `counter_mode` parameter accepts `"UNIX_TIME"` (default) or `"DEVICE_UPTIME"`; CLI commands use `--counter-mode UNIX_TIME|DEVICE_UPTIME`. For AES-128-EAX device registration on DEVICE_UPTIME, the rotation period can be set via `period_seconds` (SDK) / `--period-seconds` (CLI) or `period_exponent` / `--period-exponent` (period = 2^n seconds; cloud accepts 10-15, default 15 ≈ 9h). The two are mutually exclusive.
 
+- **Device claims at registration**: `org register-device --claim` (SDK: `register_device(claim=True)`) sends `device_claims: [{"new_claim_using_device_id": true}]` on the provision request. The provision response never echoes a claim id, but in this mode the cloud names the claim after the device, so `Device.claim_id` is set to the device id client-side. `--claim-destination-org <uuid>` / `claim_destination_org_id` pins the claim's destination and requires `--claim`. Minting needs the `can_create_device_claims` entitlement; the CLI turns the resulting 403 into `Error: entitlement requirements not met` (exit 1) instead of an "Unexpected error". Tests in `tests/test_cli_register_device_claim.py`, `tests/test_register_device_cloud.py`, `tests/test_register_device_validation.py`.
+
 - **Satellite scanning requires Docker**: `sat.scan()` pulls and runs a privileged Docker container. Docker daemon must be running. Raises `DockerError` (not `SatelliteError`) if Docker is unavailable. The `docker` Python package is a required (not optional) dependency.
 
 ### Environment Variables

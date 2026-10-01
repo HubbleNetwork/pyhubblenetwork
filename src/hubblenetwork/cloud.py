@@ -174,6 +174,8 @@ def register_device(
     period_in_seconds: int | None = None,
     period_exponent: int | None = None,
     tags: dict[str, str] | None = None,
+    claim: bool = False,
+    claim_destination_org_id: str | None = None,
 ) -> Any:
     """Create a new device and return it.
 
@@ -181,6 +183,11 @@ def register_device(
         tags: Optional custom tags for the new device. The Cloud API accepts a
             per-device tags map in a list matching ``n_devices``; when provided
             here it is sent as a single-element list.
+        claim: Mint a device claim for the new device. The Cloud API names the
+            claim after the device, so the claim ID equals the device ID; the
+            provision response itself never echoes it back.
+        claim_destination_org_id: Pin the minted claim to a destination
+            organization. Only meaningful with ``claim=True``.
     """
     data: dict = {
         "n_devices": 1,
@@ -195,6 +202,11 @@ def register_device(
         data["eid_rotation"] = eid_rotation
     if tags is not None:
         data["tags"] = [tags]
+    if claim:
+        claim_ref: dict = {"new_claim_using_device_id": True}
+        if claim_destination_org_id is not None:
+            claim_ref["destination_org_id"] = claim_destination_org_id
+        data["device_claims"] = [claim_ref]
     return cloud_request(
         method="POST",
         env=env,
