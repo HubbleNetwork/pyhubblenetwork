@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from bleak import BleakScanner
@@ -146,17 +147,24 @@ def _extract_hubble_service_data(adv_data) -> tuple | None:
 # ---------------------------------------------------------------------------
 
 
-async def _scan_async(ttl: float) -> list[HubblePacket]:
+async def _scan_async(
+    ttl: float, until: Callable[[HubblePacket], bool] | None = None
+) -> list[HubblePacket]:
     """Async implementation of BLE scan."""
     done = asyncio.Event()
     packets: list[HubblePacket] = []
 
     def on_detect(device, adv_data) -> None:
         nonlocal packets
+        if done.is_set():
+            return
         extracted = _extract_hubble_service_data(adv_data)
         if extracted is not None:
             payload, rssi = extracted
-            packets.append(_make_packet(payload, rssi))
+            pkt = _make_packet(payload, rssi)
+            packets.append(pkt)
+            if until is not None and until(pkt):
+                done.set()
 
     async with BleakScanner(detection_callback=on_detect):
         try:
@@ -167,15 +175,20 @@ async def _scan_async(ttl: float) -> list[HubblePacket]:
     return packets
 
 
-def scan(timeout: float) -> list[HubblePacket]:
+def scan(
+    timeout: float, until: Callable[[HubblePacket], bool] | None = None
+) -> list[HubblePacket]:
     """
     Scan for BLE advertisements that include service data for UUID 0xFCA6.
     Automatically detects encrypted vs unencrypted protocol packets.
 
+    ``until``, if given, is called with each packet as it arrives; the scan
+    ends early, before ``timeout``, as soon as it returns True.
+
     For async environments (e.g., Jupyter), use scan_async() instead.
     """
     try:
-        return asyncio.run(_scan_async(timeout))
+        return asyncio.run(_scan_async(timeout, until))
     except RuntimeError:
         try:
             loop = asyncio.get_running_loop()
@@ -183,7 +196,7 @@ def scan(timeout: float) -> list[HubblePacket]:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                return loop.run_until_complete(_scan_async(timeout))
+                return loop.run_until_complete(_scan_async(timeout, until))
             finally:
                 loop.close()
         raise RuntimeError(
@@ -192,14 +205,16 @@ def scan(timeout: float) -> list[HubblePacket]:
         )
 
 
-async def scan_async(timeout: float) -> list[HubblePacket]:
+async def scan_async(
+    timeout: float, until: Callable[[HubblePacket], bool] | None = None
+) -> list[HubblePacket]:
     """
     Async version of scan() for use in async environments like Jupyter notebooks.
 
     Usage:
         packets = await ble.scan_async(timeout=5.0)
     """
-    return await _scan_async(timeout)
+    return await _scan_async(timeout, until)
 
 
 async def _scan_single_async(ttl: float) -> HubblePacket | None:

@@ -66,11 +66,8 @@ def _ingest_packets_endpoint(credentials: Credentials) -> str:
     return f"/org/{credentials.org_id}/packets"
 
 
-def _update_device_endpoint(credentials: Credentials, device_id: str) -> str:
-    return f"/org/{credentials.org_id}/devices/{device_id}"
-
-
-def _delete_device_endpoint(credentials: Credentials, device_id: str) -> str:
+def _device_endpoint(credentials: Credentials, device_id: str) -> str:
+    """One device: GET reads it, PATCH updates it, DELETE removes it."""
     return f"/org/{credentials.org_id}/devices/{device_id}"
 
 
@@ -226,7 +223,7 @@ def update_device(
     return cloud_request(
         method="PATCH",
         env=env,
-        path=_update_device_endpoint(credentials, device_id),
+        path=_device_endpoint(credentials, device_id),
         credentials=credentials,
         json=data,
     )[0]
@@ -241,10 +238,27 @@ def delete_device(
     """Delete a device."""
     cloud_request(
         method="DELETE",
-        path=_delete_device_endpoint(credentials, device_id),
+        path=_device_endpoint(credentials, device_id),
         credentials=credentials,
         env=env,
     )
+
+
+def get_device(
+    *, credentials: Credentials, env: Environment, device_id: str
+) -> dict[str, Any]:
+    """
+    Fetch one device, including its registration config.
+
+    Unlike list_devices, the response carries ``encryption`` and
+    ``eid_rotation``. Raises NotFoundError if the device is not in the org.
+    """
+    return cloud_request(
+        method="GET",
+        path=_device_endpoint(credentials, device_id),
+        credentials=credentials,
+        env=env,
+    )[0]
 
 
 def list_devices(

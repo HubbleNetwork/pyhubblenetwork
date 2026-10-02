@@ -36,6 +36,7 @@ from hubblenetwork import (
     termcaps,
 )
 from hubblenetwork import ble as ble_mod
+from hubblenetwork import diagnose as diagnose_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
 from hubblenetwork.crypto import find_time_counter_delta
@@ -44,7 +45,7 @@ from hubblenetwork.detect import (
     EaxExponentDetector,
     detect_eid_type,
 )
-from hubblenetwork.errors import BackendError
+from hubblenetwork.errors import BackendError, NotFoundError
 from hubblenetwork.packets import (
     AesEaxPacket,
     SatellitePacket,
@@ -1504,7 +1505,42 @@ def _bluetooth_usage_description() -> tuple:
     return None, "no Info.plist found for this interpreter"
 
 
+def _check_marks() -> dict:
+    g = termcaps.glyphs()
+    return {
+        _CHECK_OK: click.style(g.mark_ok, fg="green"),
+        _CHECK_FAIL: click.style(g.mark_fail, fg="red"),
+        _CHECK_SKIP: click.style("-", dim=True),
+    }
+
+
+def _print_check(marks: dict, name: str, status: str, summary: str, advice) -> None:
+    """One `doctor`-style row: mark, padded name, summary, then dim advice."""
+    click.echo(f"  {marks[status]} {name.ljust(14)} {summary}")
+    for line in advice:
+        click.secho(f"      {line}", dim=True)
+
+
+def _print_check_footer(results: list, head: str) -> None:
+    """`Ready to go.  3 ok . 1 skipped` -- the head is the caller's verdict."""
+    failed = results.count(_CHECK_FAIL)
+    skipped = results.count(_CHECK_SKIP)
+    click.echo("")
+    parts = [f"{results.count(_CHECK_OK)} ok"]
+    if failed:
+        parts.append(f"{failed} failed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    click.secho(head, bold=True, nl=False)
+    click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(parts), dim=True)
+
+
 def _doctor_credentials(org_id, token) -> tuple:
+    return _credentials_env(org_id, token)[0]
+
+
+def _credentials_env(org_id, token) -> tuple:
+    """(doctor check tuple, Environment or None), so callers can reuse the env."""
     if not org_id and not token:
         return (
             _CHECK_FAIL,
@@ -1512,22 +1548,22 @@ def _doctor_credentials(org_id, token) -> tuple:
             ["Set both, or pass --org-id/--token:",
              "  export HUBBLE_ORG_ID=<your org id>",
              "  export HUBBLE_API_TOKEN=<your api token>"],
-        )
+        ), None
     if not org_id or not token:
         missing = "HUBBLE_ORG_ID" if not org_id else "HUBBLE_API_TOKEN"
-        return (_CHECK_FAIL, f"{missing} is missing", [f"Set {missing} as well."])
+        return (_CHECK_FAIL, f"{missing} is missing", [f"Set {missing} as well."]), None
     try:
         env = cloud.get_env_from_credentials(cloud.Credentials(org_id, token))
     except Exception as exc:  # noqa: BLE001 - network trouble is not the same as bad creds
-        return (_CHECK_FAIL, f"could not reach the API ({exc})", ["Check your connection."])
+        return (_CHECK_FAIL, f"could not reach the API ({exc})", ["Check your connection."]), None
     if env is None:
         return (
             _CHECK_FAIL,
             "rejected by both PROD and TESTING",
             ["The org ID and token must come from the same environment.",
              "Re-copy both from the Hubble dashboard."],
-        )
-    return (_CHECK_OK, f"valid, {env.name}", [])
+        ), None
+    return (_CHECK_OK, f"valid, {env.name}", []), env
 
 
 def _doctor_bluetooth() -> tuple:
@@ -1610,12 +1646,7 @@ def doctor(org_id, token) -> None:
       hubblenetwork doctor
       hubblenetwork doctor --org-id <id> --token <token>
     """
-    g = termcaps.glyphs()
-    marks = {
-        _CHECK_OK: click.style(g.mark_ok, fg="green"),
-        _CHECK_FAIL: click.style(g.mark_fail, fg="red"),
-        _CHECK_SKIP: click.style("-", dim=True),
-    }
+    marks = _check_marks()
 
     checks = [
         ("Credentials", lambda: _doctor_credentials(org_id, token)),
@@ -1628,28 +1659,181 @@ def doctor(org_id, token) -> None:
     for name, run in checks:
         status, summary, advice = run()
         results.append(status)
-        click.echo(f"  {marks[status]} {name.ljust(14)} {summary}")
-        for line in advice:
-            click.secho(f"      {line}", dim=True)
+        _print_check(marks, name, status, summary, advice)
         # Only ask Docker about the image when Docker itself answered.
         if name == "Docker" and status == _CHECK_OK:
             sub_status, sub_summary, sub_advice = _doctor_sdr_image()
             results.append(sub_status)
-            click.echo(f"  {marks[sub_status]} {'Receiver'.ljust(14)} {sub_summary}")
-            for line in sub_advice:
-                click.secho(f"      {line}", dim=True)
+            _print_check(marks, "Receiver", sub_status, sub_summary, sub_advice)
 
     failed = results.count(_CHECK_FAIL)
-    skipped = results.count(_CHECK_SKIP)
-    click.echo("")
-    parts = [f"{results.count(_CHECK_OK)} ok"]
+    _print_check_footer(results, "Ready to go." if not failed else "Not ready.")
     if failed:
-        parts.append(f"{failed} failed")
-    if skipped:
-        parts.append(f"{skipped} skipped")
-    head = "Ready to go." if not failed else "Not ready."
-    click.secho(head, bold=True, nl=False)
-    click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(parts), dim=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# check-key
+# ---------------------------------------------------------------------------
+
+
+def _check_key_lookup(org_id, token, device_id) -> tuple:
+    """(rows, Device or None): the Credentials row, plus a Registration row
+    when the device can't be looked up. The env from the credentials check is
+    reused, so this costs one request beyond it."""
+    (status, summary, advice), env = _credentials_env(org_id, token)
+    rows = [diagnose_mod.Finding("Credentials", status, summary, tuple(advice))]
+    if env is None:
+        return rows, None
+    try:
+        data = cloud.get_device(
+            credentials=cloud.Credentials(org_id, token), env=env, device_id=device_id,
+        )
+        return rows, Device.from_json(data)
+    except NotFoundError:
+        rows.append(diagnose_mod.Finding(
+            "Registration", _CHECK_FAIL, "no device with this ID in your org",
+            (f"Device ID: {device_id}",
+             "Check it with:  hubblenetwork org list-devices",
+             "Or the device was registered under a different org."),
+        ))
+    except BackendError as exc:
+        rows.append(diagnose_mod.Finding(
+            "Registration", _CHECK_FAIL, f"could not look the device up ({exc})",
+        ))
+    return rows, None
+
+
+def _check_key_scan(key: bytes, timeout: int):
+    """AirEvidence from a scan, or a Finding when no scan happened.
+
+    The scan stops as soon as a packet from this key authenticates, so
+    --timeout is an upper bound rather than how long every run takes.
+    """
+    if timeout <= 0:
+        return diagnose_mod.Finding("Over the air", _CHECK_SKIP, "scan disabled (--timeout 0)")
+    bt_status, bt_summary, bt_advice = _doctor_bluetooth()
+    if bt_status == _CHECK_FAIL:
+        # Scanning here would abort the process; report it instead.
+        return diagnose_mod.Finding(
+            "Over the air", _CHECK_FAIL, f"Bluetooth unavailable: {bt_summary}",
+            tuple(bt_advice),
+        )
+    click.secho(
+        f"Listening for this key's packets (up to {timeout}s)...", dim=True, err=True,
+    )
+    air = diagnose_mod.AirScan(key)
+    try:
+        ble_mod.scan(timeout=timeout, until=air.add)
+    except Exception as exc:  # noqa: BLE001 - adapter/OS failures become a row
+        return diagnose_mod.Finding("Over the air", _CHECK_FAIL, f"BLE scan failed ({exc})")
+    return air.evidence()
+
+
+@cli.command("check-key", short_help="Check a device's key is set up right")
+@click.option(
+    "--key",
+    "-k",
+    type=str,
+    default=None,
+    help="Device key, hex or base64 (required).",
+)
+@click.option(
+    "--device-id",
+    "-d",
+    type=str,
+    default=None,
+    help="Device ID (required). The registration every other check is compared to.",
+)
+@click.option(
+    "--firmware",
+    "-f",
+    type=click.Path(exists=True),
+    default=None,
+    help="The image you flashed (.elf/.bin/.hex/.ihex), or its build directory.",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    default=15,
+    show_default=True,
+    help="Longest to scan, in seconds; stops early once this key's packet "
+    "decodes. 0 skips the scan.",
+)
+@click.option(
+    "--org-id",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="Organization ID",
+)
+@click.option(
+    "--token",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="API token",
+)
+def check_key(key, device_id, firmware, timeout, org_id, token) -> None:
+    """
+    Check that a device's key is set up properly, and say what is wrong if not.
+
+    Compares how the device is registered in the backend, and whether the
+    backend has decoded its packets, against:
+
+    \b
+      --key        what the device is actually broadcasting, tried against
+                   every key size, counter mode and clock offset
+      --firmware   (optional) what the image was built to do, from the
+                   config string the device SDK compiles in, and whether
+                   this key is in it
+
+    Disagreements are named directly: a key registered UNIX_TIME but flashed
+    DEVICE_UPTIME, an AES-256 key in an AES-128 build, a clock days off.
+    Exits 1 if anything fails.
+
+    \b
+    Example:
+      hubblenetwork check-key --device-id <id> --key <key>
+      hubblenetwork check-key --device-id <id> --key <key> --firmware app.hex
+    """
+    if not device_id:
+        raise click.UsageError(
+            "check-key needs --device-id, so it can compare the device against\n"
+            "how it is registered.\n" + _FIND_DEVICE_ID
+        )
+    if not key:
+        raise click.UsageError(
+            "check-key needs --key, so it can find the device on the air and check\n"
+            "it against the registration. Use the key `org register-device` printed\n"
+            "for this device (hex or base64); the backend cannot return it later."
+        )
+    try:
+        key_bytes = _parse_key(key)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="--key")
+
+    rows, device = _check_key_lookup(org_id, token, device_id)
+    rows += diagnose_mod.diagnose(
+        key=key_bytes,
+        device=device,
+        air=_check_key_scan(key_bytes, timeout),
+        firmware=diagnose_mod.inspect_firmware(firmware, key_bytes) if firmware else None,
+        timeout=timeout,
+    )
+
+    statuses = [r.status for r in rows]
+    failed = _CHECK_FAIL in statuses
+    marks = _check_marks()
+    click.echo("")
+    for r in rows:
+        _print_check(marks, r.check, r.status, r.summary, r.advice)
+    _print_check_footer(statuses, "Key setup has problems." if failed else "Key setup looks right.")
     if failed:
         raise SystemExit(1)
 
