@@ -60,6 +60,7 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | Check my setup is working | [`doctor`](#check-your-setup-with-doctor) |
 | Watch nearby devices report | [`ble scan`](#watch-nearby-devices-report) |
 | Prove one device works end to end | [`ble validate`](#prove-one-device-works-end-to-end) |
+| Find out why a device's packets aren't decoding | [`check-key`](#find-out-why-a-device-isnt-decoding) |
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
 | Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
@@ -75,7 +76,7 @@ Reference: [Reading the output](#reading-the-output) ·
 Commands live in groups — **`org`** (your devices in the Hubble Cloud), **`ble`**
 (nearby devices over Bluetooth), **`sat`** (satellite packets via PlutoSDR) and
 **`metrics`** (fleet counts) — so it is usually `hubblenetwork <group> <command>`. The
-two setup commands, `doctor` and `validate-credentials`, sit at the top level.
+setup commands, `doctor`, `check-key` and `validate-credentials`, sit at the top level.
 
 `hubblenetwork --help` lists everything; every command takes `--help` for its own
 options. You don't have to remember which group a command is in: type one at the wrong
@@ -160,6 +161,32 @@ Two narrower checks sit alongside it, both reading advertisements rather than th
 cloud: `ble check-time -k <key>` reports how many days a device's clock is off real
 UTC (more than 2 is out of spec), and `ble detect -k <key>` answers just the "which
 EID mode is this key using?" question that `ble scan` folds into its auto-detection.
+
+
+## Find out why a device isn't decoding
+
+`check-key` cross-checks how a device is registered, what it is actually
+broadcasting, and what its firmware was built to do, then names the disagreement:
+a key registered `UNIX_TIME` but flashed `DEVICE_UPTIME`, a 32-byte AES-256 key in a
+build that only reads 16 bytes, a clock days off, or a key that matches nothing in
+range. `--device-id` and `--key` are required; `--firmware` adds what the image was
+built to do.
+
+```bash
+hubblenetwork check-key --device-id <id> --key <key>
+hubblenetwork check-key --device-id <id> --key <key> --firmware app.<elf/bin/hex/ihex>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--device-id`, `-d` | Required. Reads the registration (encryption, counter source, period) and when the backend last decoded a packet. |
+| `--key`, `-k` | Required: the key `org register-device` printed for the device. Scans BLE and finds this key's device among everything in range, trying both key sizes, both counter modes, a year of clock skew and every AES-EAX period. |
+| `--firmware`, `-f` | Optional. The image you flashed (`.elf`/`.bin`/`.hex`/`.ihex`), or its build or project directory. Reads the key size and counter source from the `HDCV:` config string the device SDK compiles into the image (e.g. `HDCV:1.0/E:128/CS:UT/...`), so it works for any build system; falls back to `.config`/`sdkconfig`/`autoconf.h` for SDKs older than that string. Also looks for the key's bytes in the image. |
+| `--timeout`, `-t` | Longest to scan, in seconds (default 15). The scan stops as soon as a packet from this key decodes, so a nearby device usually answers in a second or two. `0` skips the scan. |
+
+The backend check passes only if it decoded a packet from the device in the last 5
+minutes, since anything older may predate the reflash or key change you are checking.
+It exits 1 if any check fails, like `doctor`.
 
 
 ## Work with your fleet in the cloud
@@ -540,7 +567,7 @@ pytest
 
 **There is none.** The CLI makes no network call except the ones a command explicitly
 needs: the Hubble Cloud API for the commands that use credentials (`org`, `metrics`,
-`doctor`, `validate-credentials`, `ble validate` and `ble scan --ingest`); `localhost`
+`doctor`, `check-key`, `validate-credentials`, `ble validate` and `ble scan --ingest`); `localhost`
 for the satellite receiver container; and Docker pulling that container image from
 `ghcr.io` on first `sat` use. Nothing is reported anywhere about how you use it.
 

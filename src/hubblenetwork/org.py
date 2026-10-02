@@ -125,6 +125,18 @@ class Organization:
             device_id=device_id,
         )
 
+    def get_device(self, device_id: str) -> Device:
+        """
+        Fetch one device, including how it was registered (encryption,
+        counter source, rotation period) and when the backend last decoded
+        a packet from it. Raises NotFoundError if the ID is not in this org.
+        """
+        return Device.from_json(
+            cloud.get_device(
+                credentials=self.credentials, env=self.env, device_id=device_id
+            )
+        )
+
     def iter_devices(
         self, on_page: Callable[[int, int], None] | None = None
     ) -> Iterator[Device]:

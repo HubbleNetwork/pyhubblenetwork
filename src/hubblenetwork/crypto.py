@@ -87,6 +87,32 @@ def _generate_eid(key: bytes, counter: int, period_exponent: int = 0) -> int:
     return int.from_bytes(eid_block[0:8], "big")
 
 
+def eax_eid_index(
+    key: bytes,
+    pkt: AesEaxPacket,
+    period_exponent: int = 0,
+    pool_size: int = 128,
+) -> int | None:
+    """Return the pool index whose EID matches ``pkt.eid``, or None.
+
+    Matching the EID needs only the key, not a valid payload, so a match whose
+    auth tag then fails means "right key, damaged payload or nonce" rather than
+    "wrong key". :func:`decrypt_eax` cannot report that distinction.
+    """
+    step = 1 << period_exponent
+    # key_0 is constant when high counter bytes are 00 00 (counter < 65536)
+    key_0 = _derive_eid_key(key, 0)
+    ecb = AES.new(key_0, AES.MODE_ECB)
+
+    for i in range(pool_size):
+        counter = i * step
+        msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + counter.to_bytes(4, "big")
+        eid_block = ecb.encrypt(msg2)
+        if int.from_bytes(eid_block[0:8], "big") == pkt.eid:
+            return i
+    return None
+
+
 def decrypt_eax(
     key: bytes,
     pkt: AesEaxPacket,
@@ -104,21 +130,10 @@ def decrypt_eax(
             rot_exp in device config or log2(period_in_seconds) in the API.
         pool_size: Number of counters to try (default 128).
     """
-    step = 1 << period_exponent
-    # key_0 is constant when high counter bytes are 00 00 (counter < 65536)
-    key_0 = _derive_eid_key(key, 0)
-    ecb = AES.new(key_0, AES.MODE_ECB)
-
-    for i in range(pool_size):
-        counter = i * step
-        msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + counter.to_bytes(4, "big")
-        eid_block = ecb.encrypt(msg2)
-        candidate_eid = int.from_bytes(eid_block[0:8], "big")
-
-        if candidate_eid != pkt.eid:
-            continue
-
+    i = eax_eid_index(key, pkt, period_exponent, pool_size)
+    if i is not None:
         # EID matched, construct nonce and decrypt
+        counter = i * (1 << period_exponent)
         nonce = counter.to_bytes(4, "big") + pkt.nonce_salt
         cipher = AES.new(key, AES.MODE_EAX, mac_len=4, nonce=nonce)
         try:
@@ -126,7 +141,7 @@ def decrypt_eax(
                 pkt.payload, pkt.auth_tag
             )
         except ValueError:
-            continue
+            return None
 
         return DecryptedPacket(
             timestamp=pkt.timestamp,
@@ -175,6 +190,44 @@ def _normalize_counter_mode(counter_mode: str, days: int) -> str:
     return counter_mode
 
 
+def ctr_eid(key: bytes, time_counter: int) -> bytes:
+    """The 4-byte EID an AES-CTR device broadcasts for ``time_counter``.
+
+    Mirrors ``hubble_internal_device_id_get`` in hubble-device-sdk: a
+    "DeviceKey" KDF keyed by the counter, then a 4-byte "DeviceID" KDF with
+    context 0. The firmware copies the KDF output into advertisement bytes 2-6
+    verbatim, so compare against ``adv[2:6]`` rather than the parsed integer.
+    """
+    device_key = _generate_kdf_key(key, len(key), "DeviceKey", time_counter)
+    return _generate_kdf_key(device_key, 4, "DeviceID", 0)
+
+
+def decrypt_at(
+    key: bytes, encrypted_pkt: EncryptedPacket, time_counter: int
+) -> DecryptedPacket | None:
+    """Decrypt an AES-CTR packet at one known counter; None if the tag fails."""
+    parsed = ParsedPacket(encrypted_pkt)
+    if not _check_tag_matches(key, time_counter, parsed):
+        return None
+    keylen = len(key)
+    daily_key = _get_encryption_key(key, time_counter, parsed.seq_no, keylen=keylen)
+    nonce = _get_nonce(key, time_counter, parsed.seq_no, keylen=keylen)
+    return DecryptedPacket(
+        timestamp=encrypted_pkt.timestamp,
+        device_id="",
+        device_name="",
+        location=encrypted_pkt.location,
+        tags={},
+        payload=_aes_decrypt(daily_key, nonce, parsed.encrypted_payload),
+        rssi=encrypted_pkt.rssi,
+        counter=time_counter,
+        sequence=parsed.seq_no,
+        protocol_version=encrypted_pkt.protocol_version,
+        eid=encrypted_pkt.eid,
+        auth_tag=parsed.auth_tag,
+    )
+
+
 def decrypt(
     key: bytes,
     encrypted_pkt: EncryptedPacket,
@@ -183,9 +236,6 @@ def decrypt(
 ) -> DecryptedPacket | None:
     counter_mode = _normalize_counter_mode(counter_mode, days)
 
-    parsed = ParsedPacket(encrypted_pkt)
-    keylen = len(key)
-
     if counter_mode == DEVICE_UPTIME:
         candidates = range(128)
     else:
@@ -193,26 +243,9 @@ def decrypt(
         candidates = (time_counter + t for t in range(-days, days + 1))
 
     for candidate in candidates:
-        if _check_tag_matches(key, candidate, parsed):
-            daily_key = _get_encryption_key(
-                key, candidate, parsed.seq_no, keylen=keylen
-            )
-            nonce = _get_nonce(key, candidate, parsed.seq_no, keylen=keylen)
-            decrypted_payload = _aes_decrypt(daily_key, nonce, parsed.encrypted_payload)
-            return DecryptedPacket(
-                timestamp=encrypted_pkt.timestamp,
-                device_id="",
-                device_name="",
-                location=encrypted_pkt.location,
-                tags={},
-                payload=decrypted_payload,
-                rssi=encrypted_pkt.rssi,
-                counter=candidate,
-                sequence=parsed.seq_no,
-                protocol_version=encrypted_pkt.protocol_version,
-                eid=encrypted_pkt.eid,
-                auth_tag=parsed.auth_tag,
-            )
+        result = decrypt_at(key, encrypted_pkt, candidate)
+        if result is not None:
+            return result
     return None
 
 

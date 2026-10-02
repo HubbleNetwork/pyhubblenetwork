@@ -44,6 +44,10 @@ class InvalidCredentialsError(BackendError):
     """Invalid credentials passed in"""
 
 
+class NotFoundError(BackendError):
+    """The requested resource (e.g. a device ID) does not exist (HTTP 404)."""
+
+
 # Request/response semantics
 class ValidationError(BackendError):
     """The request was invalid (schema/semantics)."""
@@ -169,6 +173,7 @@ __all__ = [
     "InvalidCredentialsError",
     "InvalidDeviceError",
     "NetworkError",
+    "NotFoundError",
     "RequestError",
     "SatelliteError",
     "ScanError",
@@ -191,6 +196,8 @@ def map_http_status(status_code: int, detail: str | None = None) -> BackendError
 
     if status_code == 400:
         return RequestError(msg)
+    if status_code == 404:
+        return NotFoundError(msg)
     if status_code == 500:
         return InternalServerError(msg)
     return BackendError(msg)
