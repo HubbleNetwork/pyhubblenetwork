@@ -233,6 +233,15 @@ _EAX_KEY = bytes(range(16))
 
 
 class TestDecryptEax:
+    @pytest.mark.parametrize("exponent,slot", [(15, 2), (10, 64)])
+    def test_counters_past_65536_use_their_own_key_0(self, exponent, slot):
+        # At the cloud's default exponent 15, slot 2 is counter 65536: about
+        # 18h of uptime. key_0 comes from the counter's high 16 bits there.
+        pkt = _build_eax_packet_at_exponent(_EAX_KEY, exponent, b"late", slot=slot)
+        result = decrypt_eax(_EAX_KEY, pkt, period_exponent=exponent)
+        assert result is not None
+        assert (result.payload, result.counter) == (b"late", slot)
+
     def test_decrypt_finds_counter(self):
         pkt = _make_aes_eax_packet(_EAX_KEY, counter=7, nonce_salt=b"\x11\x22", plaintext=b"hello")
         result = decrypt_eax(_EAX_KEY, pkt)
@@ -478,13 +487,15 @@ class TestCliAesEaxScan:
 # ---------------------------------------------------------------------------
 
 
-def _build_eax_packet_at_exponent(key: bytes, period_exponent: int, plaintext: bytes) -> AesEaxPacket:
+def _build_eax_packet_at_exponent(
+    key: bytes, period_exponent: int, plaintext: bytes, slot: int = 3,
+) -> AesEaxPacket:
     """Build a real AES-EAX packet whose EID/tag matches the given exponent."""
     from hubblenetwork.crypto import _generate_eid as gen_eid
     # Pick a counter that's a multiple of the step (so it's enumerable
     # by decrypt_eax with this exponent).
     step = 1 << period_exponent
-    counter = 3 * step  # 3rd slot
+    counter = slot * step
     eid = gen_eid(key, counter, period_exponent=period_exponent)
     nonce_salt = b"\x9A\xBC"
     nonce = counter.to_bytes(4, "big") + nonce_salt

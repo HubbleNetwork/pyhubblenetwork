@@ -105,12 +105,14 @@ def decrypt_eax(
         pool_size: Number of counters to try (default 128).
     """
     step = 1 << period_exponent
-    # key_0 is constant when high counter bytes are 00 00 (counter < 65536)
-    key_0 = _derive_eid_key(key, 0)
-    ecb = AES.new(key_0, AES.MODE_ECB)
-
+    # key_0 depends on the counter's high 16 bits, which the pool reaches once
+    # the period is 2^10s or more (2^15 * 2 = 65536), so derive it per block.
+    ecbs: dict[int, object] = {}
     for i in range(pool_size):
         counter = i * step
+        ecb = ecbs.get(counter >> 16)
+        if ecb is None:
+            ecb = ecbs[counter >> 16] = AES.new(_derive_eid_key(key, counter), AES.MODE_ECB)
         msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + counter.to_bytes(4, "big")
         eid_block = ecb.encrypt(msg2)
         candidate_eid = int.from_bytes(eid_block[0:8], "big")
