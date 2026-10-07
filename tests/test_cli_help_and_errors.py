@@ -295,7 +295,7 @@ class TestReadmeStaysTrue:
         found = []
         lang = None
         in_fence = False
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("```"):
                 if in_fence:
                     in_fence, lang = False, None
@@ -364,7 +364,7 @@ class TestReadmeStaysTrue:
 
         import hubblenetwork
 
-        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text(encoding="utf-8")
         block = re.search(r"from hubblenetwork import \(\n(.*?)\)", text, re.S)
         assert block, "README lost its import example"
         names = [

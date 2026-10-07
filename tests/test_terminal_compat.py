@@ -17,7 +17,6 @@ strips ANSI for an unrelated reason and hides whether the flag works).
 
 import os
 import pathlib
-import pty
 import re
 import sys
 from dataclasses import fields
@@ -262,13 +261,13 @@ class TestMachineOutputIsUnaffected:
         offenders = [
             path.name
             for path in (REPO / "src" / "hubblenetwork").glob("*.py")
-            if re.search(r"ensure_ascii\s*=\s*False", path.read_text())
+            if re.search(r"ensure_ascii\s*=\s*False", path.read_text(encoding="utf-8"))
         ]
         assert not offenders, offenders
 
     def test_tabulate_grid_format_stays_ascii(self):
         """fancy_grid and friends are Unicode box-drawing."""
-        src = (REPO / "src" / "hubblenetwork" / "cli.py").read_text()
+        src = (REPO / "src" / "hubblenetwork" / "cli.py").read_text(encoding="utf-8")
         assert "fancy_grid" not in src
         assert "rounded_grid" not in src
         assert 'tablefmt="grid"' in src
@@ -279,6 +278,7 @@ class TestColorControl:
 
     @staticmethod
     def _escapes(env_extra, args):
+        pty = pytest.importorskip("pty", reason="needs a POSIX pty")
         script = REPO / "tests" / "_color_probe.py"
         script.write_text(
             "import sys\n"
@@ -372,7 +372,7 @@ class TestSourceStaysAscii:
         for path in sorted((REPO / "src" / "hubblenetwork").glob("*.py")):
             if path.name == "termcaps.py":
                 continue
-            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 for ch in line:
                     if ord(ch) > 126:
                         offenders.append(f"{path.name}:{lineno}: U+{ord(ch):04X} {ch!r}")
