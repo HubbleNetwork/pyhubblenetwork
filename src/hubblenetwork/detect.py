@@ -19,8 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from .crypto import DEVICE_UPTIME, UNIX_TIME, decrypt
-from .packets import DecryptedPacket, EncryptedPacket
+from .crypto import DEVICE_UPTIME, UNIX_TIME
 
 T = TypeVar("T")
 
@@ -46,42 +45,6 @@ class Detection(Generic[T]):
 
     result: T | None
     label: str | None = None
-
-
-def detect_eid_type(
-    key: bytes,
-    pkts: list[EncryptedPacket],
-) -> tuple[EncryptedPacket | None, DecryptedPacket | None, str | None, bool]:
-    """Classify a key's EID rotation mode from sample packets.
-
-    Returns ``(packet, decrypted, label, ambiguous)`` where ``label`` is
-    ``UNIX_TIME``, ``DEVICE_UPTIME``, ``"AMBIGUOUS"`` (both modes decrypt
-    something), or ``None`` (neither decrypts any packet).
-    """
-    epoch_pkt = None
-    epoch_dec = None
-    counter_pkt = None
-    counter_dec = None
-    for pkt in pkts:
-        if epoch_pkt is None:
-            result = decrypt(key, pkt)
-            if result:
-                epoch_pkt = pkt
-                epoch_dec = result
-        if counter_pkt is None:
-            result = decrypt(key, pkt, counter_mode=DEVICE_UPTIME)
-            if result:
-                counter_pkt = pkt
-                counter_dec = result
-        if epoch_pkt and counter_pkt:
-            break
-    if epoch_pkt and counter_pkt:
-        return (epoch_pkt, epoch_dec, "AMBIGUOUS", True)
-    if epoch_pkt:
-        return (epoch_pkt, epoch_dec, UNIX_TIME, False)
-    if counter_pkt:
-        return (counter_pkt, counter_dec, DEVICE_UPTIME, False)
-    return (None, None, None, False)
 
 
 class CtrCounterModeDetector:

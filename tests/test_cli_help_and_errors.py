@@ -64,7 +64,7 @@ class TestEveryCommandDescribesItself:
 
     def test_root_help_lists_every_command(self):
         out = _plain(_run(["--help"]))
-        assert len(LEAVES) == 28  # guard: update the help sections if this grows
+        assert len(LEAVES) == 26  # guard: update the help sections if this grows
         for path in LEAVES:
             p, cmd = _command_index(cli)[path]
             assert _invocation(p, cmd) in out
@@ -130,7 +130,7 @@ class TestUnknownCommandSuggestions:
             ("register-device", "org register-device"),
             ("provision", "ready provision"),
             ("mock-scan", "sat mock-scan"),
-            ("detect", "ble detect"),
+            ("validate", "ble validate"),
             ("devices", "metrics devices"),
         ],
     )

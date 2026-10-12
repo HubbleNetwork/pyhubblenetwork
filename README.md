@@ -153,40 +153,50 @@ advertisement, and each distinct one is sent once.
 
 ## Prove one device works end to end
 
-`ble validate` is the quickest way to answer "is my device working?". It walks the
-whole chain and stops at the first failure: key and device-ID formats → credentials →
-organization → the device's registration → BLE advertisements → decrypting a packet
-(reporting the EID type as `UNIX_TIME`, `DEVICE_UPTIME`, or `AMBIGUOUS` when a packet
-resolves under both, usually several devices in range with different configs) →
-ingesting it and reading it back.
+`ble validate` is the quickest way to answer "is my device working?", and when it
+isn't, why. It cross-checks how a device is registered, what it is actually
+broadcasting, what the cloud makes of it, and what its firmware was built to do,
+then names the disagreement: a key registered `UNIX_TIME` but flashed
+`DEVICE_UPTIME`, a 32-byte AES-256 key in a build that only reads 16 bytes, a Unix
+clock that is days behind, a key registered to another device, or a key that
+matches nothing in range.
 
 ```bash
-hubblenetwork ble validate \
-  --key "a562a2f7e4c62bed52ab09633878f62b" \
-  --device-id "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"
+hubblenetwork ble validate --key <key> # Checks local decryption and the device clock; no credentials
+hubblenetwork ble validate --device-id <id> # No key: checks the registration, and that the cloud decodes the device
+hubblenetwork ble validate --key <key> --device-id <id> # Both, and which side is wrong when they disagree
+hubblenetwork ble validate --key <key> --device-id <id> --firmware app.<elf/bin/hex/ihex> # Also inspects the firmware for its key setup
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--key`, `-k` | Device key, used to test packet encryption (required). Accepts hex or base64, 16- or 32-byte. |
-| `--device-id`, `-d` | Device UUID, used to test the backend (required). |
+| `--key`, `-k` | Device key, used to find its packets and test how they are encrypted. Accepts hex or base64, 16- or 32-byte. |
+| `--device-id`, `-d` | Device UUID (needs credentials), used to test the registration and that the cloud decodes the device. |
+| `--firmware`, `-f` | (Optional) The image you flashed (`.elf`/`.bin`/`.hex`/`.ihex`), or its build or project directory. Attempts to read the key size, key bytes, and counter source from the build output. |
 | `--org-id` | Organization ID (defaults to the `HUBBLE_ORG_ID` env var). |
-| `--token` | API token (defaults to the `HUBBLE_API_TOKEN` env var). |
+| `--token` | API token (defaults to the `HUBBLE_API_TOKEN` env var). With the `read-packets` scope it can decode packets heard now. |
 | `--timeout`, `-t` | BLE scan timeout in seconds (default: 30). |
 
-This is the **terrestrial** path only — the device advertising over Bluetooth, this
-machine as the gateway, and the round trip through the cloud. It says nothing about
+Pass `--key`, `--device-id`, or both. The key is tried against both key sizes, both
+counter modes, a year of clock skew and every AES-EAX period, so it finds this key's
+device among everything in range. With `--device-id`, packets heard are sent to the
+cloud, as [`ble decode`](#decrypt-nearby-packets-in-the-cloud) does, and the backend
+check passes if one comes back as this device. That works with no gateway nearby, and
+the cloud stores what it decodes, as a gateway's upload would be. Without `--key`,
+everything heard is sent and the cloud picks the device out; with it, only this key's
+packets are, so a key registered to another device is named. A token without the
+`read-packets` scope falls back to whether the backend decoded a packet from the
+device in the last 10 minutes. The scan stops as soon as the device is found. It
+exits 1 if any check fails, like `doctor`.
+
+This is the **terrestrial** path only — the device advertising over Bluetooth, a
+gateway relaying it, and the cloud decoding it. It says nothing about
 whether the device is reaching the satellite network; for that, hear the uplink
 yourself with [`sat scan`](#receive-a-devices-satellite-uplink).
 
-A failing step prints targeted debugging tips. A failed scan is often just a slow
+Each failing check prints how to fix it. A failed scan is often just a slow
 advertising interval meeting OS-level BLE scan optimizations — running it again
 usually resolves it.
-
-Two narrower checks sit alongside it, both reading advertisements rather than the
-cloud: `ble check-time -k <key>` reports how many days a device's clock is off real
-UTC (more than 2 is out of spec), and `ble detect -k <key>` answers just the "which
-EID mode is this key using?" question that `ble scan` folds into its auto-detection.
 
 
 ## Work with your fleet in the cloud
@@ -292,8 +302,8 @@ hubblenetwork sat signal-report 10 --output report.txt --mock
 
 ### Payload format
 
-Commands that print packet data (`ble scan`, `ble decode`, `sat scan`, `ble detect`,
-`org get-packets`) take `--payload-format`:
+Commands that print packet data (`ble scan`, `ble decode`, `sat scan`, `org get-packets`)
+take `--payload-format`:
 
 * `auto` — printable ASCII shows as text, anything else as uppercase hex
 * `base64` — encode payloads as base64
@@ -494,9 +504,8 @@ for pkt, result in zip(pkts, org.decode_packets(pkts)):
 `counter_mode` accepts `"UNIX_TIME"` (default, UTC day-based) or `"DEVICE_UPTIME"`
 (counter values 0–127, fixed pool size of 128). The BLE functions have sync and async
 variants — `ble.scan()` / `ble.scan_async()`. The CLI's auto-detection is available
-too, in `hubblenetwork.detect`: `detect_eid_type()` classifies a key's rotation mode
-from a batch of packets, and `CtrCounterModeDetector` / `EaxExponentDetector` are the
-per-scan objects that own the sweep and its cache.
+too, in `hubblenetwork.detect`: `CtrCounterModeDetector` / `EaxExponentDetector` are
+the per-scan objects that own the sweep and its cache.
 
 Satellite, which manages the Docker container for you:
 

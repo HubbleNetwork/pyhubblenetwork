@@ -150,10 +150,9 @@ class Organization:
 
     def get_device(self, device_id: str) -> Device:
         """
-        Fetch one registered device by ID.
-
-        Raises:
-            NotFoundError: the device is not registered in this organization.
+        Fetch one device, including how it was registered (encryption,
+        counter source, rotation period) and when the backend last decoded
+        a packet from it. Raises NotFoundError if the ID is not in this org.
         """
         return Device.from_json(
             cloud.get_device(
@@ -298,50 +297,64 @@ class Organization:
             PermissionDeniedError: the API key lacks the ``read-packets`` scope.
             BackendError: any other API failure. A failed batch fails the call.
         """
-        payloads: list[str | None] = []
-        unique: dict[str, dict] = {}
-        now = time.time()
-        for pkt in packets:
-            # One invalid advertisement makes the endpoint reject the whole
-            # batch, so anything it would refuse is answered None locally.
-            if not cloud.advertisement_bytes(pkt) or not cloud.decode_window_ok(
-                pkt.timestamp, now=now
-            ):
-                payloads.append(None)
-                continue
-            adv = cloud.packet_to_advertisement(pkt)
-            payloads.append(adv["payload"])
-            unique.setdefault(adv["payload"], adv)
+        return decode_packets(
+            credentials=self.credentials, env=self.env, packets=packets, metadata=metadata
+        )
 
-        advs = list(unique.values())
-        decoded: dict[str, dict] = {}
-        limit = cloud.DECODE_BATCH_LIMIT
-        for start in range(0, len(advs), limit):
-            for item in cloud.decode_packets(
-                credentials=self.credentials,
-                env=self.env,
-                advertisements=advs[start : start + limit],
-                metadata=metadata,
-            ):
-                echoed = (item.get("advertisement") or {}).get("payload")
-                if echoed in unique:
-                    decoded.setdefault(echoed, item)
 
-        results: list[DecryptedPacket | None] = []
-        for pkt, b64 in zip(packets, payloads):
-            item = decoded.get(b64) if b64 is not None else None
-            if item is None:
-                results.append(None)
-                continue
-            results.append(
-                replace(
-                    _decrypted_from_cloud(item),
-                    timestamp=pkt.timestamp,
-                    rssi=pkt.rssi,
-                    location=pkt.location,
-                    protocol_version=pkt.protocol_version,
-                    eid=pkt.eid,
-                    auth_tag=pkt.auth_tag,
-                )
+def decode_packets(
+    *,
+    credentials: cloud.Credentials,
+    env: cloud.Environment,
+    packets: Sequence[EncryptedPacket | AesEaxPacket],
+    metadata: dict[str, str] | None = None,
+) -> list[DecryptedPacket | None]:
+    """:meth:`Organization.decode_packets` for a caller that already resolved
+    the environment, so it costs no requests beyond the decode itself."""
+    payloads: list[str | None] = []
+    unique: dict[str, dict] = {}
+    now = time.time()
+    for pkt in packets:
+        # One invalid advertisement makes the endpoint reject the whole
+        # batch, so anything it would refuse is answered None locally.
+        if not cloud.advertisement_bytes(pkt) or not cloud.decode_window_ok(
+            pkt.timestamp, now=now
+        ):
+            payloads.append(None)
+            continue
+        adv = cloud.packet_to_advertisement(pkt)
+        payloads.append(adv["payload"])
+        unique.setdefault(adv["payload"], adv)
+
+    advs = list(unique.values())
+    decoded: dict[str, dict] = {}
+    limit = cloud.DECODE_BATCH_LIMIT
+    for start in range(0, len(advs), limit):
+        for item in cloud.decode_packets(
+            credentials=credentials,
+            env=env,
+            advertisements=advs[start : start + limit],
+            metadata=metadata,
+        ):
+            echoed = (item.get("advertisement") or {}).get("payload")
+            if echoed in unique:
+                decoded.setdefault(echoed, item)
+
+    results: list[DecryptedPacket | None] = []
+    for pkt, b64 in zip(packets, payloads):
+        item = decoded.get(b64) if b64 is not None else None
+        if item is None:
+            results.append(None)
+            continue
+        results.append(
+            replace(
+                _decrypted_from_cloud(item),
+                timestamp=pkt.timestamp,
+                rssi=pkt.rssi,
+                location=pkt.location,
+                protocol_version=pkt.protocol_version,
+                eid=pkt.eid,
+                auth_tag=pkt.auth_tag,
             )
-        return results
+        )
+    return results

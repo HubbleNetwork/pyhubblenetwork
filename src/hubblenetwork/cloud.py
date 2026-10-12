@@ -79,6 +79,7 @@ def _decode_packets_endpoint(credentials: Credentials) -> str:
 
 
 def _device_endpoint(credentials: Credentials, device_id: str) -> str:
+    """One device: GET reads it, PATCH updates it, DELETE removes it."""
     return f"/org/{credentials.org_id}/devices/{device_id}"
 
 
@@ -255,6 +256,23 @@ def delete_device(
     )
 
 
+def get_device(
+    *, credentials: Credentials, env: Environment, device_id: str
+) -> dict[str, Any]:
+    """
+    Fetch one device, including its registration config.
+
+    Unlike list_devices, the response carries ``encryption`` and
+    ``eid_rotation``. Raises NotFoundError if the device is not in the org.
+    """
+    return cloud_request(
+        method="GET",
+        path=_device_endpoint(credentials, device_id),
+        credentials=credentials,
+        env=env,
+    )[0]
+
+
 def list_devices(
     *, credentials: Credentials, env: Environment, continuation_token=None
 ) -> list[Any]:
@@ -330,21 +348,6 @@ def ingest_packet(
         path=_ingest_packets_endpoint(credentials),
         credentials=credentials,
         json=body,
-    )[0]
-
-
-def get_device(
-    *,
-    credentials: Credentials,
-    env: Environment,
-    device_id: str,
-) -> Any:
-    """Fetch one registered device. Raises ``NotFoundError`` if it is not in the org."""
-    return cloud_request(
-        method="GET",
-        env=env,
-        path=_device_endpoint(credentials, device_id),
-        credentials=credentials,
     )[0]
 
 

@@ -2,10 +2,9 @@
 
 The inverse of ``hubblenetwork.crypto.decrypt`` / ``decrypt_eax``, for tests and
 scratch scripts (``from tests.fake_packets import make_ctr, as_packet``). The
-AES-CTR EID follows hubble-device-sdk (``src/hubble_crypto.c``): a
-``DeviceKey`` KDF over the time counter, then ``DeviceID`` with context ``"0"``,
-4 bytes. The SDK itself never derives CTR EIDs, but the cloud matches on them,
-so bytes built here are accepted by the real decode endpoint.
+AES-CTR EID is ``crypto.ctr_eid``, ported from hubble-device-sdk's
+``hubble_internal_device_id_get``: the cloud matches on it, so bytes built here
+are accepted by the real decode endpoint.
 
 Layouts (the bytes bleak reports as service data, UUID not included):
 
@@ -33,9 +32,9 @@ def today_counter() -> int:
 
 
 def ctr_eid(key: bytes, time_counter: int) -> int:
-    """The 4-byte AES-CTR EID a device broadcasts for ``time_counter``."""
-    dk = hc._generate_kdf_key(key, len(key), "DeviceKey", time_counter)
-    return int.from_bytes(hc._generate_kdf_key(dk, 4, "DeviceID", 0), "big")
+    """The 4-byte AES-CTR EID a device broadcasts for ``time_counter``, as the
+    integer the BLE parser puts in ``EncryptedPacket.eid``."""
+    return int.from_bytes(hc.ctr_eid(key, time_counter), "big")
 
 
 def make_ctr(

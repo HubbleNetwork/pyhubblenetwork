@@ -87,6 +87,34 @@ def _generate_eid(key: bytes, counter: int, period_exponent: int = 0) -> int:
     return int.from_bytes(eid_block[0:8], "big")
 
 
+def eax_eid_index(
+    key: bytes,
+    pkt: AesEaxPacket,
+    period_exponent: int = 0,
+    pool_size: int = 128,
+) -> int | None:
+    """Return the pool index whose EID matches ``pkt.eid``, or None.
+
+    Matching the EID needs only the key, not a valid payload, so a match whose
+    auth tag then fails means "right key, damaged payload or nonce" rather than
+    "wrong key". :func:`decrypt_eax` cannot report that distinction.
+    """
+    step = 1 << period_exponent
+    # key_0 depends on the counter's high 16 bits, which the pool reaches once
+    # the period is 2^10s or more (2^15 * 2 = 65536), so derive it per block.
+    ecbs: dict[int, object] = {}
+    for i in range(pool_size):
+        counter = i * step
+        ecb = ecbs.get(counter >> 16)
+        if ecb is None:
+            ecb = ecbs[counter >> 16] = AES.new(_derive_eid_key(key, counter), AES.MODE_ECB)
+        msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + counter.to_bytes(4, "big")
+        eid_block = ecb.encrypt(msg2)
+        if int.from_bytes(eid_block[0:8], "big") == pkt.eid:
+            return i
+    return None
+
+
 def decrypt_eax(
     key: bytes,
     pkt: AesEaxPacket,
@@ -104,23 +132,10 @@ def decrypt_eax(
             rot_exp in device config or log2(period_in_seconds) in the API.
         pool_size: Number of counters to try (default 128).
     """
-    step = 1 << period_exponent
-    # key_0 depends on the counter's high 16 bits, which the pool reaches once
-    # the period is 2^10s or more (2^15 * 2 = 65536), so derive it per block.
-    ecbs: dict[int, object] = {}
-    for i in range(pool_size):
-        counter = i * step
-        ecb = ecbs.get(counter >> 16)
-        if ecb is None:
-            ecb = ecbs[counter >> 16] = AES.new(_derive_eid_key(key, counter), AES.MODE_ECB)
-        msg2 = b"\x00" * 11 + period_exponent.to_bytes(1, "big") + counter.to_bytes(4, "big")
-        eid_block = ecb.encrypt(msg2)
-        candidate_eid = int.from_bytes(eid_block[0:8], "big")
-
-        if candidate_eid != pkt.eid:
-            continue
-
+    i = eax_eid_index(key, pkt, period_exponent, pool_size)
+    if i is not None:
         # EID matched, construct nonce and decrypt
+        counter = i * (1 << period_exponent)
         nonce = counter.to_bytes(4, "big") + pkt.nonce_salt
         cipher = AES.new(key, AES.MODE_EAX, mac_len=4, nonce=nonce)
         try:
@@ -128,7 +143,7 @@ def decrypt_eax(
                 pkt.payload, pkt.auth_tag
             )
         except ValueError:
-            continue
+            return None
 
         return DecryptedPacket(
             timestamp=pkt.timestamp,
@@ -148,18 +163,6 @@ def decrypt_eax(
     return None
 
 
-def _check_tag_matches(
-    key: bytes,
-    time_counter: int,
-    parsed: ParsedPacket,
-) -> bool:
-    """Check if the auth_tag matches for the given time_counter."""
-    keylen = len(key)
-    daily_key = _get_encryption_key(key, time_counter, parsed.seq_no, keylen=keylen)
-    tag = _get_auth_tag(daily_key, parsed.encrypted_payload)
-    return tag == parsed.auth_tag
-
-
 def _normalize_counter_mode(counter_mode: str, days: int) -> str:
     """Validate and upper-case ``counter_mode``, enforcing the DEVICE_UPTIME rule.
 
@@ -177,6 +180,50 @@ def _normalize_counter_mode(counter_mode: str, days: int) -> str:
     return counter_mode
 
 
+def ctr_eid(key: bytes, time_counter: int) -> bytes:
+    """The 4-byte EID an AES-CTR device broadcasts for ``time_counter``.
+
+    Mirrors ``hubble_internal_device_id_get`` in hubble-device-sdk: a
+    "DeviceKey" KDF keyed by the counter, then a 4-byte "DeviceID" KDF with
+    context 0. The firmware copies the KDF output into advertisement bytes 2-6
+    verbatim, so compare against ``adv[2:6]`` rather than the parsed integer.
+    """
+    device_key = _generate_kdf_key(key, len(key), "DeviceKey", time_counter)
+    return _generate_kdf_key(device_key, 4, "DeviceID", 0)
+
+
+def decrypt_at(
+    key: bytes, encrypted_pkt: EncryptedPacket, time_counter: int
+) -> DecryptedPacket | None:
+    """Decrypt an AES-CTR packet at one known counter; None if the tag fails."""
+    return _decrypt_parsed(key, encrypted_pkt, ParsedPacket(encrypted_pkt), time_counter)
+
+
+def _decrypt_parsed(
+    key: bytes, encrypted_pkt: EncryptedPacket, parsed: ParsedPacket, time_counter: int
+) -> DecryptedPacket | None:
+    """decrypt_at() for a packet already parsed, so a counter sweep parses once."""
+    keylen = len(key)
+    daily_key = _get_encryption_key(key, time_counter, parsed.seq_no, keylen=keylen)
+    if _get_auth_tag(daily_key, parsed.encrypted_payload) != parsed.auth_tag:
+        return None
+    nonce = _get_nonce(key, time_counter, parsed.seq_no, keylen=keylen)
+    return DecryptedPacket(
+        timestamp=encrypted_pkt.timestamp,
+        device_id="",
+        device_name="",
+        location=encrypted_pkt.location,
+        tags={},
+        payload=_aes_decrypt(daily_key, nonce, parsed.encrypted_payload),
+        rssi=encrypted_pkt.rssi,
+        counter=time_counter,
+        sequence=parsed.seq_no,
+        protocol_version=encrypted_pkt.protocol_version,
+        eid=encrypted_pkt.eid,
+        auth_tag=parsed.auth_tag,
+    )
+
+
 def decrypt(
     key: bytes,
     encrypted_pkt: EncryptedPacket,
@@ -185,36 +232,17 @@ def decrypt(
 ) -> DecryptedPacket | None:
     counter_mode = _normalize_counter_mode(counter_mode, days)
 
-    parsed = ParsedPacket(encrypted_pkt)
-    keylen = len(key)
-
     if counter_mode == DEVICE_UPTIME:
         candidates = range(128)
     else:
         time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
         candidates = (time_counter + t for t in range(-days, days + 1))
 
+    parsed = ParsedPacket(encrypted_pkt)
     for candidate in candidates:
-        if _check_tag_matches(key, candidate, parsed):
-            daily_key = _get_encryption_key(
-                key, candidate, parsed.seq_no, keylen=keylen
-            )
-            nonce = _get_nonce(key, candidate, parsed.seq_no, keylen=keylen)
-            decrypted_payload = _aes_decrypt(daily_key, nonce, parsed.encrypted_payload)
-            return DecryptedPacket(
-                timestamp=encrypted_pkt.timestamp,
-                device_id="",
-                device_name="",
-                location=encrypted_pkt.location,
-                tags={},
-                payload=decrypted_payload,
-                rssi=encrypted_pkt.rssi,
-                counter=candidate,
-                sequence=parsed.seq_no,
-                protocol_version=encrypted_pkt.protocol_version,
-                eid=encrypted_pkt.eid,
-                auth_tag=parsed.auth_tag,
-            )
+        result = _decrypt_parsed(key, encrypted_pkt, parsed, candidate)
+        if result is not None:
+            return result
     return None
 
 
@@ -263,42 +291,3 @@ def decrypt_satellite(
             return _aes_decrypt(daily_key, nonce, encrypted_payload)
     return None
 
-
-def find_time_counter_delta(
-    key: bytes, encrypted_pkt: EncryptedPacket, max_days_back: int = 365
-) -> int | None:
-    """
-    Find which day counter (time_counter) the key resolves for.
-
-    Returns the delta in days between today (0) and the day the auth_tag matches.
-    Positive values mean future days, negative values mean past days.
-
-    Optimization: First checks today (delta=0), then sweeps from 2 days ahead
-    backwards through time. Also checks absolute time_counter values 0-365
-    in case the device time was erroneously set to epoch.
-
-    Args:
-        key: The encryption key
-        encrypted_pkt: The encrypted packet to check
-        max_days_back: Maximum number of days to search backwards (default 365)
-
-    Returns:
-        The delta in days (0 = today, -1 = yesterday, +1 = tomorrow, etc.)
-        or None if no matching time_counter is found.
-    """
-    parsed = ParsedPacket(encrypted_pkt)
-
-    time_counter = int(datetime.now(timezone.utc).timestamp()) // 86400
-
-    # Then sweep from 2 days ahead backwards
-    for t in range(2, -max_days_back - 1, -1):
-        if _check_tag_matches(key, time_counter + t, parsed):
-            return t
-
-    # Check absolute time_counter values 0-365 in case device time was set to epoch
-    for absolute_tc in range(366):
-        if _check_tag_matches(key, absolute_tc, parsed):
-            # Return delta from today's time_counter
-            return absolute_tc - time_counter
-
-    return None
