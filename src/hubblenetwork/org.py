@@ -2,15 +2,38 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 
 from . import cloud
 from .crypto import DEVICE_UPTIME, UNIX_TIME
 from .device import Device
 from .errors import InvalidCredentialsError, ValidationError
-from .packets import DecryptedPacket, EncryptedPacket, Location
+from .packets import AesEaxPacket, DecryptedPacket, EncryptedPacket, Location
 
 _VALID_COUNTER_SOURCES = {UNIX_TIME, DEVICE_UPTIME}
+
+
+def _decrypted_from_cloud(packet: dict) -> DecryptedPacket:
+    """Build a DecryptedPacket from one entry of a cloud ``packets`` list.
+
+    Shared by the retrieve-packets and decode responses, which use the same
+    ``{"location": ..., "device": ...}`` shape.
+    """
+    dev = packet["device"]
+    loc = packet.get("location") or None
+    return DecryptedPacket(
+        timestamp=int(dev["timestamp"]),
+        device_id=dev["id"],
+        device_name=dev.get("name") or "",
+        location=Location(lat=loc["latitude"], lon=loc["longitude"]) if loc else None,
+        tags=dev.get("tags") or {},
+        payload=base64.b64decode(dev.get("payload") or ""),
+        rssi=dev["rssi"],
+        counter=dev.get("counter"),
+        sequence=dev.get("sequence_number"),
+    )
 
 
 class Organization:
@@ -125,6 +148,19 @@ class Organization:
             device_id=device_id,
         )
 
+    def get_device(self, device_id: str) -> Device:
+        """
+        Fetch one registered device by ID.
+
+        Raises:
+            NotFoundError: the device is not registered in this organization.
+        """
+        return Device.from_json(
+            cloud.get_device(
+                credentials=self.credentials, env=self.env, device_id=device_id
+            )
+        )
+
     def iter_devices(
         self, on_page: Callable[[int, int], None] | None = None
     ) -> Iterator[Device]:
@@ -200,20 +236,7 @@ class Organization:
             page += 1
             for packet in resp["packets"]:
                 seen += 1
-                yield DecryptedPacket(
-                    timestamp=int(packet["device"]["timestamp"]),
-                    device_id=packet["device"]["id"],
-                    device_name=packet["device"].get("name", ""),
-                    location=Location(
-                        lat=packet["location"]["latitude"],
-                        lon=packet["location"]["longitude"],
-                    ),
-                    tags=packet["device"]["tags"],
-                    payload=base64.b64decode(packet["device"]["payload"]),
-                    rssi=packet["device"]["rssi"],
-                    counter=packet["device"]["counter"],
-                    sequence=packet["device"]["sequence_number"],
-                )
+                yield _decrypted_from_cloud(packet)
             if on_page:
                 on_page(page, seen)
             if not continuation_token:
@@ -240,3 +263,85 @@ class Organization:
             env=self.env,
             packet=packet,
         )
+
+    def decode_packets(
+        self,
+        packets: Sequence[EncryptedPacket | AesEaxPacket],
+        metadata: dict[str, str] | None = None,
+    ) -> list[DecryptedPacket | None]:
+        """
+        Decrypt packets in the Hubble Cloud, without holding any device key.
+
+        Accepts any number of BLE packets (``EncryptedPacket`` for AES-CTR,
+        ``AesEaxPacket`` for AES-EAX) and sends them in batches of
+        ``cloud.DECODE_BATCH_LIMIT``. Identical advertisements (a device
+        repeats each one several times) are sent once per call.
+
+        The cloud also stores every packet it decodes, the same as ingestion,
+        so do not also pass the same packet to :meth:`ingest_packet`.
+
+        Returns one entry per input, in input order: a ``DecryptedPacket``
+        carrying the device ID and name, or ``None`` when the cloud could not
+        decrypt it (another org's device, an unregistered device, or a
+        corrupt packet). ``timestamp``, ``rssi`` and ``location`` come from
+        the input packet so duplicates keep their own reception details.
+
+        The endpoint only accepts packets received in the last 72 hours (and
+        no more than 2 hours in the future), and rejects a whole batch if any
+        one advertisement is invalid. Packets outside that window, or with an
+        empty advertisement, are therefore not sent and come back ``None``.
+
+        Raises:
+            ValueError: a packet is not an ``EncryptedPacket`` or
+                ``AesEaxPacket`` (unencrypted, unknown-version and satellite
+                packets cannot be cloud-decoded; filter them out first).
+            PermissionDeniedError: the API key lacks the ``read-packets`` scope.
+            BackendError: any other API failure. A failed batch fails the call.
+        """
+        payloads: list[str | None] = []
+        unique: dict[str, dict] = {}
+        now = time.time()
+        for pkt in packets:
+            # One invalid advertisement makes the endpoint reject the whole
+            # batch, so anything it would refuse is answered None locally.
+            if not cloud.advertisement_bytes(pkt) or not cloud.decode_window_ok(
+                pkt.timestamp, now=now
+            ):
+                payloads.append(None)
+                continue
+            adv = cloud.packet_to_advertisement(pkt)
+            payloads.append(adv["payload"])
+            unique.setdefault(adv["payload"], adv)
+
+        advs = list(unique.values())
+        decoded: dict[str, dict] = {}
+        limit = cloud.DECODE_BATCH_LIMIT
+        for start in range(0, len(advs), limit):
+            for item in cloud.decode_packets(
+                credentials=self.credentials,
+                env=self.env,
+                advertisements=advs[start : start + limit],
+                metadata=metadata,
+            ):
+                echoed = (item.get("advertisement") or {}).get("payload")
+                if echoed in unique:
+                    decoded.setdefault(echoed, item)
+
+        results: list[DecryptedPacket | None] = []
+        for pkt, b64 in zip(packets, payloads):
+            item = decoded.get(b64) if b64 is not None else None
+            if item is None:
+                results.append(None)
+                continue
+            results.append(
+                replace(
+                    _decrypted_from_cloud(item),
+                    timestamp=pkt.timestamp,
+                    rssi=pkt.rssi,
+                    location=pkt.location,
+                    protocol_version=pkt.protocol_version,
+                    eid=pkt.eid,
+                    auth_tag=pkt.auth_tag,
+                )
+            )
+        return results

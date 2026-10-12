@@ -44,7 +44,10 @@ from hubblenetwork.detect import (
     EaxExponentDetector,
     detect_eid_type,
 )
-from hubblenetwork.errors import BackendError
+from hubblenetwork.errors import (
+    BackendError,
+    RateLimitError,
+)
 from hubblenetwork.packets import (
     AesEaxPacket,
     SatellitePacket,
@@ -207,6 +210,12 @@ _RSSI_FLOOR = -100  # empty bar at or below this dBm
 _RSSI_CEIL = -40  # full bar at or above this dBm
 
 
+def _time_cell(timestamp: float) -> str:
+    """Render a packet's UTC epoch timestamp as local ``HH:MM:SS``."""
+    local = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone()
+    return local.strftime("%H:%M:%S")
+
+
 def _signal_bar(rssi: int | None) -> str:
     """Render RSSI as a fixed-width bar. Length carries the magnitude."""
     if rssi is None:
@@ -275,9 +284,14 @@ def _scan_summary(
         return
 
     parts = []
-    # The tally must reconcile with the packet count shown alongside it.
+    # The tally must reconcile with the packet count shown alongside it. When
+    # failures were hidden they aren't in that count, so "0 failed" would be
+    # false; the hidden line below reports them instead.
     if decrypted is not None and failed is not None and (decrypted or failed):
-        parts.append(f"{decrypted} decrypted, {failed} failed")
+        if hidden and not failed:
+            parts.append(f"{decrypted} decrypted")
+        else:
+            parts.append(f"{decrypted} decrypted, {failed} failed")
     if extra:
         parts.append(extra)
     parts.append(f"{secs}s")
@@ -698,6 +712,26 @@ def _credentials_error(
     return click.ClickException("\n".join(lines))
 
 
+def _org_or_fail(
+    org_id: str | None, token: str | None, example: str = _ORG_FLAG_EXAMPLE
+) -> Organization:
+    """Build the `Organization`, turning missing or rejected credentials into advice."""
+    if not org_id or not token:
+        raise _credentials_error(org_id=org_id, token=token, example=example)
+    try:
+        return Organization(org_id=org_id, api_token=token)
+    except InvalidCredentialsError:
+        raise _credentials_error(org_id=org_id, token=token, example=example) from None
+    except BackendError as e:
+        raise click.ClickException(f"Unable to reach the Hubble Cloud: {e}") from None
+
+
+_RATE_LIMIT_MSG = (
+    "The Hubble Cloud is rate-limiting these credentials. "
+    "Wait a minute, then run this again."
+)
+
+
 def _get_env_or_fail(name: str) -> str:
     val = os.getenv(name)
     if not val:
@@ -992,8 +1026,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         width = 2 + sum(w for _, w, _ in self._cols) + (len(self._cols) - 1)
         return _rule_line(width + len(self._lead))
 
-    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
-        """Print a single packet row, printing header first if needed."""
+    def _ensure_header(self, pkt) -> None:
         if not self._header_printed:
             self._cols = self._determine_columns(pkt)
             headers = [name for name, _, _ in self._cols]
@@ -1002,11 +1035,18 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             click.echo(self._make_separator())
             self._header_printed = True
 
-        row: list[str] = [
-            datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc)
-            .astimezone()
-            .strftime("%H:%M:%S")
-        ]
+    def _emit_row(self, row: list[str], decrypt_status: str | None) -> None:
+        prefix = (
+            _decrypt_mark(decrypt_status) + " " if self._show_decrypt_status else ""
+        )
+        click.echo(prefix + self._format_row(row))
+        self._packet_count += 1
+
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
+        """Print a single packet row, printing header first if needed."""
+        self._ensure_header(pkt)
+
+        row: list[str] = [_time_cell(pkt.timestamp)]
         if self._show_debug_cols:
             row.append(str(pkt.timestamp))
         row.append("None" if pkt.rssi is None else str(pkt.rssi))
@@ -1038,12 +1078,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         payload = _format_payload(raw, self._payload_format)
         nbytes = len(raw) if isinstance(raw, bytes) else None
         row.append(_fit(payload or "-", self._PAYLOAD[1], nbytes=nbytes))
-
-        prefix = (
-            _decrypt_mark(decrypt_status) + " " if self._show_decrypt_status else ""
-        )
-        click.echo(prefix + self._format_row(row))
-        self._packet_count += 1
+        self._emit_row(row, decrypt_status)
 
     def finalize(self) -> None:
         if self._header_printed:
@@ -1204,9 +1239,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         raw = pkt.payload
         payload = _format_payload(raw, self._payload_format)
         row: list[str] = [
-            datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc)
-            .astimezone()
-            .strftime("%H:%M:%S"),
+            _time_cell(pkt.timestamp),
             pkt.device_id,
             str(pkt.seq_num),
             pkt.device_type,
@@ -2080,20 +2113,11 @@ def ble_scan(
         )
 
     if ingest:
-        ingest_example = (
-            "hubblenetwork ble scan --ingest --key <key> "
-            "--org-id <id> --token <token>"
+        org = _org_or_fail(
+            org_id,
+            token,
+            "hubblenetwork ble scan --ingest --key <key> --org-id <id> --token <token>",
         )
-        if not org_id or not token:
-            raise _credentials_error(
-                org_id=org_id, token=token, example=ingest_example
-            )
-        try:
-            org = Organization(org_id=org_id, api_token=token)
-        except InvalidCredentialsError:
-            raise _credentials_error(
-                org_id=org_id, token=token, example=ingest_example
-            ) from None
 
     start = time.monotonic()
     deadline = None if timeout is None else start + timeout
@@ -2242,6 +2266,303 @@ def ble_scan(
                     "then widen the window:  hubblenetwork ble scan --timeout 60",
                 ],
             )
+
+
+# ---------------------------------------------------------------------------
+# ble decode: decrypt nearby packets in the cloud, no key needed
+# ---------------------------------------------------------------------------
+
+# Send what has been heard at least this often, so rows stream rather than
+# landing all at once when a batch finally fills.
+_DECODE_FLUSH_S = 2.0
+# Distinct advertisements whose cloud answer `ble decode` remembers.
+_DECODE_CACHE_MAX = 4096
+
+
+def _decoded_to_dict(pkt, payload_format: str = "base64", decrypt_status=None) -> dict:
+    """JSON for a `ble decode` row: a cloud-decrypted packet, or a raw one that wasn't.
+
+    Both kinds share one set of keys, so a consumer parses every row the same
+    way: an undecrypted row has ``sequence`` (the AES-CTR header's seq_no, or
+    null) and null ``counter``/``device_id``/``device_name``/``tags``. This is
+    decode's own mapping; `ble scan` JSON keeps its ``seq_no`` key unchanged.
+    """
+    if isinstance(pkt, DecryptedPacket):
+        data = _packet_to_dict(pkt, payload_format, decrypt_status)
+        data.update(device_id=pkt.device_id, device_name=pkt.device_name, tags=pkt.tags)
+        return data
+    raw = _packet_to_dict(pkt, payload_format, decrypt_status)
+    data = {}
+    for k, v in raw.items():
+        if k == "seq_no":
+            continue
+        if k == "payload":
+            data["counter"] = None
+            data["sequence"] = raw.get("seq_no")
+        data[k] = v
+    data.update(device_id=None, device_name=None, tags=None)
+    return data
+
+
+class _DecodeTablePrinter(_StreamingTablePrinter):
+    """One row per packet: which device the cloud says sent it, and what it said."""
+
+    _COLS: ClassVar[list[tuple]] = [
+        ("TIME", 8, "<"),
+        ("RSSI", 4, ">"),
+        ("", _BAR_CELLS, "<"),
+        ("DEVICE", 16, "<"),
+        ("SEQ", 4, ">"),
+        ("CTR", 6, ">"),
+        ("PAYLOAD", 26, "<"),
+    ]
+
+    def _determine_columns(self, pkt) -> list[tuple]:
+        return self._COLS
+
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
+        self._ensure_header(pkt)
+
+        width = self._COLS[3][1]
+        if isinstance(pkt, DecryptedPacket):
+            device = _fit(pkt.device_name or pkt.device_id or "-", width)
+            seq = "-" if pkt.sequence is None else str(pkt.sequence)
+            ctr = "-" if pkt.counter is None else str(pkt.counter)
+            raw = pkt.payload
+            payload = _format_payload(raw, self._payload_format)
+        else:
+            # No device to name, so identify the sender by its EID (hex, as in
+            # `ble scan`). AES-EAX EIDs are 8 bytes and can outgrow the cell; a
+            # byte-count suffix would read as more hex, so truncate like a name.
+            eid = getattr(pkt, "eid", None)
+            device = "-" if eid is None else _fit(f"eid:{eid:x}", width)
+            seq = self._counter_cell(pkt)
+            ctr = "-"
+            raw = _ctr_display_payload(pkt)
+            # Ciphertext is always hex: under `auto` or `string` it could
+            # render as text and pass for a real payload.
+            payload = _format_payload(raw, "hex")
+        row = [
+            _time_cell(pkt.timestamp),
+            str(pkt.rssi),
+            _signal_bar(pkt.rssi),
+            device,
+            seq,
+            ctr,
+            _fit(payload or "-", self._COLS[-1][1], nbytes=len(raw)),
+        ]
+        self._emit_row(row, decrypt_status)
+
+
+@ble.command("decode", short_help="Decrypt nearby packets in the cloud")
+@click.option(
+    "--timeout",
+    "-t",
+    type=int,
+    show_default=False,
+    help="Timeout in seconds (default: no timeout)",
+)
+@click.option(
+    "--org-id",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="Organization ID",
+)
+@click.option(
+    "--token",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="API token (needs the read-packets scope)",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format for packets",
+)
+@click.option(
+    "--payload-format",
+    "payload_format",
+    type=click.Choice(["auto", "base64", "hex", "string"], case_sensitive=False),
+    default="base64",
+    show_default=True,
+    help=(
+        "Encoding format for packet payload. Tabular output defaults to 'auto' "
+        "(printable ASCII as text, otherwise hex); JSON always defaults to base64."
+    ),
+)
+@click.option(
+    "--show-failed-decryption",
+    "--show-failed",
+    "show_failed",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also show packets the cloud could not decrypt for your org. Adds an "
+        "ok/fail decrypt mark to each row."
+    ),
+)
+@click.pass_context
+def ble_decode(
+    ctx,
+    timeout: int | None = None,
+    org_id: str | None = None,
+    token: str | None = None,
+    output_format: str = "tabular",
+    payload_format: str = "base64",
+    show_failed: bool = False,
+) -> None:
+    """
+    Scan for encrypted Hubble packets and decrypt them in the Hubble Cloud.
+
+    No device key is needed: the cloud decrypts with the keys registered to
+    your organization and says which device sent each packet. Packets from
+    devices outside your org stay undecrypted. Decoded packets are also stored
+    in the cloud, the same as any gateway upload.
+
+    \b
+    Example:
+      hubblenetwork ble decode --timeout 30
+      hubblenetwork ble decode -o json --timeout 10
+      hubblenetwork ble decode --show-failed
+    """
+    org = _org_or_fail(
+        org_id, token, "hubblenetwork ble decode --org-id <id> --token <token>"
+    )
+
+    is_tabular = output_format.lower() == "tabular"
+    fmt = _effective_payload_format(ctx, payload_format, is_tabular)
+    if is_tabular:
+        printer = _DecodeTablePrinter(payload_format=fmt, show_decrypt_status=show_failed)
+    else:
+        printer = _StreamingJsonPrinter(
+            payload_format=fmt, to_dict_fn=_decoded_to_dict, show_decrypt_status=show_failed
+        )
+
+    if not printer.suppress_info_messages:
+        click.echo(
+            "\nScanning and decrypting in the Hubble Cloud  "
+            + click.style("Ctrl+C to stop", dim=True),
+            err=True,
+        )
+
+    start = time.monotonic()
+    deadline = None if timeout is None else start + timeout
+
+    pending: list[tuple] = []  # (packet, advertisement bytes)
+    pending_since: float | None = None
+    # A device repeats each advertisement several times; decode it once. Oldest
+    # entries are dropped past the cap, since repeats arrive close together.
+    known: dict[bytes, DecryptedPacket | None] = {}
+    counts = {"ok": 0, "fail": 0, "hidden": 0}
+    rssis: list[int] = []
+
+    def emit(pkt, result) -> None:
+        if result is not None:
+            counts["ok"] += 1
+            printer.print_row(
+                replace(result, timestamp=pkt.timestamp, rssi=pkt.rssi),
+                decrypt_status="ok",
+            )
+        elif show_failed:
+            counts["fail"] += 1
+            printer.print_row(pkt, decrypt_status="fail")
+        else:
+            counts["hidden"] += 1
+            return
+        rssis.append(pkt.rssi)
+
+    def flush() -> None:
+        nonlocal pending_since
+        batch = pending[:]
+        # decode_packets dedupes within the batch; only skip what's already known.
+        todo = [(p, adv) for p, adv in batch if adv not in known]
+        if todo:
+            for (_, adv), r in zip(todo, org.decode_packets([p for p, _ in todo])):
+                known[adv] = r
+        # Cleared only once answered: a Ctrl+C during the request leaves the
+        # batch pending, so the final flush still gives it rows.
+        pending.clear()
+        pending_since = None
+        for p, adv in batch:
+            emit(p, known.get(adv))
+        while len(known) > _DECODE_CACHE_MAX:
+            del known[next(iter(known))]
+
+    failure: BackendError | None = None
+    try:
+        try:
+            while deadline is None or time.monotonic() < deadline:
+                now = time.monotonic()
+                waits = []
+                if deadline is not None:
+                    waits.append(max(deadline - now, 0))
+                if pending_since is not None:
+                    waits.append(max(pending_since + _DECODE_FLUSH_S - now, 0))
+                pkt = ble_mod.scan_single(timeout=min(waits) if waits else None)
+                if pkt is None and not waits:
+                    break  # an unbounded wait came back empty: the scanner stopped
+
+                if isinstance(pkt, (EncryptedPacket, AesEaxPacket)):
+                    adv = cloud.advertisement_bytes(pkt)
+                    if not pending and adv in known:
+                        # Already answered; no round trip, but keep arrival order.
+                        emit(pkt, known[adv])
+                        continue
+                    pending.append((pkt, adv))
+                    if pending_since is None:
+                        pending_since = time.monotonic()
+
+                due = pending_since is not None and (
+                    time.monotonic() - pending_since >= _DECODE_FLUSH_S
+                )
+                if len(pending) >= cloud.DECODE_BATCH_LIMIT or due:
+                    flush()
+        except KeyboardInterrupt:
+            pass  # what was heard before Ctrl+C still gets its rows
+        if pending:
+            flush()
+    except KeyboardInterrupt:
+        pass
+    except BackendError as e:
+        failure = e
+    finally:
+        printer.finalize()
+        # A failed request says so below; an empty-scan hint would mislead.
+        quiet = failure is not None and printer.packet_count == 0
+        if not printer.suppress_info_messages and not quiet:
+            _scan_summary(
+                printer.packet_count,
+                time.monotonic() - start,
+                hidden=counts["hidden"],
+                decrypted=counts["ok"],
+                failed=counts["fail"],
+                extra=f"RSSI {max(rssis)} to {min(rssis)} dBm" if rssis else None,
+                empty_hint=[
+                    (
+                        f"Heard {counts['hidden']}, none decrypted for your org."
+                        if counts["hidden"]
+                        else "No encrypted Hubble advertisements nearby."
+                    ),
+                    "Check the device is powered and registered to this org.",
+                    "Show undecrypted packets:  hubblenetwork ble decode --show-failed",
+                    "Widen the window:  hubblenetwork ble decode --timeout 60",
+                ],
+            )
+
+    if failure is not None:
+        if isinstance(failure, RateLimitError):
+            raise click.ClickException(_RATE_LIMIT_MSG)
+        raise click.ClickException(str(failure))
 
 
 @ble.command("check-time", short_help="Check a device's clock against real UTC")
@@ -3821,12 +4142,7 @@ class _LazyOrg:
 
     def resolve(self) -> Organization:
         if self._org is None:
-            try:
-                self._org = Organization(org_id=self._org_id, api_token=self._token)
-            except InvalidCredentialsError:
-                raise _credentials_error(
-                    org_id=self._org_id, token=self._token
-                ) from None
+            self._org = _org_or_fail(self._org_id, self._token)
         return self._org
 
 
