@@ -36,15 +36,20 @@ from hubblenetwork import (
     termcaps,
 )
 from hubblenetwork import ble as ble_mod
+from hubblenetwork import org as org_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
-from hubblenetwork.crypto import find_time_counter_delta
+from hubblenetwork import validate as validate_mod
 from hubblenetwork.detect import (
     CtrCounterModeDetector,
     EaxExponentDetector,
-    detect_eid_type,
 )
-from hubblenetwork.errors import BackendError
+from hubblenetwork.errors import (
+    BackendError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 from hubblenetwork.packets import (
     AesEaxPacket,
     SatellitePacket,
@@ -122,29 +127,6 @@ def _parse_key(key_str: str) -> bytes:
     return key_bytes
 
 
-def _validate_info(msg):
-    click.secho("[INFO] ", fg="cyan", bold=True, nl=False)
-    click.echo(msg + "... ", nl=False)
-
-
-def _validate_success():
-    click.secho("[SUCCESS]", fg="green", bold=True)
-
-
-def _validate_error(msg):
-    click.secho("[ERROR]", fg="red", bold=True)
-    click.secho(f"\n{msg}", bold=True)
-    sys.exit(1)
-
-
-def _get_pkt_from_be_with_timestamp(org, device, timestamp):
-    backend_pkts = org.retrieve_packets(device, days=1)
-    for p in backend_pkts:
-        if p.timestamp == timestamp:
-            return p
-    return None
-
-
 def _announce_auto_detect(auto_ctr: bool, auto_eax: bool, *, suppress: bool) -> None:
     if suppress or not (auto_ctr or auto_eax):
         return
@@ -205,6 +187,12 @@ _SAT_PAYLOAD_WIDTH = 22
 _BAR_CELLS = 5
 _RSSI_FLOOR = -100  # empty bar at or below this dBm
 _RSSI_CEIL = -40  # full bar at or above this dBm
+
+
+def _time_cell(timestamp: float) -> str:
+    """Render a packet's UTC epoch timestamp as local ``HH:MM:SS``."""
+    local = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone()
+    return local.strftime("%H:%M:%S")
 
 
 def _signal_bar(rssi: int | None) -> str:
@@ -275,9 +263,14 @@ def _scan_summary(
         return
 
     parts = []
-    # The tally must reconcile with the packet count shown alongside it.
+    # The tally must reconcile with the packet count shown alongside it. When
+    # failures were hidden they aren't in that count, so "0 failed" would be
+    # false; the hidden line below reports them instead.
     if decrypted is not None and failed is not None and (decrypted or failed):
-        parts.append(f"{decrypted} decrypted, {failed} failed")
+        if hidden and not failed:
+            parts.append(f"{decrypted} decrypted")
+        else:
+            parts.append(f"{decrypted} decrypted, {failed} failed")
     if extra:
         parts.append(extra)
     parts.append(f"{secs}s")
@@ -385,7 +378,20 @@ def _suggest_commands(name: str) -> tuple:
     return sorted(k for k, last in leaves.items() if last in close)[:3], "close"
 
 
+# Commands that were folded into another, so their old name still leads there.
+_REPLACED_COMMANDS = {
+    "detect": "ble validate --key <key>",
+    "check-time": "ble validate --key <key>",
+}
+
+
 def _unknown_command_message(name: str) -> str:
+    replacement = _REPLACED_COMMANDS.get(name)
+    if replacement:
+        return (
+            f"No such command '{name}': it was replaced by\n\n  "
+            + click.style(f"hubblenetwork {replacement}", fg="cyan")
+        )
     paths, kind = _suggest_commands(name)
     lines = [f"No such command '{name}'."]
     if paths:
@@ -698,6 +704,26 @@ def _credentials_error(
     return click.ClickException("\n".join(lines))
 
 
+def _org_or_fail(
+    org_id: str | None, token: str | None, example: str = _ORG_FLAG_EXAMPLE
+) -> Organization:
+    """Build the `Organization`, turning missing or rejected credentials into advice."""
+    if not org_id or not token:
+        raise _credentials_error(org_id=org_id, token=token, example=example)
+    try:
+        return Organization(org_id=org_id, api_token=token)
+    except InvalidCredentialsError:
+        raise _credentials_error(org_id=org_id, token=token, example=example) from None
+    except BackendError as e:
+        raise click.ClickException(f"Unable to reach the Hubble Cloud: {e}") from None
+
+
+_RATE_LIMIT_MSG = (
+    "The Hubble Cloud is rate-limiting these credentials. "
+    "Wait a minute, then run this again."
+)
+
+
 def _get_env_or_fail(name: str) -> str:
     val = os.getenv(name)
     if not val:
@@ -992,8 +1018,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         width = 2 + sum(w for _, w, _ in self._cols) + (len(self._cols) - 1)
         return _rule_line(width + len(self._lead))
 
-    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
-        """Print a single packet row, printing header first if needed."""
+    def _ensure_header(self, pkt) -> None:
         if not self._header_printed:
             self._cols = self._determine_columns(pkt)
             headers = [name for name, _, _ in self._cols]
@@ -1002,11 +1027,18 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
             click.echo(self._make_separator())
             self._header_printed = True
 
-        row: list[str] = [
-            datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc)
-            .astimezone()
-            .strftime("%H:%M:%S")
-        ]
+    def _emit_row(self, row: list[str], decrypt_status: str | None) -> None:
+        prefix = (
+            _decrypt_mark(decrypt_status) + " " if self._show_decrypt_status else ""
+        )
+        click.echo(prefix + self._format_row(row))
+        self._packet_count += 1
+
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
+        """Print a single packet row, printing header first if needed."""
+        self._ensure_header(pkt)
+
+        row: list[str] = [_time_cell(pkt.timestamp)]
         if self._show_debug_cols:
             row.append(str(pkt.timestamp))
         row.append("None" if pkt.rssi is None else str(pkt.rssi))
@@ -1038,12 +1070,7 @@ class _StreamingTablePrinter(_StreamingPrinterBase):
         payload = _format_payload(raw, self._payload_format)
         nbytes = len(raw) if isinstance(raw, bytes) else None
         row.append(_fit(payload or "-", self._PAYLOAD[1], nbytes=nbytes))
-
-        prefix = (
-            _decrypt_mark(decrypt_status) + " " if self._show_decrypt_status else ""
-        )
-        click.echo(prefix + self._format_row(row))
-        self._packet_count += 1
+        self._emit_row(row, decrypt_status)
 
     def finalize(self) -> None:
         if self._header_printed:
@@ -1204,9 +1231,7 @@ class _SatStreamingTablePrinter(_StreamingPrinterBase):
         raw = pkt.payload
         payload = _format_payload(raw, self._payload_format)
         row: list[str] = [
-            datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc)
-            .astimezone()
-            .strftime("%H:%M:%S"),
+            _time_cell(pkt.timestamp),
             pkt.device_id,
             str(pkt.seq_num),
             pkt.device_type,
@@ -1468,9 +1493,10 @@ def cli(ctx) -> None:
 # doctor
 # ---------------------------------------------------------------------------
 
-_CHECK_OK = "ok"
-_CHECK_FAIL = "fail"
-_CHECK_SKIP = "skip"
+# The same statuses validate.Finding carries, so its rows print unchanged.
+_CHECK_OK = validate_mod.OK
+_CHECK_FAIL = validate_mod.FAIL
+_CHECK_SKIP = validate_mod.SKIP
 
 
 def _bluetooth_usage_description() -> tuple:
@@ -1504,7 +1530,42 @@ def _bluetooth_usage_description() -> tuple:
     return None, "no Info.plist found for this interpreter"
 
 
+def _check_marks() -> dict:
+    g = termcaps.glyphs()
+    return {
+        _CHECK_OK: click.style(g.mark_ok, fg="green"),
+        _CHECK_FAIL: click.style(g.mark_fail, fg="red"),
+        _CHECK_SKIP: click.style("-", dim=True),
+    }
+
+
+def _print_check(marks: dict, name: str, status: str, summary: str, advice) -> None:
+    """One `doctor`-style row: mark, padded name, summary, then dim advice."""
+    click.echo(f"  {marks[status]} {name.ljust(14)} {summary}")
+    for line in advice:
+        click.secho(f"      {line}", dim=True)
+
+
+def _print_check_footer(results: list, head: str) -> None:
+    """`Ready to go.  3 ok . 1 skipped` -- the head is the caller's verdict."""
+    failed = results.count(_CHECK_FAIL)
+    skipped = results.count(_CHECK_SKIP)
+    click.echo("")
+    parts = [f"{results.count(_CHECK_OK)} ok"]
+    if failed:
+        parts.append(f"{failed} failed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    click.secho(head, bold=True, nl=False)
+    click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(parts), dim=True)
+
+
 def _doctor_credentials(org_id, token) -> tuple:
+    return _credentials_env(org_id, token)[0]
+
+
+def _credentials_env(org_id, token) -> tuple:
+    """(doctor check tuple, Environment or None), so callers can reuse the env."""
     if not org_id and not token:
         return (
             _CHECK_FAIL,
@@ -1512,22 +1573,22 @@ def _doctor_credentials(org_id, token) -> tuple:
             ["Set both, or pass --org-id/--token:",
              "  export HUBBLE_ORG_ID=<your org id>",
              "  export HUBBLE_API_TOKEN=<your api token>"],
-        )
+        ), None
     if not org_id or not token:
         missing = "HUBBLE_ORG_ID" if not org_id else "HUBBLE_API_TOKEN"
-        return (_CHECK_FAIL, f"{missing} is missing", [f"Set {missing} as well."])
+        return (_CHECK_FAIL, f"{missing} is missing", [f"Set {missing} as well."]), None
     try:
         env = cloud.get_env_from_credentials(cloud.Credentials(org_id, token))
     except Exception as exc:  # noqa: BLE001 - network trouble is not the same as bad creds
-        return (_CHECK_FAIL, f"could not reach the API ({exc})", ["Check your connection."])
+        return (_CHECK_FAIL, f"could not reach the API ({exc})", ["Check your connection."]), None
     if env is None:
         return (
             _CHECK_FAIL,
             "rejected by both PROD and TESTING",
             ["The org ID and token must come from the same environment.",
              "Re-copy both from the Hubble dashboard."],
-        )
-    return (_CHECK_OK, f"valid, {env.name}", [])
+        ), None
+    return (_CHECK_OK, f"valid, {env.name}", []), env
 
 
 def _doctor_bluetooth() -> tuple:
@@ -1610,12 +1671,7 @@ def doctor(org_id, token) -> None:
       hubblenetwork doctor
       hubblenetwork doctor --org-id <id> --token <token>
     """
-    g = termcaps.glyphs()
-    marks = {
-        _CHECK_OK: click.style(g.mark_ok, fg="green"),
-        _CHECK_FAIL: click.style(g.mark_fail, fg="red"),
-        _CHECK_SKIP: click.style("-", dim=True),
-    }
+    marks = _check_marks()
 
     checks = [
         ("Credentials", lambda: _doctor_credentials(org_id, token)),
@@ -1628,30 +1684,209 @@ def doctor(org_id, token) -> None:
     for name, run in checks:
         status, summary, advice = run()
         results.append(status)
-        click.echo(f"  {marks[status]} {name.ljust(14)} {summary}")
-        for line in advice:
-            click.secho(f"      {line}", dim=True)
+        _print_check(marks, name, status, summary, advice)
         # Only ask Docker about the image when Docker itself answered.
         if name == "Docker" and status == _CHECK_OK:
             sub_status, sub_summary, sub_advice = _doctor_sdr_image()
             results.append(sub_status)
-            click.echo(f"  {marks[sub_status]} {'Receiver'.ljust(14)} {sub_summary}")
-            for line in sub_advice:
-                click.secho(f"      {line}", dim=True)
+            _print_check(marks, "Receiver", sub_status, sub_summary, sub_advice)
 
     failed = results.count(_CHECK_FAIL)
-    skipped = results.count(_CHECK_SKIP)
-    click.echo("")
-    parts = [f"{results.count(_CHECK_OK)} ok"]
-    if failed:
-        parts.append(f"{failed} failed")
-    if skipped:
-        parts.append(f"{skipped} skipped")
-    head = "Ready to go." if not failed else "Not ready."
-    click.secho(head, bold=True, nl=False)
-    click.secho(termcaps.sep_pad() + termcaps.sep_pad().join(parts), dim=True)
+    _print_check_footer(results, "Ready to go." if not failed else "Not ready.")
     if failed:
         raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# ble validate
+# ---------------------------------------------------------------------------
+
+
+def _check_key_lookup(org_id, token, device_id) -> tuple:
+    """(rows, Device or None, env): the Credentials row, plus a Registration
+    row when the device can't be looked up. The env from the credentials check
+    is reused, so this costs one request beyond it."""
+    (status, summary, advice), env = _credentials_env(org_id, token)
+    rows = [validate_mod.Finding("Credentials", status, summary, tuple(advice))]
+    if env is None:
+        return rows, None, None
+    try:
+        data = cloud.get_device(
+            credentials=cloud.Credentials(org_id, token), env=env, device_id=device_id,
+        )
+        return rows, Device.from_json(data), env
+    except NotFoundError:
+        rows.append(validate_mod.Finding(
+            "Registration", _CHECK_FAIL, "no device with this ID in your org",
+            (f"Device ID: {device_id}",
+             "Check it with:  hubblenetwork org list-devices",
+             "Or the device was registered under a different org."),
+        ))
+    except RateLimitError:
+        rows.append(validate_mod.Finding(
+            "Registration", _CHECK_FAIL, "could not look the device up", (_RATE_LIMIT_MSG,),
+        ))
+    except BackendError as exc:
+        rows.append(validate_mod.Finding(
+            "Registration", _CHECK_FAIL, f"could not look the device up ({exc})",
+        ))
+    return rows, None, env
+
+
+# Without --key, the scan pauses this often to ask the cloud, so a device the
+# cloud recognises ends the run early, as a packet this key opens does.
+_CLOUD_SCAN_WINDOW_S = 5
+# At most this many devices' packets go to the cloud: four requests.
+_MAX_CLOUD_PACKETS = 4 * cloud.DECODE_BATCH_LIMIT
+
+
+class _Heard:
+    """Every Hubble packet the scan heard; the encrypted ones kept for the
+    cloud to decode, one per EID.
+
+    One packet tells the cloud whose a stream is, and every AES-CTR packet
+    is a distinct advertisement (its sequence number changes), so keeping one
+    per advertisement would let a few chatty neighbours fill the cap before
+    the device being checked is heard at all.
+    """
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.packets: dict[tuple, EncryptedPacket | AesEaxPacket] = {}
+
+    def add(self, pkt) -> None:
+        self.total += 1
+        if (
+            isinstance(pkt, (EncryptedPacket, AesEaxPacket))
+            and len(self.packets) < _MAX_CLOUD_PACKETS
+            and cloud.advertisement_bytes(pkt)
+        ):
+            eid = bytes(pkt.payload[2:6]) if isinstance(pkt, EncryptedPacket) else pkt.eid
+            self.packets.setdefault((type(pkt).__name__, eid), pkt)
+
+
+def _same_device(candidate: str | None, wanted: str) -> bool:
+    """Compare device IDs as UUIDs, so hyphenless or upper-case IDs match."""
+    try:
+        return uuid.UUID(str(candidate)) == uuid.UUID(wanted)
+    except ValueError:
+        return False
+
+
+class _CloudCheck:
+    """Ask the cloud which device sent packets heard just now, as `ble decode`
+    does. The endpoint stores what it decodes, so this machine is also the
+    device's gateway for the run."""
+
+    def __init__(self, creds: cloud.Credentials, env, device_id: str) -> None:
+        self._creds = creds
+        self._env = env
+        self._device_id = device_id
+        self._sent: set[bytes] = set()
+        self._mine = 0
+        self._others: dict[str, str] = {}
+        self._status: str | None = None
+        self._error: str | None = None
+        self._stopped = False
+
+    def send(self, packets: dict[bytes, EncryptedPacket | AesEaxPacket]) -> bool:
+        """Decode what has not been sent yet. True once a packet decodes as this
+        device, or when asking again cannot help."""
+        if self._stopped:
+            return True
+        todo = [(adv, p) for adv, p in packets.items() if adv not in self._sent]
+        if not todo:
+            return self._mine > 0
+        click.secho("Asking the cloud whose packets these are...", dim=True, err=True)
+        try:
+            results = org_mod.decode_packets(
+                credentials=self._creds, env=self._env, packets=[p for _, p in todo],
+            )
+        except PermissionDeniedError:
+            return self._stop("no_scope", None)
+        except RateLimitError:
+            return self._stop("error", _RATE_LIMIT_MSG)
+        except BackendError as exc:
+            return self._stop("error", str(exc))
+        except Exception as exc:  # noqa: BLE001 - a malformed answer is the cloud's fault, not BLE's
+            return self._stop("error", f"unexpected answer from the decode endpoint ({exc!r})")
+        self._status = "checked"
+        self._sent.update(adv for adv, _ in todo)
+        for r in results:
+            if r is None:
+                continue
+            if _same_device(r.device_id, self._device_id):
+                self._mine += 1
+            else:
+                self._others.setdefault(r.device_id, r.device_name or r.device_id)
+        return self._mine > 0
+
+    def _stop(self, status: str, error: str | None) -> bool:
+        """A request failed: stop asking. Answers already collected still
+        stand, so a run that got some keeps status "checked"."""
+        if self._status != "checked":
+            self._status = status
+        self._error = error
+        self._stopped = True
+        return True
+
+    def evidence(self, key_packets: bool) -> validate_mod.CloudEvidence | None:
+        if self._status is None:
+            return None  # nothing encrypted was heard to send
+        return validate_mod.CloudEvidence(
+            self._status,
+            sent=len(self._sent),
+            mine=self._mine,
+            others=tuple(self._others.values()),
+            key_packets=key_packets,
+            error=self._error,
+        )
+
+
+def _check_key_scan(key: bytes | None, timeout: int, heard: _Heard, check=None):
+    """AirEvidence from a scan, or a Finding when no scan happened.
+
+    With a key, the scan stops as soon as one of its packets authenticates.
+    Without one, it pauses every few seconds to ask the cloud (``check``) and
+    stops once the cloud names this device. Either way --timeout is an upper
+    bound rather than how long every run takes.
+    """
+    if timeout <= 0:
+        return validate_mod.Finding("Over the air", _CHECK_SKIP, "scan disabled (--timeout 0)")
+    if key is None and check is None:
+        return validate_mod.Finding(
+            "Over the air", _CHECK_SKIP,
+            "not scanned: without --key, only the cloud can pick out this device",
+        )
+    bt_status, bt_summary, bt_advice = _doctor_bluetooth()
+    if bt_status == _CHECK_FAIL:
+        # Scanning here would abort the process; report it instead.
+        return validate_mod.Finding(
+            "Over the air", _CHECK_FAIL, f"Bluetooth unavailable: {bt_summary}",
+            tuple(bt_advice),
+        )
+    what = "this key's packets" if key is not None else "Hubble packets"
+    click.secho(f"Listening for {what} (up to {timeout}s)...", dim=True, err=True)
+    air = validate_mod.AirScan(key) if key is not None else None
+
+    def until(pkt) -> bool:
+        heard.add(pkt)
+        return air.add(pkt) if air is not None else False
+
+    try:
+        if air is not None:
+            ble_mod.scan(timeout=timeout, until=until)
+        else:
+            deadline = time.monotonic() + timeout
+            while (left := deadline - time.monotonic()) > 0:
+                ble_mod.scan(timeout=min(left, _CLOUD_SCAN_WINDOW_S), until=until)
+                if check.send(heard.packets):
+                    break
+    except Exception as exc:  # noqa: BLE001 - adapter/OS failures become a row
+        return validate_mod.Finding("Over the air", _CHECK_FAIL, f"BLE scan failed ({exc})")
+    if air is not None:
+        return air.evidence()
+    return validate_mod.AirEvidence(heard=heard.total, match=None)
 
 
 @cli.command("validate-credentials", short_help="Check that your API credentials work")
@@ -1697,223 +1932,6 @@ def validate_credentials(org_id, token) -> None:
 def ble() -> None:
     """Listen to nearby Hubble devices over Bluetooth."""
     # subgroup for BLE-related commands
-
-
-@ble.command("detect", short_help="Identify which EID mode a key uses")
-@click.option(
-    "--timeout",
-    "-t",
-    type=int,
-    default=10,
-    show_default=True,
-    help="Timeout in seconds",
-)
-@click.option(
-    "--key",
-    "-k",
-    required=True,
-    type=str,
-    default=None,
-    show_default=False,
-    help="Key to decrypt packets (hex or base64, 16 or 32 bytes)",
-)
-@click.option(
-    "--days",
-    "-d",
-    type=int,
-    default=2,
-    show_default=True,
-    help="Number of days to check back when decrypting",
-)
-@click.option(
-    "--counter-mode",
-    type=click.Choice(["UNIX_TIME", "DEVICE_UPTIME"], case_sensitive=False),
-    default="UNIX_TIME",
-    show_default=True,
-    help="EID counter mode for AES-CTR packets",
-)
-@click.option(
-    "--period-exponent",
-    "-e",
-    type=int,
-    default=0,
-    show_default=True,
-    help="EID rotation period exponent for AES-EAX packets (0-15). Period = 2^n seconds.",
-)
-@click.option(
-    "--format",
-    "-o",
-    "output_format",
-    type=click.Choice(["json", "tabular"], case_sensitive=False),
-    default="tabular",
-    show_default=True,
-    help="Output format",
-)
-@click.option(
-    "--payload-format",
-    "payload_format",
-    type=click.Choice(["auto", "base64", "hex", "string"], case_sensitive=False),
-    default="base64",
-    show_default=True,
-    help=(
-        "Encoding format for packet payload. Tabular output defaults to 'auto' "
-        "(printable ASCII as text, otherwise hex); JSON always defaults to base64."
-    ),
-)
-@click.option(
-    "--debug",
-    is_flag=True,
-    default=False,
-    help="Enable debug logging to stderr",
-)
-@click.pass_context
-def ble_detect(
-    ctx,
-    timeout: int | None = None,
-    key: str | None = None,
-    days: int = 2,
-    counter_mode: str = "UNIX_TIME",
-    period_exponent: int = 0,
-    output_format: str = "tabular",
-    payload_format: str = "base64",
-    debug: bool = False,
-) -> None:
-    """
-    Scan for a single BLE packet and decrypt with key.
-
-    This mode is designed for programmatic validation of BLE packets.
-    The key parameter is required. Check the 'success' field in JSON output.
-
-    Example:
-      hubblenetwork ble detect --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 20
-      hubblenetwork ble detect -k "q9vH3u2J4aN8Rw1KpZsO+A==" -o tabular
-    """
-    use_json = output_format.lower() == "json"
-    payload_format = _effective_payload_format(ctx, payload_format, not use_json)
-
-    if counter_mode == DEVICE_UPTIME:
-        days_source = ctx.get_parameter_source("days")
-        if days_source == click.core.ParameterSource.COMMANDLINE:
-            raise click.UsageError(
-                "--counter-mode DEVICE_UPTIME and --days are mutually exclusive"
-            )
-
-    # Set log level based on debug flag
-    logger.setLevel(logging.DEBUG if debug else logging.WARNING)
-
-    def _output_error(msg: str) -> None:
-        if use_json:
-            click.echo(json.dumps({"success": False, "error": msg}))
-        else:
-            click.secho(f"[ERROR] {msg}", fg="red", err=True)
-
-    try:
-        decoded_key = bytearray(_parse_key(key))
-        logger.debug("Key decoded successfully")
-    except ValueError as e:
-        logger.error(f"Key decoding failed: {e}")
-        _output_error(f"Key decoding failed: {e}")
-        return
-
-    def _explicit(name: str) -> bool:
-        return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
-
-    auto_detect_ctr = not _explicit("counter_mode")
-    auto_detect_eax = not _explicit("period_exponent")
-
-    _announce_auto_detect(auto_detect_ctr, auto_detect_eax, suppress=use_json)
-
-    ctr_detector = CtrCounterModeDetector(
-        auto_detect=auto_detect_ctr,
-        fixed_counter_mode=counter_mode,
-        days=days,
-        key_len=len(decoded_key),
-    )
-    eax_detector = EaxExponentDetector(
-        auto_detect=auto_detect_eax, fixed_exponent=period_exponent
-    )
-
-    # Set up timeout tracking
-    start = time.monotonic()
-    deadline = None if timeout is None else start + timeout
-
-    if timeout:
-        logger.debug(f"Starting BLE scan with {timeout}s timeout")
-    else:
-        logger.debug("Starting BLE scan (no timeout)")
-
-    # Continuously scan until we find a packet we can decrypt or timeout
-    while deadline is None or time.monotonic() < deadline:
-        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
-
-        # Scan for a single packet
-        try:
-            pkt = ble_mod.scan_single(timeout=this_timeout)
-        except Exception as e:  # noqa: BLE001 - top-level CLI boundary: report and exit non-zero
-            logger.error(f"BLE scanning error: {e}")
-            _output_error(f"BLE scanning error: {e!s}")
-            return
-
-        # Check if packet was found
-        if not pkt:
-            # Timeout reached without finding any packet
-            logger.error("Timeout: No BLE packets found")
-            _output_error("No BLE packets found within timeout period")
-            return
-
-        logger.debug("Packet received, attempting decryption...")
-
-        decrypted_pkt = None
-        if isinstance(pkt, AesEaxPacket):
-            d = eax_detector.decrypt(
-                decrypt_fn=lambda exp, pkt=pkt: decrypt_eax(
-                    decoded_key, pkt, period_exponent=exp
-                ),
-                cache_key=pkt.eid,
-            )
-            _announce_detection(d.label, suppress=use_json)
-            decrypted_pkt = d.result
-        elif isinstance(pkt, EncryptedPacket):
-            d = ctr_detector.decrypt(
-                decrypt_fn=lambda pkt=pkt, **kw: decrypt(decoded_key, pkt, **kw),
-                cache_key=pkt.eid,
-            )
-            _announce_detection(d.label, suppress=use_json)
-            decrypted_pkt = d.result
-        # UnencryptedPacket and UnknownPacket fall through, keep scanning.
-
-        if decrypted_pkt:
-            # If we can decrypt it, output success
-            datetime_str = datetime.fromtimestamp(decrypted_pkt.timestamp, tz=timezone.utc).astimezone().strftime(
-                "%c"
-            )
-            logger.info("Packet decrypted successfully!")
-
-            payload_str = _format_payload(decrypted_pkt.payload, payload_format)
-            if use_json:
-                result = {
-                    "success": True,
-                    "packet": {
-                        "datetime": datetime_str,
-                        "rssi": decrypted_pkt.rssi,
-                        "payload": payload_str,
-                        "counter": decrypted_pkt.counter,
-                    },
-                }
-                click.echo(json.dumps(result))
-            else:
-                click.secho("[SUCCESS] ", fg="green", nl=False)
-                click.echo(
-                    f"Packet decrypted: {datetime_str}, RSSI: {decrypted_pkt.rssi} dBm, payload: {payload_str}, counter: {decrypted_pkt.counter}"
-                )
-            return
-
-        logger.debug(
-            "Decryption failed (doesn't match key), scanning for another packet..."
-        )
-
-    # If we exit the loop, it means we've exceeded the timeout without finding a valid packet
-    _output_error("No valid packets found within timeout period")
 
 
 @ble.command("scan", short_help="Stream beacon packets from nearby devices")
@@ -2080,20 +2098,11 @@ def ble_scan(
         )
 
     if ingest:
-        ingest_example = (
-            "hubblenetwork ble scan --ingest --key <key> "
-            "--org-id <id> --token <token>"
+        org = _org_or_fail(
+            org_id,
+            token,
+            "hubblenetwork ble scan --ingest --key <key> --org-id <id> --token <token>",
         )
-        if not org_id or not token:
-            raise _credentials_error(
-                org_id=org_id, token=token, example=ingest_example
-            )
-        try:
-            org = Organization(org_id=org_id, api_token=token)
-        except InvalidCredentialsError:
-            raise _credentials_error(
-                org_id=org_id, token=token, example=ingest_example
-            ) from None
 
     start = time.monotonic()
     deadline = None if timeout is None else start + timeout
@@ -2244,135 +2253,99 @@ def ble_scan(
             )
 
 
-@ble.command("check-time", short_help="Check a device's clock against real UTC")
+# ---------------------------------------------------------------------------
+# ble decode: decrypt nearby packets in the cloud, no key needed
+# ---------------------------------------------------------------------------
+
+# Send what has been heard at least this often, so rows stream rather than
+# landing all at once when a batch finally fills.
+_DECODE_FLUSH_S = 2.0
+# Distinct advertisements whose cloud answer `ble decode` remembers.
+_DECODE_CACHE_MAX = 4096
+
+
+def _decoded_to_dict(pkt, payload_format: str = "base64", decrypt_status=None) -> dict:
+    """JSON for a `ble decode` row: a cloud-decrypted packet, or a raw one that wasn't.
+
+    Both kinds share one set of keys, so a consumer parses every row the same
+    way: an undecrypted row has ``sequence`` (the AES-CTR header's seq_no, or
+    null) and null ``counter``/``device_id``/``device_name``/``tags``. This is
+    decode's own mapping; `ble scan` JSON keeps its ``seq_no`` key unchanged.
+    """
+    if isinstance(pkt, DecryptedPacket):
+        data = _packet_to_dict(pkt, payload_format, decrypt_status)
+        data.update(device_id=pkt.device_id, device_name=pkt.device_name, tags=pkt.tags)
+        return data
+    raw = _packet_to_dict(pkt, payload_format, decrypt_status)
+    data = {}
+    for k, v in raw.items():
+        if k == "seq_no":
+            continue
+        if k == "payload":
+            data["counter"] = None
+            data["sequence"] = raw.get("seq_no")
+        data[k] = v
+    data.update(device_id=None, device_name=None, tags=None)
+    return data
+
+
+class _DecodeTablePrinter(_StreamingTablePrinter):
+    """One row per packet: which device the cloud says sent it, and what it said."""
+
+    _COLS: ClassVar[list[tuple]] = [
+        ("TIME", 8, "<"),
+        ("RSSI", 4, ">"),
+        ("", _BAR_CELLS, "<"),
+        ("DEVICE", 16, "<"),
+        ("SEQ", 4, ">"),
+        ("CTR", 6, ">"),
+        ("PAYLOAD", 26, "<"),
+    ]
+
+    def _determine_columns(self, pkt) -> list[tuple]:
+        return self._COLS
+
+    def print_row(self, pkt, decrypt_status: str | None = None) -> None:
+        self._ensure_header(pkt)
+
+        width = self._COLS[3][1]
+        if isinstance(pkt, DecryptedPacket):
+            device = _fit(pkt.device_name or pkt.device_id or "-", width)
+            seq = "-" if pkt.sequence is None else str(pkt.sequence)
+            ctr = "-" if pkt.counter is None else str(pkt.counter)
+            raw = pkt.payload
+            payload = _format_payload(raw, self._payload_format)
+        else:
+            # No device to name, so identify the sender by its EID (hex, as in
+            # `ble scan`). AES-EAX EIDs are 8 bytes and can outgrow the cell; a
+            # byte-count suffix would read as more hex, so truncate like a name.
+            eid = getattr(pkt, "eid", None)
+            device = "-" if eid is None else _fit(f"eid:{eid:x}", width)
+            seq = self._counter_cell(pkt)
+            ctr = "-"
+            raw = _ctr_display_payload(pkt)
+            # Ciphertext is always hex: under `auto` or `string` it could
+            # render as text and pass for a real payload.
+            payload = _format_payload(raw, "hex")
+        row = [
+            _time_cell(pkt.timestamp),
+            str(pkt.rssi),
+            _signal_bar(pkt.rssi),
+            device,
+            seq,
+            ctr,
+            _fit(payload or "-", self._COLS[-1][1], nbytes=len(raw)),
+        ]
+        self._emit_row(row, decrypt_status)
+
+
+@ble.command("decode", short_help="Decrypt nearby packets in the cloud")
 @click.option(
     "--timeout",
     "-t",
     type=int,
-    default=None,
     show_default=False,
     help="Timeout in seconds (default: no timeout)",
-)
-@click.option(
-    "--key",
-    "-k",
-    required=True,
-    type=str,
-    help="Key for checking time counter (hex or base64, 16 or 32 bytes)",
-)
-@click.option(
-    "--json-output",
-    "-j",
-    is_flag=True,
-    default=False,
-    help="Output results as JSON",
-)
-def ble_check_time(
-    timeout: int | None = None, key: str | None = None, json_output: bool = False
-) -> int:
-    """
-    Scan for BLE packets and check if the device's UTC time is out of spec.
-
-    For each received packet, attempts to find the time counter delta using the
-    provided key. Reports how many days off the device time is from the expected
-    value (0 = correct, negative = behind, positive = ahead).
-
-    A device is considered out of spec if it is more than 2 days off.
-
-    Example:
-      hubblenetwork ble check-time --key "a562a2f7e4c62bed52ab09633878f62b" --timeout 30
-    """
-    try:
-        decoded_key = bytearray(_parse_key(key))
-    except ValueError as e:
-        if json_output:
-            click.echo(json.dumps({"error": str(e)}))
-        else:
-            click.secho(f"[ERROR] {e}", fg="red", err=True)
-        return
-
-    if not json_output:
-        click.secho("[INFO] Scanning for Hubble devices to check time sync...")
-
-    start = time.monotonic()
-    deadline = None if timeout is None else start + timeout
-
-    while deadline is None or time.monotonic() < deadline:
-        this_timeout = None if deadline is None else max(deadline - time.monotonic(), 0)
-
-        pkt = ble_mod.scan_single(timeout=this_timeout)
-        if not pkt:
-            break
-
-        # Check which time counter the packet resolves for
-        delta = find_time_counter_delta(decoded_key, pkt)
-
-        ts = datetime.fromtimestamp(pkt.timestamp, tz=timezone.utc).astimezone().strftime("%c")
-
-        if delta is None:
-            # Could not resolve the packet with this key
-            if not json_output:
-                click.echo(
-                    f"{ts}  RSSI: {pkt.rssi} dBm  - Could not resolve packet with provided key"
-                )
-        else:
-            # Packet resolved - report the delta
-            if delta == 0:
-                status = "Device time is correct"
-                in_spec = True
-            elif delta > 0:
-                status = (
-                    f"Device time is {delta} day{'s' if abs(delta) != 1 else ''} ahead"
-                )
-                in_spec = abs(delta) <= 2
-            else:
-                status = f"Device time is {abs(delta)} day{'s' if abs(delta) != 1 else ''} behind"
-                in_spec = abs(delta) <= 2
-
-            if json_output:
-                click.echo(
-                    json.dumps(
-                        {
-                            "resolved": True,
-                            "delta_days": delta,
-                            "in_spec": in_spec,
-                            "rssi": pkt.rssi,
-                            "timestamp": ts,
-                        }
-                    )
-                )
-            else:
-                color = "green" if in_spec else "red"
-                spec_label = "" if in_spec else " [OUT OF SPEC]"
-                click.echo(f"{ts}  RSSI: {pkt.rssi} dBm  - ", nl=False)
-                click.secho(f"{status}{spec_label}", fg=color)
-            return 0
-
-    if json_output:
-        click.echo(json.dumps({"resolved": False}))
-    else:
-        click.secho(
-            "[ERROR] No valid packets found within timeout period", fg="red", err=True
-        )
-    return -1
-
-
-@ble.command("validate", short_help="End-to-end health check on one device")
-@click.option(
-    "--key",
-    "-k",
-    type=str,
-    required=True,
-    show_default=False,
-    help="Device key (to test packet encryption)",
-)
-@click.option(
-    "--device-id",
-    "-d",
-    type=str,
-    required=True,
-    show_default=False,
-    help="Device ID (to test backend)",
 )
 @click.option(
     "--org-id",
@@ -2390,7 +2363,234 @@ def ble_check_time(
     show_envvar=True,
     default=None,
     show_default=False,
-    help="API token",
+    help="API token (needs the read-packets scope)",
+)
+@click.option(
+    "--format",
+    "-o",
+    "output_format",
+    type=click.Choice(["tabular", "json"], case_sensitive=False),
+    default="tabular",
+    show_default=True,
+    help="Output format for packets",
+)
+@click.option(
+    "--payload-format",
+    "payload_format",
+    type=click.Choice(["auto", "base64", "hex", "string"], case_sensitive=False),
+    default="base64",
+    show_default=True,
+    help=(
+        "Encoding format for packet payload. Tabular output defaults to 'auto' "
+        "(printable ASCII as text, otherwise hex); JSON always defaults to base64."
+    ),
+)
+@click.option(
+    "--show-failed-decryption",
+    "--show-failed",
+    "show_failed",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also show packets the cloud could not decrypt for your org. Adds an "
+        "ok/fail decrypt mark to each row."
+    ),
+)
+@click.pass_context
+def ble_decode(
+    ctx,
+    timeout: int | None = None,
+    org_id: str | None = None,
+    token: str | None = None,
+    output_format: str = "tabular",
+    payload_format: str = "base64",
+    show_failed: bool = False,
+) -> None:
+    """
+    Scan for encrypted Hubble packets and decrypt them in the Hubble Cloud.
+
+    No device key is needed: the cloud decrypts with the keys registered to
+    your organization and says which device sent each packet. Packets from
+    devices outside your org stay undecrypted. Decoded packets are also stored
+    in the cloud, the same as any gateway upload.
+
+    \b
+    Example:
+      hubblenetwork ble decode --timeout 30
+      hubblenetwork ble decode -o json --timeout 10
+      hubblenetwork ble decode --show-failed
+    """
+    org = _org_or_fail(
+        org_id, token, "hubblenetwork ble decode --org-id <id> --token <token>"
+    )
+
+    is_tabular = output_format.lower() == "tabular"
+    fmt = _effective_payload_format(ctx, payload_format, is_tabular)
+    if is_tabular:
+        printer = _DecodeTablePrinter(payload_format=fmt, show_decrypt_status=show_failed)
+    else:
+        printer = _StreamingJsonPrinter(
+            payload_format=fmt, to_dict_fn=_decoded_to_dict, show_decrypt_status=show_failed
+        )
+
+    if not printer.suppress_info_messages:
+        click.echo(
+            "\nScanning and decrypting in the Hubble Cloud  "
+            + click.style("Ctrl+C to stop", dim=True),
+            err=True,
+        )
+
+    start = time.monotonic()
+    deadline = None if timeout is None else start + timeout
+
+    pending: list[tuple] = []  # (packet, advertisement bytes)
+    pending_since: float | None = None
+    # A device repeats each advertisement several times; decode it once. Oldest
+    # entries are dropped past the cap, since repeats arrive close together.
+    known: dict[bytes, DecryptedPacket | None] = {}
+    counts = {"ok": 0, "fail": 0, "hidden": 0}
+    rssis: list[int] = []
+
+    def emit(pkt, result) -> None:
+        if result is not None:
+            counts["ok"] += 1
+            printer.print_row(
+                replace(result, timestamp=pkt.timestamp, rssi=pkt.rssi),
+                decrypt_status="ok",
+            )
+        elif show_failed:
+            counts["fail"] += 1
+            printer.print_row(pkt, decrypt_status="fail")
+        else:
+            counts["hidden"] += 1
+            return
+        rssis.append(pkt.rssi)
+
+    def flush() -> None:
+        nonlocal pending_since
+        batch = pending[:]
+        # decode_packets dedupes within the batch; only skip what's already known.
+        todo = [(p, adv) for p, adv in batch if adv not in known]
+        if todo:
+            for (_, adv), r in zip(todo, org.decode_packets([p for p, _ in todo])):
+                known[adv] = r
+        # Cleared only once answered: a Ctrl+C during the request leaves the
+        # batch pending, so the final flush still gives it rows.
+        pending.clear()
+        pending_since = None
+        for p, adv in batch:
+            emit(p, known.get(adv))
+        while len(known) > _DECODE_CACHE_MAX:
+            del known[next(iter(known))]
+
+    failure: BackendError | None = None
+    try:
+        try:
+            while deadline is None or time.monotonic() < deadline:
+                now = time.monotonic()
+                waits = []
+                if deadline is not None:
+                    waits.append(max(deadline - now, 0))
+                if pending_since is not None:
+                    waits.append(max(pending_since + _DECODE_FLUSH_S - now, 0))
+                pkt = ble_mod.scan_single(timeout=min(waits) if waits else None)
+                if pkt is None and not waits:
+                    break  # an unbounded wait came back empty: the scanner stopped
+
+                if isinstance(pkt, (EncryptedPacket, AesEaxPacket)):
+                    adv = cloud.advertisement_bytes(pkt)
+                    if not pending and adv in known:
+                        # Already answered; no round trip, but keep arrival order.
+                        emit(pkt, known[adv])
+                        continue
+                    pending.append((pkt, adv))
+                    if pending_since is None:
+                        pending_since = time.monotonic()
+
+                due = pending_since is not None and (
+                    time.monotonic() - pending_since >= _DECODE_FLUSH_S
+                )
+                if len(pending) >= cloud.DECODE_BATCH_LIMIT or due:
+                    flush()
+        except KeyboardInterrupt:
+            pass  # what was heard before Ctrl+C still gets its rows
+        if pending:
+            flush()
+    except KeyboardInterrupt:
+        pass
+    except BackendError as e:
+        failure = e
+    finally:
+        printer.finalize()
+        # A failed request says so below; an empty-scan hint would mislead.
+        quiet = failure is not None and printer.packet_count == 0
+        if not printer.suppress_info_messages and not quiet:
+            _scan_summary(
+                printer.packet_count,
+                time.monotonic() - start,
+                hidden=counts["hidden"],
+                decrypted=counts["ok"],
+                failed=counts["fail"],
+                extra=f"RSSI {max(rssis)} to {min(rssis)} dBm" if rssis else None,
+                empty_hint=[
+                    (
+                        f"Heard {counts['hidden']}, none decrypted for your org."
+                        if counts["hidden"]
+                        else "No encrypted Hubble advertisements nearby."
+                    ),
+                    "Check the device is powered and registered to this org.",
+                    "Show undecrypted packets:  hubblenetwork ble decode --show-failed",
+                    "Widen the window:  hubblenetwork ble decode --timeout 60",
+                ],
+            )
+
+    if failure is not None:
+        if isinstance(failure, RateLimitError):
+            raise click.ClickException(_RATE_LIMIT_MSG)
+        raise click.ClickException(str(failure))
+
+
+@ble.command("validate", short_help="Diagnose one device's key setup")
+@click.option(
+    "--key",
+    "-k",
+    type=str,
+    default=None,
+    show_default=False,
+    help="Device key, to find its packets and check how they are encrypted",
+)
+@click.option(
+    "--device-id",
+    "-d",
+    type=str,
+    default=None,
+    show_default=False,
+    help="Device ID, to check its registration and that the cloud decodes it",
+)
+@click.option(
+    "--firmware",
+    "-f",
+    type=click.Path(exists=True),
+    default=None,
+    help="The image you flashed (.elf/.bin/.hex/.ihex), or its build directory.",
+)
+@click.option(
+    "--org-id",
+    type=str,
+    envvar="HUBBLE_ORG_ID",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="Organization ID",
+)
+@click.option(
+    "--token",
+    type=str,
+    envvar="HUBBLE_API_TOKEN",
+    show_envvar=True,
+    default=None,
+    show_default=False,
+    help="API token (the read-packets scope lets it decode packets heard now)",
 )
 @click.option(
     "--timeout",
@@ -2400,141 +2600,115 @@ def ble_check_time(
     show_default=True,
     help="BLE scan timeout in seconds",
 )
-def ble_validate(key: str, device_id: str, org_id: str, token: str, timeout: int) -> None:
+def ble_validate(
+    key: str | None, device_id: str | None, firmware: str | None,
+    org_id: str, token: str, timeout: int,
+) -> None:
     """
-    Validate the operation of a Hubble device, including:
+    Diagnose a Hubble device's key setup, checking:
 
     \b
-    - Valid credentials passed in
-    - Device registration (must be a registered device)
+    - Valid credentials passed in (with --device-id)
+    - Device registration (with --device-id)
     - BLE advertisements
-    - Advertisement encryption
-    - Backend ingestion/retrieval of data
+    - Advertisement encryption (with --key)
+    - The cloud decoding packets heard just now as this device (with --device-id)
+    - Key size, counter mode and device clock (with --key)
+    - What the firmware was built for, and whether it holds the key
 
-    NOTE: HUBBLE_ORG_ID and HUBBLE_API_TOKEN env vars must be set
-    unless --org-id and --token are provided.
+    Pass --key, --device-id, or both. --key alone needs no credentials.
+    --device-id alone needs no key: the cloud decrypts what is heard with
+    the key the device was registered with, and says whether it is this
+    device. Both together also say which side is wrong: a key registered
+    UNIX_TIME but flashed DEVICE_UPTIME, an AES-256 key in an AES-128 build,
+    a clock days off, a key registered to another device. The firmware is
+    checked only with --firmware.
+
+    The scan stops as soon as the device is found, and --timeout 0 skips it.
+    Packets the cloud decodes are stored, as a gateway's would be. Exits 1 if
+    anything fails.
+
+    NOTE: with --device-id, HUBBLE_ORG_ID and HUBBLE_API_TOKEN env vars must
+    be set unless --org-id and --token are provided.
+
+    \b
+    Example:
+      hubblenetwork ble validate --key <key>
+      hubblenetwork ble validate --device-id <id>
+      hubblenetwork ble validate --key <key> --device-id <id>
+      hubblenetwork ble validate --key <key> --device-id <id> --firmware app.hex
     """
-
-    # Step 1: Validate inputs
-    _validate_info("Validating format of inputs")
-    try:
-        decoded_key = _parse_key(key)
-    except ValueError as e:
-        _validate_error(
-            f'Incorrectly formatted device key: {e}'
-            '\nAccepted formats (fake keys):'
-            '\n Hex 16-byte: "a562a2f7e4c62bed52ab09633878f62b"'
-            '\n Hex 32-byte: "a562a2f7e4c62bed52ab09633878f62ba562a2f7e4c62bed52ab09633878f62b"'
-            '\n Base64 16-byte: "q9vH3u2J4aN8Rw1KpZsO+A=="'
-            '\n Base64 32-byte: "N4e7xq9X1pQ0sVbY2mT3uA6fH9rK2dW5cG8jL1oQ0vU="'
+    if not key and not device_id:
+        raise click.UsageError(
+            "Pass --key, --device-id, or both.\n\n"
+            "  --key checks what the device broadcasts; no credentials needed.\n"
+            "  --device-id checks its registration and that the cloud decodes it.\n"
+            + _FIND_DEVICE_ID
         )
-    try:
-        uuid.UUID(device_id)
-    except ValueError:
-        _validate_error(
-            'Device UUID formatted incorrectly.'
-            '\nMust be in standard 8-4-4-4-12 format (removing hyphens accepted).'
-            '\nExample UUID: "3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1"'
-            '\n\nIf you are having troubles with your UUID please contact support@hubble.com'
-        )
-    _validate_success()
+    key_bytes = None
+    if key:
+        try:
+            key_bytes = _parse_key(key)
+        except ValueError as e:
+            raise click.BadParameter(str(e), param_hint="--key")
 
-    # Step 2: Get credentials
-    _validate_info("Getting organization ID and API token")
-    try:
-        org_id, token = _get_org_and_token(org_id, token)
-    except click.ClickException:
-        _validate_error("HUBBLE_ORG_ID and/or HUBBLE_API_TOKEN environment variables not set")
-    _validate_success()
-
-    # Step 3: Validate org credentials
-    _validate_info("Validating organization credentials")
-    try:
-        org = Organization(
-            org_id=org_id,
-            api_token=token,
-        )
-    except InvalidCredentialsError:
-        _validate_error("Invalid credentials (Org ID or API token) passed in.")
-    _validate_success()
-
-    # Step 4: Validate device registration
-    _validate_info("Validating that the given device is registered")
-    device = Device(id=device_id)
-    if not any(d.id == device_id for d in org.list_devices()):
-        _validate_error("Device ID not found in backend")
-    _validate_success()
-
-    # Step 5: BLE scan
-    _validate_info(f"Scanning for Hubble-compatible advertisers (timeout={timeout}s)")
-    pkts = ble_mod.scan(timeout=timeout)
-    if not pkts:
-        _validate_error(
-            'No Hubble advertisements found.'
-            '\n\nNOTE: This may be due to a slow advertising interval and BLE-scanning'
-            '\n      optimizations done by your operating system. Try running this'
-            '\n      script again if your advertising interval is slow.'
-            '\n\nOther debug tips:'
-            '\n 1. Ensure your advertising packet is constructed correctly with both'
-            '\n    the "Complete List of 16-bit Service UUIDs" advertising type (with'
-            '\n    the Hubble UUID) and "Service Data" type included.'
-            '\n 2. Ensure your device as advertising at all (if in doubt, try a BLE'
-            '\n    scanning app on your phone)'
-            '\n\nIf these do not resolve your issue please contact support@hubble.com.'
-        )
-    _validate_success()
-
-    # Step 6: Validate encryption and detect EID type
-    _validate_info("Validating encryption of received packets")
-    pkt_to_ingest, dec_result, eid_label, _ = detect_eid_type(decoded_key, pkts)
-    if not pkt_to_ingest:
-        _validate_error(
-            'Unable to decrypt packet with given device key.'
-            '\n\nDebug tips:'
-            '\n 1. Ensure you entered the key correctly when running this script.'
-            '\n 2. Check that your device is provisioned with this same key.'
-            '\n 3. Check that your device-level encryption is working.'
-            '\n\nIf these do not resolve your issue please contact support@hubble.com.'
-        )
-    _validate_success()
-    if eid_label == UNIX_TIME:
-        click.echo(f"       EID type: {UNIX_TIME} (day counter={dec_result.counter})")
-    elif eid_label == DEVICE_UPTIME:
-        click.echo(f"       EID type: DEVICE_UPTIME (counter={dec_result.counter})")
+    check = None
+    if device_id:
+        try:
+            # Canonical form: the API path wants hyphens, UUID() accepts more.
+            device_id = str(uuid.UUID(device_id))
+        except ValueError:
+            raise click.BadParameter(
+                "must be a UUID like 3f4b2c0c-2d43-4cbe-9c1f-0a4c2d59e2a1 "
+                "(hyphens optional).\n" + _FIND_DEVICE_ID,
+                param_hint="--device-id",
+            )
+        rows, device, env = _check_key_lookup(org_id, token, device_id)
+        if device is not None:
+            check = _CloudCheck(cloud.Credentials(org_id, token), env, device_id)
     else:
-        click.echo("       EID type: AMBIGUOUS (resolved with both UNIX_TIME and DEVICE_UPTIME)")
-        click.secho(
-            "       NOTE: Multiple devices may be in BLE range with different configs,\n"
-            "             or a very unlikely cryptographic coincidence. "
-            "Check your device config.",
-            bold=True,
+        # Air and firmware only: no credentials needed.
+        rows, device = [validate_mod.Finding(
+            "Registration", _CHECK_SKIP, "not checked (no --device-id)",
+            ("Add --device-id to compare against the registration and check",
+             "that the cloud decodes this device."),
+        )], None
+
+    heard = _Heard()
+    air = _check_key_scan(key_bytes, timeout, heard, check)
+    key_packets = isinstance(air, validate_mod.AirEvidence) and bool(air.packets)
+    if check is not None and isinstance(air, validate_mod.AirEvidence):
+        # This key's own packets say the most; with none, ask about everything
+        # heard, which can still show the device is here under another key.
+        check.send(
+            {cloud.advertisement_bytes(p): p for p in air.packets}
+            if key_packets else heard.packets
         )
+    rows += validate_mod.diagnose(
+        key=key_bytes,
+        device=device,
+        air=air,
+        firmware=validate_mod.inspect_firmware(firmware, key_bytes) if firmware else None,
+        timeout=timeout,
+        cloud=check.evidence(key_packets) if check is not None else None,
+    )
 
-    # Step 7: Ingest + backend retrieval
-    _validate_info("Ingesting packet into the backend")
-    try:
-        org.ingest_packet(pkt_to_ingest)
-    except BackendError:
-        _validate_error("Unable to ingest packet on the backend (not your fault)")
-    _validate_success()
-
-    _validate_info("Checking for packet in the backend")
-    timestamp = pkt_to_ingest.timestamp
-    backend_pkt = None
-    for _ in range(10):
-        time.sleep(1)
-        backend_pkt = _get_pkt_from_be_with_timestamp(org, device, timestamp)
-        if backend_pkt:
-            break
-    if not backend_pkt:
-        _validate_error("Unable to retrieve packet from the backend")
-    _validate_success()
-
-    click.secho("\n[COMPLETE] All validation steps passed!", fg="green", bold=True)
-    click.secho("Packet metadata:")
-    click.secho(f'\tname:     "{backend_pkt.device_name}"')
-    click.secho(f'\tpayload:  "{backend_pkt.payload}"')
-    click.secho(f"\tsequence: {backend_pkt.sequence}")
+    statuses = [r.status for r in rows]
+    failed = _CHECK_FAIL in statuses
+    # Every row skipped (e.g. --timeout 0 and no --device-id) proves nothing.
+    checked = _CHECK_OK in statuses
+    marks = _check_marks()
+    click.echo("")
+    for r in rows:
+        _print_check(marks, r.check, r.status, r.summary, r.advice)
+    _print_check_footer(
+        statuses,
+        "Key setup has problems." if failed
+        else "Key setup looks right." if checked
+        else "Nothing was checked.",
+    )
+    if failed or not checked:
+        raise SystemExit(1)
 
 
 @cli.group(cls=HubbleGroup)
@@ -3821,12 +3995,7 @@ class _LazyOrg:
 
     def resolve(self) -> Organization:
         if self._org is None:
-            try:
-                self._org = Organization(org_id=self._org_id, api_token=self._token)
-            except InvalidCredentialsError:
-                raise _credentials_error(
-                    org_id=self._org_id, token=self._token
-                ) from None
+            self._org = _org_or_fail(self._org_id, self._token)
         return self._org
 
 

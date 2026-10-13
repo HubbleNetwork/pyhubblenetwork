@@ -235,6 +235,18 @@ class TestEmptyAndHiddenStates:
         assert "1 packet(s) failed to decrypt and were hidden" in res.stderr
         assert "--show-failed-decryption" in res.stderr
 
+    def test_hidden_failures_are_not_tallied_as_zero_failed(self):
+        res = _scan(["--key", KEY_HEX], [_eax(), _eax(1)],
+                    decrypted_for={_eax().eid: _decrypted()})
+        err = ANSI.sub("", res.stderr)
+        assert "1 decrypted" in err
+        assert "0 failed" not in err
+
+    def test_shown_failures_keep_the_full_tally(self):
+        res = _scan(["--key", KEY_HEX, "--show-failed-decryption"],
+                    [_eax(), _eax(1)], decrypted_for={_eax().eid: _decrypted()})
+        assert "1 decrypted, 1 failed" in ANSI.sub("", res.stderr)
+
     def test_no_hidden_notice_when_flag_is_set(self):
         res = _scan(["--key", KEY_HEX, "--show-failed-decryption"],
                     [_eax(), _eax(1)], decrypted_for={_eax().eid: _decrypted()})
@@ -299,39 +311,6 @@ class TestSummaryReconciles:
         res = _scan([], [_eax()])
         for line in res.stdout.splitlines():
             assert line == line.rstrip(), repr(line)
-
-
-class TestBleDetectPayloadFormat:
-    """`ble detect` prints payloads too, so it follows the same auto default."""
-
-    @staticmethod
-    def _detect(args):
-        pkt = _eax()
-        with patch("hubblenetwork.cli.ble_mod.scan_single", return_value=pkt), \
-             patch("hubblenetwork.cli.decrypt_eax",
-                   return_value=_decrypted(payload=b"T=21.4")):
-            return CliRunner().invoke(
-                cli, ["ble", "detect", "--key", KEY_HEX, "-t", "1", *args]
-            )
-
-    def test_tabular_defaults_to_auto(self):
-        res = self._detect([])
-        assert res.exit_code == 0
-        assert "T=21.4" in res.stdout
-        assert "VD0yMS40" not in res.stdout
-
-    def test_json_keeps_base64(self):
-        res = self._detect(["-o", "json"])
-        assert res.exit_code == 0
-        assert "VD0yMS40" in res.stdout
-
-    def test_explicit_format_wins(self):
-        res = self._detect(["--payload-format", "base64"])
-        assert "VD0yMS40" in res.stdout
-
-    def test_auto_is_an_accepted_choice(self):
-        res = CliRunner().invoke(cli, ["ble", "detect", "--help"])
-        assert "auto" in res.stdout
 
 
 def _ctr(seq_no=305, nbytes=14):

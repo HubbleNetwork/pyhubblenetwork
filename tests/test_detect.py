@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-from unittest.mock import MagicMock, patch
 
 from hubblenetwork import DEVICE_UPTIME, UNIX_TIME
 from hubblenetwork import detect as detect_mod
@@ -15,7 +14,6 @@ from hubblenetwork.detect import (
     CtrCounterModeDetector,
     Detection,
     EaxExponentDetector,
-    detect_eid_type,
 )
 
 
@@ -218,103 +216,6 @@ class TestEaxExponentDetector:
         assert d.result == "PKT"
         assert d.label is None
         assert seen == [12]
-
-
-# ---------------------------------------------------------------------------
-# detect_eid_type
-# ---------------------------------------------------------------------------
-
-
-class TestDetectEidType:
-    def test_epoch_only(self):
-        pkt = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is mock_dec
-        assert label == "UNIX_TIME"
-        assert ambiguous is False
-
-    def test_counter_only(self):
-        pkt = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return mock_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else None
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is mock_dec
-        assert label == "DEVICE_UPTIME"
-        assert ambiguous is False
-
-    def test_ambiguous(self):
-        pkt = MagicMock()
-        epoch_dec = MagicMock()
-        counter_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            return counter_dec if kwargs.get("counter_mode") == "DEVICE_UPTIME" else epoch_dec
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is pkt
-        assert dec is epoch_dec  # epoch preferred
-        assert label == "AMBIGUOUS"
-        assert ambiguous is True
-
-    def test_neither(self):
-        pkt = MagicMock()
-
-        with patch("hubblenetwork.detect.decrypt", return_value=None):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt])
-
-        assert enc is None
-        assert dec is None
-        assert label is None
-        assert ambiguous is False
-
-    def test_stops_early_when_both_found(self):
-        """Stops after pkts[0] resolves both modes; pkts[1] is never processed."""
-        pkt0 = MagicMock()
-        pkt1 = MagicMock()
-
-        with patch("hubblenetwork.detect.decrypt", return_value=MagicMock()) as mock_decrypt:
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt0, pkt1])
-
-        # Both modes resolved on pkt0: 1 epoch call + 1 counter call = 2 total.
-        assert mock_decrypt.call_count == 2
-        assert enc is pkt0
-        assert label == "AMBIGUOUS"
-        assert ambiguous is True
-
-    def test_advances_to_next_packet_when_first_fails(self):
-        """Loop continues past pkts[0] when it fails both modes."""
-        pkt0 = MagicMock()
-        pkt1 = MagicMock()
-        mock_dec = MagicMock()
-
-        def side_effect(*args, **kwargs):
-            if args[1] is pkt0:
-                return None
-            return None if kwargs.get("counter_mode") == "DEVICE_UPTIME" else mock_dec
-
-        with patch("hubblenetwork.detect.decrypt", side_effect=side_effect):
-            enc, dec, label, ambiguous = detect_eid_type(b"k" * 16, [pkt0, pkt1])
-
-        assert enc is pkt1
-        assert dec is mock_dec
-        assert label == "UNIX_TIME"
-        assert ambiguous is False
 
 
 # ---------------------------------------------------------------------------

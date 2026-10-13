@@ -162,7 +162,7 @@ class TestCounterEidValidation:
 
 
 # ---------------------------------------------------------------------------
-# CLI option validation (ble scan / ble detect)
+# CLI option validation (ble scan)
 # ---------------------------------------------------------------------------
 
 class TestCliCounterModeOptions:
@@ -190,31 +190,8 @@ class TestCliCounterModeOptions:
         ])
         assert result.exit_code != 0
 
-    def test_detect_counter_mode_with_days_errors(self, runner):
-        from hubblenetwork.cli import cli
-
-        result = runner.invoke(cli, [
-            "ble", "detect",
-            "--key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "--counter-mode", "DEVICE_UPTIME",
-            "--days", "3",
-        ])
-        assert result.exit_code != 0
-
     def test_scan_help_shows_counter_mode(self, runner):
         from hubblenetwork.cli import cli
 
         result = runner.invoke(cli, ["ble", "scan", "--help"])
         assert "--counter-mode" in result.output
-
-    def test_detect_help_shows_counter_mode(self, runner):
-        from hubblenetwork.cli import cli
-
-        result = runner.invoke(cli, ["ble", "detect", "--help"])
-        assert "--counter-mode" in result.output
-
-    def test_detect_help_shows_days(self, runner):
-        from hubblenetwork.cli import cli
-
-        result = runner.invoke(cli, ["ble", "detect", "--help"])
-        assert "--days" in result.output

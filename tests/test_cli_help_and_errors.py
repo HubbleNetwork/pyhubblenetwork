@@ -64,7 +64,7 @@ class TestEveryCommandDescribesItself:
 
     def test_root_help_lists_every_command(self):
         out = _plain(_run(["--help"]))
-        assert len(LEAVES) == 27  # guard: update the help sections if this grows
+        assert len(LEAVES) == 26  # guard: update the help sections if this grows
         for path in LEAVES:
             p, cmd = _command_index(cli)[path]
             assert _invocation(p, cmd) in out
@@ -130,7 +130,7 @@ class TestUnknownCommandSuggestions:
             ("register-device", "org register-device"),
             ("provision", "ready provision"),
             ("mock-scan", "sat mock-scan"),
-            ("detect", "ble detect"),
+            ("validate", "ble validate"),
             ("devices", "metrics devices"),
         ],
     )
@@ -204,6 +204,14 @@ class TestCredentialErrors:
         code, out = _main_output(["validate-credentials"], capsys, monkeypatch=monkeypatch)
         assert code == 1
         assert "No valid Hubble credentials" in out
+
+    def test_decode_without_credentials_shows_its_own_invocation(self, capsys, monkeypatch):
+        """Credential errors show the flag form for the command that was run."""
+        code, out = _main_output(["ble", "decode", "-t", "1"], capsys, monkeypatch=monkeypatch)
+        assert code == 1
+        assert "export HUBBLE_ORG_ID=" in out
+        assert "ble decode --org-id <id> --token <token>" in out
+        assert "org --org-id <id> --token <token> list-devices" not in out
 
     def test_ingest_without_credentials_shows_its_own_invocation(self, capsys, monkeypatch):
         """--ingest used to be env-var only, and pointed at the org command."""
@@ -295,7 +303,7 @@ class TestReadmeStaysTrue:
         found = []
         lang = None
         in_fence = False
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("```"):
                 if in_fence:
                     in_fence, lang = False, None
@@ -364,7 +372,7 @@ class TestReadmeStaysTrue:
 
         import hubblenetwork
 
-        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+        text = pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text(encoding="utf-8")
         block = re.search(r"from hubblenetwork import \(\n(.*?)\)", text, re.S)
         assert block, "README lost its import example"
         names = [
