@@ -351,7 +351,7 @@ class TestFlagsReachEveryCommand:
         assert "--no-color" in out
 
     def test_they_stay_hidden_on_leaf_help(self):
-        """26 help screens should not each grow two rendering flags."""
+        """37 help screens should not each grow two rendering flags."""
         out = CliRunner().invoke(cli, ["ble", "scan", "--help"]).stdout
         assert "--no-ascii" not in out
 

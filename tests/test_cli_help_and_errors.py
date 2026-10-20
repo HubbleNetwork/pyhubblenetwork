@@ -64,7 +64,7 @@ class TestEveryCommandDescribesItself:
 
     def test_root_help_lists_every_command(self):
         out = _plain(_run(["--help"]))
-        assert len(LEAVES) == 26  # guard: update the help sections if this grows
+        assert len(LEAVES) == 37  # guard: update the help sections if this grows
         for path in LEAVES:
             p, cmd = _command_index(cli)[path]
             assert _invocation(p, cmd) in out
@@ -79,7 +79,7 @@ class TestEveryCommandDescribesItself:
         for line in out.splitlines():
             assert len(line.rstrip()) <= 80, repr(line)
 
-    @pytest.mark.parametrize("group", ["ble", "ready", "org", "sat", "metrics"])
+    @pytest.mark.parametrize("group", ["ble", "ready", "org", "claim", "sat", "metrics"])
     def test_group_help_shows_full_invocations(self, group):
         out = _plain(_run([group, "--help"]))
         assert f"{group} " in out
@@ -251,7 +251,7 @@ class TestHelpNeedsNoCredentials:
 
 
 class TestBareGroup:
-    @pytest.mark.parametrize("group", ["ble", "ready", "org", "sat", "metrics"])
+    @pytest.mark.parametrize("group", ["ble", "ready", "org", "claim", "sat", "metrics"])
     def test_bare_group_shows_its_commands_not_an_error_prefix(
         self, group, capsys, monkeypatch
     ):
