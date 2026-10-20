@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from .claim import encode_claim_token
 from .errors import (
     APITimeout,
     BackendError,
@@ -23,6 +24,11 @@ DECODE_BATCH_LIMIT = 25
 # ...and any advertisement received longer ago, or further ahead, than these.
 DECODE_MAX_AGE_S = 72 * 3600
 DECODE_MAX_FUTURE_S = 2 * 3600
+# POST /org/{id}/devices rejects n_devices above this (platform-api devices.go,
+# `binding:"omitempty,min=1,max=1000"`), so larger runs are split.
+REGISTER_BATCH_LIMIT = 1000
+# PATCH /org/{id}/devices takes at most this many updates per request.
+BATCH_UPDATE_LIMIT = 1000
 # Default values for location metadata when ingesting packets
 # These are placeholders when actual accuracy/altitude data is unavailable
 # (the decode endpoint requires a location, so a packet without one gets 0,0).
@@ -81,6 +87,14 @@ def _decode_packets_endpoint(credentials: Credentials) -> str:
 def _device_endpoint(credentials: Credentials, device_id: str) -> str:
     """One device: GET reads it, PATCH updates it, DELETE removes it."""
     return f"/org/{credentials.org_id}/devices/{device_id}"
+
+
+def _claims_endpoint(credentials: Credentials) -> str:
+    return f"/org/{credentials.org_id}/device_claims"
+
+
+def _claim_endpoint(credentials: Credentials, claim_id: str) -> str:
+    return f"/org/{credentials.org_id}/device_claims/{claim_id}"
 
 
 def _retrieve_org_metadata_endpoint(credentials: Credentials) -> str:
@@ -183,16 +197,25 @@ def register_device(
     period_in_seconds: int | None = None,
     period_exponent: int | None = None,
     tags: dict[str, str] | None = None,
+    n_devices: int = 1,
+    activated: bool | None = None,
+    device_claims: list[dict | None] | None = None,
 ) -> Any:
-    """Create a new device and return it.
+    """Create ``n_devices`` new devices and return the response.
 
     Args:
-        tags: Optional custom tags for the new device. The Cloud API accepts a
-            per-device tags map in a list matching ``n_devices``; when provided
-            here it is sent as a single-element list.
+        tags: Optional custom tags, applied to every new device. The Cloud API
+            takes one tags map per device, so it is repeated ``n_devices`` times.
+        activated: ``False`` creates the devices deactivated (no EIDs, no
+            decode cost) and needs the ``can_deactivate_devices`` entitlement.
+        device_claims: One entry per device: ``{"claim_id": ...}`` links it to
+            an existing claim, ``{"new_claim_using_device_id": True}`` (plus an
+            optional ``destination_org_id``) mints a claim whose ID is the
+            device's ID, and ``None`` leaves it unlinked. Linking needs the
+            ``can_create_device_claims`` entitlement.
     """
     data: dict = {
-        "n_devices": 1,
+        "n_devices": n_devices,
         "encryption": encryption or "AES-256-CTR",
     }
     if counter_source is not None:
@@ -203,7 +226,11 @@ def register_device(
             eid_rotation["period_exponent"] = period_exponent
         data["eid_rotation"] = eid_rotation
     if tags is not None:
-        data["tags"] = [tags]
+        data["tags"] = [tags] * n_devices
+    if activated is not None:
+        data["activated"] = activated
+    if device_claims is not None:
+        data["device_claims"] = device_claims
     return cloud_request(
         method="POST",
         env=env,
@@ -494,4 +521,205 @@ def device_metrics(
         path=_device_metrics_endpoint(credentials),
         credentials=credentials,
         params=params,
+    )[0]
+
+
+# ---------------------------------------------------------------------------
+# Device claims
+# ---------------------------------------------------------------------------
+
+
+def set_device_claim(
+    *, credentials: Credentials, env: Environment, device_id: str, claim_id: str
+) -> Any:
+    """Link a device to an AVAILABLE claim, or unlink it with ``claim_id=""``.
+
+    Linking needs the ``can_create_device_claims`` entitlement; unlinking
+    does not.
+    """
+    return cloud_request(
+        method="PATCH",
+        path=_device_endpoint(credentials, device_id),
+        credentials=credentials,
+        env=env,
+        json={"set_device_claim_id": claim_id},
+    )[0]
+
+
+def batch_update_devices(
+    *, credentials: Credentials, env: Environment, updates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Update up to ``BATCH_UPDATE_LIMIT`` devices in one ``PATCH /org/{id}/devices``.
+
+    Each update is ``{"device_id": ..., "set_<field>": ...}``, the single-device
+    PATCH body plus its ID. Returns the updated devices' JSON.
+
+    What the cloud does with a batch (device-provisioning/devices/update.go):
+    every item must request the same kind of change (ordinary fields such as
+    ``set_device_claim_id``, ``set_activated``, or ``set_destination_org_id``).
+    For ordinary fields every check runs before anything is written, so a
+    missing device (400 ``device <id> not found``, naming only the first one),
+    an unavailable claim (409) or a missing entitlement (403) applies nothing.
+    Only a failure while writing (500, or a 409 when the claim is redeemed or
+    deleted mid-batch) can leave the batch partly applied.
+    """
+    if not 1 <= len(updates) <= BATCH_UPDATE_LIMIT:
+        raise ValueError(
+            f"1 to {BATCH_UPDATE_LIMIT} updates per request, got {len(updates)}"
+        )
+    data = cloud_request(
+        method="PATCH",
+        path=_list_devices_endpoint(credentials),
+        credentials=credentials,
+        env=env,
+        json={"updates": updates},
+    )[0]
+    return (data or {}).get("devices", [])
+
+
+def set_device_activated(
+    *, credentials: Credentials, env: Environment, device_id: str, activated: bool
+) -> Any:
+    """Activate or deactivate a device. The cloud does it asynchronously.
+
+    ``set_activated`` must be the only field in its request. Deactivating needs
+    the ``can_deactivate_devices`` entitlement; activating does not.
+    """
+    return cloud_request(
+        method="PATCH",
+        path=_device_endpoint(credentials, device_id),
+        credentials=credentials,
+        env=env,
+        json={"set_activated": activated},
+    )[0]
+
+
+def create_claim(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    destination_org_id: str | None = None,
+    claim_token: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Create an empty claim. Needs the ``can_create_device_claims`` entitlement."""
+    data: dict = {}
+    if destination_org_id is not None:
+        data["destination_org_id"] = destination_org_id
+    if claim_token is not None:
+        data["claim_token"] = claim_token
+    if name is not None:
+        data["name"] = name
+    return cloud_request(
+        method="POST",
+        path=_claims_endpoint(credentials),
+        credentials=credentials,
+        env=env,
+        json=data,
+    )[0]
+
+
+def list_claims(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    role: str = "source",
+    status: str | None = None,
+    continuation_token: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """One page of claims: ``({"claims": [...]}, next_continuation_token)``.
+
+    ``role="source"`` lists claims this org created; ``"destination"`` lists
+    claims pinned to this org (directionless claims never appear there).
+    """
+    params: dict[str, Any] = {"role": role}
+    if status is not None:
+        params["filter_status"] = status
+    return cloud_request(
+        method="GET",
+        path=_claims_endpoint(credentials),
+        credentials=credentials,
+        env=env,
+        params=params,
+        continuation_token=continuation_token,
+    )
+
+
+def get_claim(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    claim_id: str | None = None,
+    claim_token: str | None = None,
+) -> dict[str, Any]:
+    """Fetch one claim by exactly one of ``claim_id`` or ``claim_token``.
+
+    The response carries ``device_count``. A claim this org can't see is a
+    404 (``NotFoundError``), never a 403.
+    """
+    if (claim_id is None) == (claim_token is None):
+        raise ValueError("pass exactly one of claim_id, claim_token")
+    if claim_token is not None:
+        path = _claim_endpoint(credentials, encode_claim_token(claim_token))
+        params = {"id_type": "claim_token"}
+    else:
+        path = _claim_endpoint(credentials, claim_id)
+        params = None
+    return cloud_request(
+        method="GET", path=path, credentials=credentials, env=env, params=params
+    )[0]
+
+
+def update_claim(
+    *,
+    credentials: Credentials,
+    env: Environment,
+    claim_id: str,
+    destination_org_id: str | None = None,
+    claim_token: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Change an AVAILABLE claim. ``None`` leaves a field alone, ``""`` clears it."""
+    data: dict = {}
+    if destination_org_id is not None:
+        data["set_destination_org_id"] = destination_org_id
+    if claim_token is not None:
+        data["set_claim_token"] = claim_token
+    if name is not None:
+        data["set_name"] = name
+    return cloud_request(
+        method="PATCH",
+        path=_claim_endpoint(credentials, claim_id),
+        credentials=credentials,
+        env=env,
+        json=data,
+    )[0]
+
+
+def delete_claim(
+    *, credentials: Credentials, env: Environment, claim_id: str
+) -> dict[str, Any]:
+    """Delete an AVAILABLE claim, unlinking its devices. Returns the claim as it was."""
+    return cloud_request(
+        method="DELETE",
+        path=_claim_endpoint(credentials, claim_id),
+        credentials=credentials,
+        env=env,
+    )[0]
+
+
+def redeem_claim(
+    *, credentials: Credentials, env: Environment, claim_id: str
+) -> dict[str, Any]:
+    """Start moving a claim's devices into this org. Returns the IN_PROGRESS claim.
+
+    The move finishes in the background; poll :func:`get_claim` until
+    ``status`` is ``COMPLETED``. Calling again while it is in progress for this
+    org rejoins the same job.
+    """
+    return cloud_request(
+        method="POST",
+        path=_claim_endpoint(credentials, claim_id) + "/claim",
+        credentials=credentials,
+        env=env,
     )[0]
