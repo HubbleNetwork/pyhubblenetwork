@@ -64,6 +64,8 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
 | Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
+| Hand devices to a customer's org | [`claim`](#hand-devices-to-another-org) |
+| Take ownership of devices sent to me | [`claim redeem`](#hand-devices-to-another-org) |
 | Hear a device's satellite uplink | [`sat scan`](#receive-a-devices-satellite-uplink) |
 | Capture raw RF for offline analysis | [`sat record`](#one-shot-capture-record--signal-report) |
 
@@ -73,7 +75,8 @@ Reference: [Reading the output](#reading-the-output) ·
 [Python library](#using-it-as-a-python-library) ·
 [Troubleshooting](#troubleshooting)
 
-Commands live in groups — **`org`** (your devices in the Hubble Cloud), **`ble`**
+Commands live in groups — **`org`** (your devices in the Hubble Cloud), **`claim`**
+(hand devices to another org), **`ble`**
 (nearby devices over Bluetooth), **`sat`** (satellite packets via PlutoSDR) and
 **`metrics`** (fleet counts) — so it is usually `hubblenetwork <group> <command>`. The
 two setup commands, `doctor` and `validate-credentials`, sit at the top level.
@@ -232,6 +235,71 @@ tabular output when you want the run itself bounded.
 `DEVICE_UPTIME` — either `--period-seconds` or `--period-exponent` (period = 2ⁿ
 seconds; the cloud accepts 10-15, default 15 ≈ 9h). The two period flags are mutually
 exclusive.
+
+
+## Hand devices to another org
+
+A **claim** moves devices from the org that owns them (typically a manufacturer that
+provisions them at the factory) to another org, with no shared credentials or keys.
+The source org links devices to a claim; the destination org redeems it, and every
+linked device moves across and is activated in one step.
+
+```bash
+# Source org: create a claim, then put devices on it
+hubblenetwork claim create --destination-org <org-id> --name "lot 42"
+hubblenetwork claim link <claim-id> <id> <id>
+hubblenetwork claim register-device -n 10 --claim <claim-id> --deactivated
+
+# ...or give each new device a claim of its own (claim ID = device ID)
+hubblenetwork claim register-device -n 10 --new-claim --deactivated
+
+hubblenetwork claim list                    # claims this org created
+hubblenetwork claim get <claim-id>          # status and device count
+hubblenetwork claim update <claim-id> --directionless
+hubblenetwork claim unlink <id>
+hubblenetwork claim delete <claim-id>       # unredeemed claims only
+
+# Destination org: find and redeem
+hubblenetwork claim list --incoming
+hubblenetwork claim get --claim-token "(01)12345678901231(21)ABC123"
+hubblenetwork claim redeem <claim-id>       # shows the claim, asks, then waits for the move
+hubblenetwork claim redeem <claim-id> --yes -f json   # in a script: no prompt
+```
+
+A claim goes `AVAILABLE` → `IN_PROGRESS` → `COMPLETED`, and only an `AVAILABLE` claim
+can be changed, deleted, or have devices linked or unlinked. A completed claim stays as
+a permanent record of the hand-off.
+
+* **Directional or directionless.** With `--destination-org`, only that org can redeem
+  the claim, so a leaked claim ID is harmless. Without it, whoever presents the claim
+  ID first wins it. Use that only when the recipient isn't known yet, and share the ID
+  only with them. Directionless claims never show up in `claim list --incoming`; the
+  recipient redeems them by ID.
+* **Claim tokens.** `--claim-token` adds an alternate ID that you can print on the
+  box: a UUID, or a GS1-128 payload using AI `01` (GTIN) and/or `21` (serial). `get`
+  and `redeem` accept it in place of the claim ID.
+* **Entitlements.** Creating claims and linking devices need the
+  `can_create_device_claims` entitlement, and `--deactivated` / `claim deactivate`
+  need `can_deactivate_devices`. Both are off by default, and Hubble enables them per
+  org. Redeeming needs no entitlement.
+* **Deactivated inventory.** A deactivated device generates no EIDs, so it costs
+  nothing and its packets don't resolve. Redeeming its claim activates it.
+  `claim activate <id>` does it by hand, for testing.
+* **Provisioning.** The cloud registers devices before linking them and doesn't roll
+  back. If `register-device --claim` fails on the link, the devices may exist
+  unlinked, and the error says so.
+
+Redeeming can't be undone: the source org loses the devices and their packets. So
+`redeem` first shows the claim (source org, status, device count, and a warning if no
+devices are linked) and asks before going ahead. `--yes` skips the question. Without a
+terminal to answer it, nothing is redeemed and the error says to pass `--yes`. The
+preview and prompt go to stderr, so `-f json` output stays clean.
+
+`redeem` waits up to `--timeout` (120s) for the move and exits 1 if it is still in
+progress, which carries on in the background. `--no-wait` returns at once. Rerunning
+`redeem` while it is in progress for your org is safe and doesn't ask again; on a claim
+already redeemed into your org it does nothing and exits 0. `list`, `get`, `create`, `update`, `redeem`
+and `register-device` take `-f json`.
 
 
 ## Receive a device's satellite uplink
@@ -430,7 +498,7 @@ Import from the package top-level for a stable surface:
 ```python
 from hubblenetwork import (
     ble, cloud, sat,
-    Organization, Device, Credentials, Environment,
+    Organization, Device, DeviceClaim, Credentials, Environment,
     EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket,
     DecryptedPacket, SatellitePacket, Location,
     decrypt, decrypt_eax, decrypt_satellite,
@@ -506,6 +574,30 @@ for pkt, result in zip(pkts, org.decode_packets(pkts)):
 variants — `ble.scan()` / `ble.scan_async()`. The CLI's auto-detection is available
 too, in `hubblenetwork.detect`: `CtrCounterModeDetector` / `EaxExponentDetector` are
 the per-scan objects that own the sweep and its cache.
+
+Device claims, from both sides of the hand-off. Errors are `hubblenetwork.errors`
+types: `NotFoundError` (404, which is also what a claim pinned to another org
+returns), `ConflictError` (409, not `AVAILABLE`), and `PermissionDeniedError` (a
+missing entitlement or scope):
+
+```python
+from hubblenetwork import DeviceClaim
+
+# Source org
+claim: DeviceClaim = org.create_claim(destination_org_id=customer_org_id, name="lot 42")
+devices = org.register_devices(10, claim_id=claim.claim_id, activated=False)
+org.link_device(existing.id, claim.claim_id)        # or unlink_device(id)
+for c in org.iter_claims():                         # incoming=True for the other side
+    print(c.claim_id, c.status, c.destination_org_id)
+
+# Destination org
+claim = customer.get_claim(claim_token="(01)12345678901231(21)ABC123")
+done = customer.redeem_claim(claim.claim_id)        # waits; check done.status
+```
+
+`register_devices(n, new_claim=True)` gives each device its own claim; `Device.claim_id`
+records which one. `update_claim()` takes `None` to leave a field alone and `""` to clear
+it. `set_device_activated(id, bool)` activates or deactivates a device.
 
 Satellite, which manages the Docker container for you:
 
