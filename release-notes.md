@@ -1,5 +1,28 @@
 # Release Notes
 
+## [0.15.0] - 2026-10-20
+
+### Added
+- feat(cli): make ble validate diagnose a device's key setup
+- feat(cli): decrypt BLE packets in the cloud with ble decode
+
+### Removed
+- `ble detect` and `ble check-time` are removed in favor of `ble validate`.
+- both exit with a usage error pointing at `ble validate --key <key>`.
+
+### Fixed
+- fix(crypto): derive the AES-EAX EID key per counter block
+- fix(sat): Add docker image automatic updates
+
+### Documentation
+- docs: trim README verbosity
+- docs: remove the ready command group from the README
+- docs: correct README claims against the CLI and SDK
+- docs: restructure README around use cases
+
+### Tests
+- test: run the docs and terminal tests on Windows
+
 ## [0.14.0] - 2026-08-26
 
 ### Added
