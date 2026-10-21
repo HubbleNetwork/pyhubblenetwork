@@ -1,0 +1,18 @@
+# credentials: one .env per org; only the example is committed
+.env
+.env.*
+!.env.example
+
+# device keys and claim tokens -- anyone holding a claim token can redeem
+# the device, so none of these belong in git
+keys/
+qr_codes/
+labels/
+*.bak
+
+# junk
+__pycache__/
+.DS_Store
+*.swp
+*.tmp
+*.out.csv
