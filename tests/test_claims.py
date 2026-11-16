@@ -143,13 +143,12 @@ class TestCloudCalls:
         cloud.create_claim(credentials=CREDENTIALS, env=ENV)
         assert req.call_args.kwargs["json"] == {}
 
-    def test_list_passes_role_status_and_token(self, req):
+    def test_list_passes_source_role_status_and_token(self, req):
         cloud.list_claims(
-            credentials=CREDENTIALS, env=ENV, role="destination",
-            status="AVAILABLE", continuation_token="ct",
+            credentials=CREDENTIALS, env=ENV, status="AVAILABLE", continuation_token="ct",
         )
         kw = req.call_args.kwargs
-        assert kw["params"] == {"role": "destination", "filter_status": "AVAILABLE"}
+        assert kw["params"] == {"role": "source", "filter_status": "AVAILABLE"}
         assert kw["continuation_token"] == "ct"
 
     def test_get_by_id(self, req):
@@ -185,14 +184,6 @@ class TestCloudCalls:
         kw = req.call_args.kwargs
         assert (kw["method"], kw["path"]) == ("DELETE", f"/org/org-src/device_claims/{CLAIM_ID}")
 
-    def test_redeem_posts_to_claim_action(self, req):
-        cloud.redeem_claim(credentials=CREDENTIALS, env=ENV, claim_id=CLAIM_ID)
-        kw = req.call_args.kwargs
-        assert (kw["method"], kw["path"]) == (
-            "POST", f"/org/org-src/device_claims/{CLAIM_ID}/claim"
-        )
-        assert kw.get("json") is None
-
     def test_link_and_unlink_patch_the_device(self, req):
         cloud.set_device_claim(credentials=CREDENTIALS, env=ENV, device_id="d1", claim_id=CLAIM_ID)
         assert req.call_args.kwargs["json"] == {"set_device_claim_id": CLAIM_ID}
@@ -219,19 +210,15 @@ class TestCloudCalls:
             cloud.batch_update_devices(credentials=CREDENTIALS, env=ENV, updates=updates)
         req.assert_not_called()
 
-    def test_set_activated_is_sent_alone(self, req):
-        cloud.set_device_activated(credentials=CREDENTIALS, env=ENV, device_id="d1", activated=False)
-        assert req.call_args.kwargs["json"] == {"set_activated": False}
-
-    def test_register_with_claims_and_deactivated(self, req):
+    def test_register_with_claims(self, req):
         req.return_value = ({"devices": []}, None)
         cloud.register_device(
-            credentials=CREDENTIALS, env=ENV, n_devices=2, activated=False,
+            credentials=CREDENTIALS, env=ENV, n_devices=2,
             tags={"a": "b"}, device_claims=[{"claim_id": CLAIM_ID}] * 2,
         )
         body = req.call_args.kwargs["json"]
         assert body["n_devices"] == 2
-        assert body["activated"] is False
+        assert "activated" not in body
         assert body["tags"] == [{"a": "b"}, {"a": "b"}]
         assert body["device_claims"] == [{"claim_id": CLAIM_ID}] * 2
 
@@ -257,10 +244,10 @@ def _reg_response(n):
 
 
 class TestOrganization:
-    def test_register_devices_new_claim_uses_device_id(self):
+    def test_register_devices_claimable_uses_device_id(self):
         org = _org()
         with patch.object(cloud, "register_device", return_value=_reg_response(2)) as m:
-            devices = org.register_devices(2, new_claim=True, destination_org_id=DEST, activated=False)
+            devices = org.register_devices(2, claimable=True, destination_org_id=DEST)
         kw = m.call_args.kwargs
         assert kw["n_devices"] == 2
         assert kw["device_claims"] == [
@@ -268,7 +255,21 @@ class TestOrganization:
         ] * 2
         assert [d.claim_id for d in devices] == ["dev-0", "dev-1"]
         assert devices[0].key == bytes(32)
-        assert devices[0].active is False
+
+    def test_register_devices_claimable_without_destination_is_directionless(self):
+        with patch.object(cloud, "register_device", return_value=_reg_response(1)) as m:
+            _org().register_devices(1, claimable=True)
+        assert m.call_args.kwargs["device_claims"] == [{"new_claim_using_device_id": True}]
+
+    @pytest.mark.parametrize("dest,entry", [
+        (None, {"new_claim_using_device_id": True}),
+        (DEST, {"new_claim_using_device_id": True, "destination_org_id": DEST}),
+    ])
+    def test_register_device_claimable(self, dest, entry):
+        with patch.object(cloud, "register_device", return_value=_reg_response(1)) as m:
+            dev = _org().register_device(claimable=True, destination_org_id=dest)
+        assert m.call_args.kwargs["device_claims"] == [entry]
+        assert dev.claim_id == "dev-0"
 
     def test_register_devices_existing_claim(self):
         org = _org()
@@ -282,10 +283,10 @@ class TestOrganization:
         with patch.object(cloud, "register_device", return_value=_reg_response(1)) as m:
             org.register_devices(1)
         assert m.call_args.kwargs["device_claims"] is None
-        assert m.call_args.kwargs["activated"] is None
+        assert "activated" not in m.call_args.kwargs
 
     @pytest.mark.parametrize("kwargs", [
-        {"claim_id": CLAIM_ID, "new_claim": True},
+        {"claim_id": CLAIM_ID, "claimable": True},
         {"destination_org_id": DEST},
         {"claim_id": CLAIM_ID, "destination_org_id": DEST},
     ])
@@ -323,7 +324,7 @@ class TestOrganization:
         tags = {"batch": "7"}
         with patch.object(cloud, "register_device", side_effect=fake):
             devices = _org().register_devices(
-                2500, new_claim=True, tags=tags,
+                2500, claimable=True, tags=tags,
                 on_batch=lambda done, total: progress.append((done, total)),
             )
         assert [c["n_devices"] for c in calls] == [1000, 1000, 500]
@@ -377,9 +378,8 @@ class TestOrganization:
             ({"claims": [_claim_json(claim_id="c2")]}, ""),
         ]
         with patch.object(cloud, "list_claims", side_effect=pages) as m:
-            got = [c.claim_id for c in _org().iter_claims(incoming=True)]
+            got = [c.claim_id for c in _org().iter_claims()]
         assert got == ["c1", "c2"]
-        assert m.call_args_list[0].kwargs["role"] == "destination"
         assert m.call_args_list[1].kwargs["continuation_token"] == "next"
 
     def test_iter_claims_rejects_unknown_status(self):
@@ -424,34 +424,77 @@ class TestOrganization:
             _org().link_devices(["d1"], "")
         m.assert_not_called()
 
-    def test_redeem_polls_until_completed(self):
-        polls = []
-        with patch.object(cloud, "redeem_claim", return_value=_claim_json(status="IN_PROGRESS")), \
-             patch.object(cloud, "get_claim", side_effect=[
-                 _claim_json(status="IN_PROGRESS"),
-                 _claim_json(status="COMPLETED", device_count=2),
-             ]) as get, \
-             patch("hubblenetwork.org.time.sleep"):
-            c = _org().redeem_claim(CLAIM_ID, on_poll=lambda c, t: polls.append(c.status))
-        assert c.status == "COMPLETED" and c.device_count == 2
-        assert polls == ["IN_PROGRESS", "COMPLETED"]
-        assert get.call_args.kwargs["claim_id"] == CLAIM_ID
+class TestClaimExistingDevices:
+    def test_create_claim_links_devices(self):
+        org = _org()
+        with patch.object(cloud, "create_claim", return_value=_claim_json()) as create, \
+             patch.object(cloud, "batch_update_devices", return_value=[{"id": "d1"}, {"id": "d2"}]) as upd:
+            c = org.create_claim(destination_org_id=DEST, device_ids=["d1", "d2", "d1"])
+        assert create.call_args.kwargs["destination_org_id"] == DEST
+        assert upd.call_args.kwargs["updates"] == [
+            {"device_id": "d1", "set_device_claim_id": CLAIM_ID},
+            {"device_id": "d2", "set_device_claim_id": CLAIM_ID},
+        ]
+        assert c.device_count == 2
 
-    def test_redeem_without_wait_does_not_poll(self):
-        with patch.object(cloud, "redeem_claim", return_value=_claim_json(status="IN_PROGRESS")), \
-             patch.object(cloud, "get_claim") as get:
-            c = _org().redeem_claim(CLAIM_ID, wait=False)
-        assert c.status == "IN_PROGRESS"
-        get.assert_not_called()
+    def test_create_claim_without_devices_links_nothing(self):
+        with patch.object(cloud, "create_claim", return_value=_claim_json()), \
+             patch.object(cloud, "batch_update_devices") as upd:
+            _org().create_claim()
+        upd.assert_not_called()
 
-    def test_redeem_returns_in_progress_claim_at_timeout(self):
-        clock = iter([0.0, 0.0, 5.0, 5.0])
-        with patch.object(cloud, "redeem_claim", return_value=_claim_json(status="IN_PROGRESS")), \
-             patch.object(cloud, "get_claim", return_value=_claim_json(status="IN_PROGRESS")), \
-             patch("hubblenetwork.org.time.sleep"), \
-             patch("hubblenetwork.org.time.monotonic", side_effect=lambda: next(clock)):
-            c = _org().redeem_claim(CLAIM_ID, timeout=5)
-        assert c.status == "IN_PROGRESS"
+    def test_create_claim_deletes_the_claim_when_linking_fails(self):
+        with patch.object(cloud, "create_claim", return_value=_claim_json()), \
+             patch.object(cloud, "batch_update_devices",
+                          side_effect=RequestError("400: device d9 not found")), \
+             patch.object(cloud, "delete_claim") as delete, \
+             pytest.raises(RequestError):
+            _org().create_claim(device_ids=["d9"])
+        assert delete.call_args.kwargs["claim_id"] == CLAIM_ID
+
+    def test_create_claim_reports_the_link_failure_not_the_cleanup(self):
+        with patch.object(cloud, "create_claim", return_value=_claim_json()), \
+             patch.object(cloud, "batch_update_devices",
+                          side_effect=RequestError("400: device d9 not found")), \
+             patch.object(cloud, "delete_claim", side_effect=ConflictError("409: nope")), \
+             pytest.raises(RequestError):
+            _org().create_claim(device_ids=["d9"])
+
+    @pytest.mark.parametrize("dest", [None, DEST])
+    def test_claim_devices_one_claim_each(self, dest):
+        made = iter([_claim_json(claim_id="c1"), _claim_json(claim_id="c2")])
+        seen = []
+        with patch.object(cloud, "create_claim", side_effect=lambda **kw: next(made)) as create, \
+             patch.object(cloud, "batch_update_devices", return_value=[{"id": "x"}]) as upd:
+            claims = _org().claim_devices(
+                ["d1", "d2", "d1"], destination_org_id=dest,
+                on_claim=lambda d, c, e: seen.append((d, c and c.claim_id, e)),
+            )
+        assert {d: c.claim_id for d, c in claims.items()} == {"d1": "c1", "d2": "c2"}
+        assert [c.kwargs["destination_org_id"] for c in create.call_args_list] == [dest, dest]
+        assert [c.kwargs["updates"][0]["set_device_claim_id"] for c in upd.call_args_list] == ["c1", "c2"]
+        assert seen == [("d1", "c1", None), ("d2", "c2", None)]
+
+    def test_claim_devices_keeps_going_past_one_failure(self):
+        made = iter([_claim_json(claim_id="c1"), _claim_json(claim_id="c2")])
+        errors = []
+        with patch.object(cloud, "create_claim", side_effect=lambda **kw: next(made)), \
+             patch.object(cloud, "batch_update_devices", side_effect=[
+                 RequestError("400: device d1 not found"), [{"id": "d2"}],
+             ]), \
+             patch.object(cloud, "delete_claim") as delete:
+            claims = _org().claim_devices(
+                ["d1", "d2"], on_claim=lambda d, c, e: e and errors.append(d)
+            )
+        assert list(claims) == ["d2"] and errors == ["d1"]
+        assert delete.call_args.kwargs["claim_id"] == "c1"
+
+    def test_claim_devices_stops_on_missing_entitlement(self):
+        with patch.object(cloud, "create_claim", side_effect=PermissionDeniedError(
+                "403: requires the can_create_device_claims entitlement")) as create, \
+             pytest.raises(PermissionDeniedError):
+            _org().claim_devices(["d1", "d2"])
+        assert create.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -482,14 +525,17 @@ class TestCliList:
         assert "1 claim " in _plain(res.stderr) or "1 claim\n" in _plain(res.stderr)
         assert "1 claims" not in _plain(res.stderr)
 
-    def test_incoming_and_status_are_passed(self):
+    def test_status_is_passed(self):
         org = _mock_org()
         org.iter_claims.return_value = iter([])
-        res = _run(["list", "--incoming", "--status", "available"], org)
+        res = _run(["list", "--status", "available"], org)
         assert res.exit_code == 0
-        kw = org.iter_claims.call_args.kwargs
-        assert kw["incoming"] is True and kw["status"] == "AVAILABLE"
-        assert "directionless claim never shows up here" in _plain(res.stderr)
+        assert org.iter_claims.call_args.kwargs["status"] == "AVAILABLE"
+        assert "claim create" in _plain(res.stderr)
+
+    def test_incoming_is_not_offered(self):
+        res = _run(["list", "--incoming"], _mock_org())
+        assert res.exit_code == 2
 
     def test_json(self):
         org = _mock_org()
@@ -543,11 +589,86 @@ class TestCliGetCreateUpdateDelete:
         org.create_claim.return_value = _claim(name="lot 42")
         res = _run(["create", "--name", "lot 42"], org)
         assert res.exit_code == 0
-        org.create_claim.assert_called_once_with(destination_org_id=None, claim_token=None, name="lot 42")
+        org.create_claim.assert_called_once_with(
+            destination_org_id=None, claim_token=None, name="lot 42", device_ids=()
+        )
         err = _plain(res.stderr)
         assert "Directionless" in err
         assert f"claim link {CLAIM_ID} <id>..." in err
         assert f"claim register-device --claim {CLAIM_ID}" in err
+
+    @pytest.mark.parametrize("dest", [None, DEST])
+    def test_create_with_existing_devices(self, dest):
+        org = _mock_org()
+        org.create_claim.return_value = _claim(destination_org_id=dest, device_count=2)
+        args = ["create", "--device", "d1", "--device", "d2"]
+        if dest:
+            args += ["--destination-org", dest]
+        res = _run(args, org)
+        assert res.exit_code == 0, res.output
+        org.create_claim.assert_called_once_with(
+            destination_org_id=dest, claim_token=None, name=None, device_ids=("d1", "d2")
+        )
+        err = _plain(res.stderr)
+        assert "claim link" not in err  # the devices are already in it
+        assert ("Directionless" in err) == (dest is None)
+
+    @pytest.mark.parametrize("dest", [None, DEST])
+    def test_create_per_device(self, dest):
+        org = _mock_org()
+
+        def fake(device_ids, destination_org_id=None, name=None, on_claim=None):
+            out = {}
+            for d in device_ids:
+                c = _claim(claim_id=f"claim-{d}", destination_org_id=destination_org_id)
+                on_claim(d, c, None)
+                out[d] = c
+            return out
+
+        org.claim_devices.side_effect = fake
+        args = ["create", "--per-device", "--device", "d1", "--device", "d2"]
+        if dest:
+            args += ["--destination-org", dest]
+        res = _run(args, org)
+        assert res.exit_code == 0, res.output
+        assert org.claim_devices.call_args.kwargs["destination_org_id"] == dest
+        out, err = _plain(res.stdout), _plain(res.stderr)
+        assert "d1  claim claim-d1" in out and "d2  claim claim-d2" in out
+        assert "2 of 2 claimed" in err
+        assert ("directionless" in err) == (dest is None)
+        org.create_claim.assert_not_called()
+
+    def test_create_per_device_json_and_failures(self):
+        org = _mock_org()
+
+        def fake(device_ids, destination_org_id=None, name=None, on_claim=None):
+            on_claim("d1", None, RequestError("400: device d1 not found"))
+            c = _claim(claim_id="claim-d2")
+            on_claim("d2", c, None)
+            return {"d2": c}
+
+        org.claim_devices.side_effect = fake
+        res = _run(["create", "--per-device", "--device", "d1", "--device", "d2", "-f", "json"], org)
+        assert res.exit_code == 1
+        data = json.loads(res.stdout)
+        assert data[0]["device_id"] == "d2" and data[0]["claim_id"] == "claim-d2"
+        assert data[1] == {"device_id": "d1", "error": "not claimed"}
+
+    def test_create_per_device_needs_devices_and_no_token(self):
+        org = _mock_org()
+        assert _run(["create", "--per-device"], org).exit_code == 2
+        res = _run(["create", "--per-device", "--device", "d1", "--claim-token", "t"], org)
+        assert res.exit_code == 2
+        org.claim_devices.assert_not_called()
+
+    def test_create_per_device_without_entitlement(self):
+        org = _mock_org()
+        org.claim_devices.side_effect = PermissionDeniedError(
+            "403: requires the can_create_device_claims entitlement"
+        )
+        res = _run(["create", "--per-device", "--device", "d1"], org)
+        assert res.exit_code == 1
+        assert "can_create_device_claims entitlement" in _plain(res.output)
 
     def test_create_json_has_no_chrome(self):
         org = _mock_org()
@@ -585,7 +706,7 @@ class TestCliGetCreateUpdateDelete:
         res = _run(["update", CLAIM_ID, "--name", "a", "--clear-name"], _mock_org())
         assert res.exit_code == 2
 
-    def test_update_after_redeem_is_a_conflict(self):
+    def test_update_of_unavailable_claim_is_a_conflict(self):
         org = _mock_org()
         org.update_claim.side_effect = ConflictError("409: device claim x is not AVAILABLE")
         res = _run(["update", CLAIM_ID, "--name", "a"], org)
@@ -703,182 +824,6 @@ class TestCliDevices:
         assert res.exit_code == 2
         assert "org list-devices" in _plain(res.output)
 
-    @pytest.mark.parametrize("cmd,value", [("activate", True), ("deactivate", False)])
-    def test_activation(self, cmd, value):
-        org = _mock_org()
-        res = _run([cmd, "d1", "d2"], org)
-        assert res.exit_code == 0
-        assert [c.args for c in org.set_device_activated.call_args_list] == [
-            ("d1", value), ("d2", value)
-        ]
-
-    def test_deactivate_without_entitlement(self):
-        org = _mock_org()
-        org.set_device_activated.side_effect = PermissionDeniedError(
-            "403: activated: false requires the can_deactivate_devices entitlement"
-        )
-        res = _run(["deactivate", "d1"], org)
-        assert res.exit_code == 1
-        assert "Deactivating devices needs the can_deactivate_devices" in _plain(res.output)
-
-
-class TestCliRedeem:
-    """`claim redeem` previews the claim and asks before an irreversible move."""
-
-    def _org(self, before=None, after=None):
-        org = _mock_org()
-        org.org_id = DEST  # the destination org redeems; the claim is from org-src
-        org.get_claim.return_value = before or _claim(device_count=3, name="lot 42")
-        org.redeem_claim.return_value = after or _claim(
-            status="COMPLETED", destination_org_id=DEST, device_count=3,
-            completed_ts=1735776500,
-        )
-        return org
-
-    def test_completed(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID, "--yes"], org)
-        assert res.exit_code == 0, res.output
-        assert org.redeem_claim.call_args.kwargs["wait"] is True
-        assert "3 devices now in this org" in _plain(res.stderr)
-
-    def test_preview_shows_source_and_device_count_then_asks(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID], org, input="y\n")
-        assert res.exit_code == 0, res.output
-        err = _plain(res.stderr)
-        assert "lot 42" in err and "org-src" in err
-        assert "Devices   3" in err
-        assert f"Redeem claim {CLAIM_ID}? 3 devices move into Factory permanently." in err
-        org.get_claim.assert_called_once_with(CLAIM_ID)
-        org.redeem_claim.assert_called_once()
-
-    def test_declining_does_not_redeem(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID], org, input="n\n")
-        assert res.exit_code == 1
-        org.redeem_claim.assert_not_called()
-        assert "Not redeemed" in _plain(res.stderr)
-
-    def test_unrecognised_answer_asks_again(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID], org, input="maybe\ny\n")
-        assert res.exit_code == 0, res.output
-        assert "invalid input" in _plain(res.stderr)
-        org.redeem_claim.assert_called_once()
-
-    def test_default_answer_is_no(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID], org, input="\n")
-        assert res.exit_code == 1
-        org.redeem_claim.assert_not_called()
-
-    def test_no_terminal_says_to_pass_yes(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID], org)  # stdin at EOF
-        assert res.exit_code == 1
-        org.redeem_claim.assert_not_called()
-        msg = _plain(res.output)
-        assert f"hubblenetwork claim redeem {CLAIM_ID} --yes" in msg
-
-    def test_yes_skips_the_prompt_but_still_previews(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID, "-y"], org)
-        assert res.exit_code == 0, res.output
-        err = _plain(res.stderr)
-        assert "permanently" not in err and "Devices   3" in err
-        org.redeem_claim.assert_called_once()
-
-    def test_json_stdout_stays_json_with_prompt(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID, "-f", "json"], org, input="y\n")
-        assert res.exit_code == 0, res.output
-        # Nothing but the JSON on stdout: not the preview, not the prompt,
-        # not even the stray space click.confirm would leave there.
-        assert res.stdout.startswith("{")
-        data = json.loads(res.stdout)
-        assert data["status"] == "COMPLETED" and data["device_count"] == 3
-        assert "permanently" in _plain(res.stderr)
-
-    def test_json_with_yes(self):
-        org = self._org()
-        res = _run(["redeem", CLAIM_ID, "--yes", "-f", "json"], org)
-        assert res.exit_code == 0, res.output
-        assert json.loads(res.stdout)["claim_id"] == CLAIM_ID
-
-    def test_empty_claim_warns_nothing_moves(self):
-        org = self._org(before=_claim(device_count=0))
-        res = _run(["redeem", CLAIM_ID], org, input="n\n")
-        err = _plain(res.stderr)
-        assert "nothing will move" in err
-        assert f"Redeem empty claim {CLAIM_ID} anyway?" in err
-        org.redeem_claim.assert_not_called()
-
-    def test_by_token_looks_up_once(self):
-        org = self._org()
-        res = _run(["redeem", "--claim-token", "0112345678901231", "--yes"], org)
-        assert res.exit_code == 0, res.output
-        org.get_claim.assert_called_once_with(claim_token="0112345678901231")
-        assert org.redeem_claim.call_args.args == (CLAIM_ID,)
-
-    def test_in_progress_for_this_org_rejoins_without_asking(self):
-        org = self._org(before=_claim(status="IN_PROGRESS", destination_org_id=DEST))
-        res = _run(["redeem", CLAIM_ID], org)  # no input: must not prompt
-        assert res.exit_code == 0, res.output
-        org.redeem_claim.assert_called_once()
-        assert "rejoining" in _plain(res.stderr)
-
-    def test_in_progress_for_another_org(self):
-        org = self._org(before=_claim(status="IN_PROGRESS", destination_org_id="org-other"))
-        res = _run(["redeem", CLAIM_ID], org)
-        assert res.exit_code == 1
-        org.redeem_claim.assert_not_called()
-        assert "already being redeemed by another org" in _plain(res.output)
-
-    def test_already_completed_into_this_org_is_a_no_op(self):
-        org = self._org(before=_claim(status="COMPLETED", destination_org_id=DEST))
-        res = _run(["redeem", CLAIM_ID], org)
-        assert res.exit_code == 0, res.output
-        org.redeem_claim.assert_not_called()
-        assert "Already redeemed into this org" in _plain(res.stderr)
-
-    def test_already_completed_elsewhere(self):
-        org = self._org(before=_claim(status="COMPLETED", destination_org_id="org-other"))
-        res = _run(["redeem", CLAIM_ID], org)
-        assert res.exit_code == 1
-        org.redeem_claim.assert_not_called()
-        assert "already redeemed by org org-other" in _plain(res.output)
-
-    def test_not_visible_keeps_not_found_guidance(self):
-        org = self._org()
-        org.get_claim.side_effect = NotFoundError("404: device claim not found")
-        res = _run(["redeem", CLAIM_ID, "--yes"], org)
-        assert res.exit_code == 1
-        org.redeem_claim.assert_not_called()
-        assert "pinned to another org reads as not found" in _plain(res.output)
-
-    def test_timeout_exits_one(self):
-        org = self._org(after=_claim(status="IN_PROGRESS"))
-        res = _run(["redeem", CLAIM_ID, "--timeout", "1", "--yes"], org)
-        assert res.exit_code == 1
-        assert "Still IN_PROGRESS" in _plain(res.stderr)
-
-    def test_no_wait_exits_zero(self):
-        org = self._org(after=_claim(status="IN_PROGRESS"))
-        res = _run(["redeem", CLAIM_ID, "--no-wait", "--yes"], org)
-        assert res.exit_code == 0
-        assert org.redeem_claim.call_args.kwargs["wait"] is False
-
-    def test_lost_race_is_a_conflict(self):
-        org = self._org()
-        org.redeem_claim.side_effect = ConflictError(
-            "409: device claim x is not available for redemption"
-        )
-        res = _run(["redeem", CLAIM_ID, "--yes"], org)
-        assert res.exit_code == 1
-        assert "not available for redemption" in _plain(res.output)
-
-
 class TestCliRegisterDevice:
     def _devices(self, claim_id=None, n=2):
         return [
@@ -887,20 +832,33 @@ class TestCliRegisterDevice:
             for i in range(n)
         ]
 
-    def test_new_claim_deactivated(self):
+    def test_claimable_with_destination(self):
         org = _mock_org()
         org.register_devices.return_value = self._devices()
-        res = _run(["register-device", "-n", "2", "--new-claim", "--deactivated",
+        res = _run(["register-device", "-n", "2", "--claimable",
                     "--destination-org", DEST], org)
         assert res.exit_code == 0, res.output
         kw = org.register_devices.call_args.kwargs
         assert org.register_devices.call_args.args == (2,)
-        assert kw["new_claim"] is True and kw["activated"] is False
+        assert kw["claimable"] is True and "activated" not in kw
         assert kw["destination_org_id"] == DEST and kw["claim_id"] is None
         out = _plain(res.stdout)
         assert "dev-0" in out and base64.b64encode(bytes(range(32))).decode() in out
-        assert "each in its own claim" in _plain(res.stderr)
-        assert "deactivated until claimed" in _plain(res.stderr)
+        err = _plain(res.stderr)
+        assert "each in its own claim" in err and f"redeemable by org {DEST} only" in err
+
+    def test_claimable_without_destination(self):
+        org = _mock_org()
+        org.register_devices.return_value = self._devices()
+        res = _run(["register-device", "--claimable"], org)
+        assert res.exit_code == 0, res.output
+        kw = org.register_devices.call_args.kwargs
+        assert kw["claimable"] is True and kw["destination_org_id"] is None
+        assert "redeemable by" not in _plain(res.stderr)
+
+    def test_deactivated_is_not_offered(self):
+        res = _run(["register-device", "--claimable", "--deactivated"], _mock_org())
+        assert res.exit_code == 2
 
     def test_existing_claim_names_it_in_the_next_step(self):
         org = _mock_org()
@@ -909,9 +867,8 @@ class TestCliRegisterDevice:
         ]
         res = _run(["register-device", "--claim", CLAIM_ID], org)
         err = _plain(res.stderr)
-        assert f"hubblenetwork claim redeem {CLAIM_ID}" in err
-        # Activation not confirmed by the response is not reported as done.
-        assert "activating" in err
+        assert f"linked to claim {CLAIM_ID}" in err
+        assert f"send claim ID {CLAIM_ID}" in err
 
     def test_json(self):
         org = _mock_org()
@@ -922,16 +879,15 @@ class TestCliRegisterDevice:
             "device_id": "dev-0",
             "key": base64.b64encode(bytes(range(32))).decode(),
             "claim_id": CLAIM_ID,
-            "activated": False,
         }]
 
-    def test_claim_and_new_claim_conflict(self):
+    def test_claim_and_claimable_conflict(self):
         org = _mock_org()
-        res = _run(["register-device", "--claim", CLAIM_ID, "--new-claim"], org)
+        res = _run(["register-device", "--claim", CLAIM_ID, "--claimable"], org)
         assert res.exit_code == 2
         org.register_devices.assert_not_called()
 
-    def test_destination_needs_new_claim(self):
+    def test_destination_needs_claimable(self):
         res = _run(["register-device", "--destination-org", DEST], _mock_org())
         assert res.exit_code == 2
         assert "claim update <claim-id> --destination-org" in _plain(res.output)
@@ -1018,17 +974,8 @@ class TestCliRegisterDevice:
         res = _run(["register-device", "-n", "2"], org)
         assert "registered 2 of 2" not in _plain(res.stderr)
 
-    def test_deactivated_points_at_validate_by_key(self):
-        org = _mock_org()
-        org.register_devices.return_value = self._devices()
-        res = _run(["register-device", "-n", "2", "--new-claim", "--deactivated"], org)
-        assert "hubblenetwork ble validate --key <key>" in _plain(res.stderr)
-        help_res = CliRunner().invoke(cli, ["claim", "register-device", "--help"])
-        assert "ble validate --key <key>" in help_res.output
-
-
 def test_help_needs_no_credentials():
-    res = CliRunner().invoke(cli, ["claim", "redeem", "--help"], env={
+    res = CliRunner().invoke(cli, ["claim", "get", "--help"], env={
         "HUBBLE_ORG_ID": "", "HUBBLE_API_TOKEN": "",
     })
     assert res.exit_code == 0
