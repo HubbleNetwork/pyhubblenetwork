@@ -25,6 +25,9 @@ class Device:
     period_exponent: int | None = None  # AES-128-EAX rotation period, 2^n seconds
     # Newest packet the backend decoded, per network: {"terrestrial": ts, ...}
     last_packet_ts: dict[str, float] | None = None
+    # The claim a device was linked to when registered. Only registration
+    # sets it: no device endpoint returns a device's claim.
+    claim_id: str | None = None
 
     def __str__(self) -> str:
         key_str = (

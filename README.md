@@ -64,6 +64,7 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
 | Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
+| Make devices claimable by a customer's org | [`claim`](#hand-devices-to-another-org) |
 | Hear a device's satellite uplink | [`sat scan`](#receive-a-devices-satellite-uplink) |
 | Capture raw RF for offline analysis | [`sat record`](#one-shot-capture-record--signal-report) |
 
@@ -73,7 +74,8 @@ Reference: [Reading the output](#reading-the-output) ·
 [Python library](#using-it-as-a-python-library) ·
 [Troubleshooting](#troubleshooting)
 
-Commands live in groups — **`org`** (your devices in the Hubble Cloud), **`ble`**
+Commands live in groups — **`org`** (your devices in the Hubble Cloud), **`claim`**
+(hand devices to another org), **`ble`**
 (nearby devices over Bluetooth), **`sat`** (satellite packets via PlutoSDR) and
 **`metrics`** (fleet counts) — so it is usually `hubblenetwork <group> <command>`. The
 two setup commands, `doctor` and `validate-credentials`, sit at the top level.
@@ -232,6 +234,61 @@ tabular output when you want the run itself bounded.
 `DEVICE_UPTIME` — either `--period-seconds` or `--period-exponent` (period = 2ⁿ
 seconds; the cloud accepts 10-15, default 15 ≈ 9h). The two period flags are mutually
 exclusive.
+
+
+## Hand devices to another org
+
+A **claim** moves devices from the org that owns them (typically a manufacturer that
+provisions them at the factory) to another org, with no shared credentials or keys.
+The `claim` group covers the manufacturer's side: making devices claimable and
+managing the claims. The receiving org redeems a claim on its side, and every linked
+device moves across.
+
+```bash
+# New devices, each in a claim of its own (claim ID = device ID)
+hubblenetwork claim register-device -n 10 --claimable
+hubblenetwork claim register-device -n 10 --claimable --destination-org <org-id>
+
+# Existing devices: one claim for all of them, or one claim each
+hubblenetwork claim create --device <id> --device <id>
+hubblenetwork claim create --device <id> --device <id> --destination-org <org-id>
+hubblenetwork claim create --device <id> --device <id> --per-device
+
+# An empty claim to fill later
+hubblenetwork claim create --destination-org <org-id> --name "lot 42"
+hubblenetwork claim link <claim-id> <id> <id>
+hubblenetwork claim register-device -n 10 --claim <claim-id>
+
+hubblenetwork claim list                    # claims this org created
+hubblenetwork claim get <claim-id>          # status and device count
+hubblenetwork claim get --claim-token "(01)12345678901231(21)ABC123"
+hubblenetwork claim update <claim-id> --directionless
+hubblenetwork claim unlink <id>
+hubblenetwork claim delete <claim-id>       # unredeemed claims only
+```
+
+A claim goes `AVAILABLE` → `IN_PROGRESS` → `COMPLETED`, and only an `AVAILABLE` claim
+can be changed, deleted, or have devices linked or unlinked. A completed claim stays as
+a permanent record of the hand-off.
+
+* **Directional or directionless.** With `--destination-org`, only that org can redeem
+  the claim, so a leaked claim ID is harmless. Without it, whoever presents the claim
+  ID first wins it. Use that only when the recipient isn't known yet, and share the ID
+  only with them. `claim update` can set or remove the destination later.
+* **Claim tokens.** `--claim-token` adds an alternate ID that you can print on the
+  box: a UUID, or a GS1-128 payload using AI `01` (GTIN) and/or `21` (serial). `get`
+  accepts it in place of the claim ID.
+* **Entitlement.** Creating claims and linking devices need the
+  `can_create_device_claims` entitlement. It is off by default, and Hubble enables it
+  per org.
+* **Existing devices.** `claim create --device` links the devices once the claim
+  exists. If linking fails, the new claim is deleted again so no empty claim is left
+  behind. With `--per-device`, one device failing doesn't stop the rest.
+* **Provisioning.** The cloud registers devices before linking them and doesn't roll
+  back. If `register-device --claim` fails on the link, the devices may exist
+  unlinked, and the error says so.
+
+`list`, `get`, `create`, `update` and `register-device` take `-f json`.
 
 
 ## Receive a device's satellite uplink
@@ -430,7 +487,7 @@ Import from the package top-level for a stable surface:
 ```python
 from hubblenetwork import (
     ble, cloud, sat,
-    Organization, Device, Credentials, Environment,
+    Organization, Device, DeviceClaim, Credentials, Environment,
     EncryptedPacket, UnencryptedPacket, AesEaxPacket, UnknownPacket,
     DecryptedPacket, SatellitePacket, Location,
     decrypt, decrypt_eax, decrypt_satellite,
@@ -506,6 +563,35 @@ for pkt, result in zip(pkts, org.decode_packets(pkts)):
 variants — `ble.scan()` / `ble.scan_async()`. The CLI's auto-detection is available
 too, in `hubblenetwork.detect`: `CtrCounterModeDetector` / `EaxExponentDetector` are
 the per-scan objects that own the sweep and its cache.
+
+Device claims, from the manufacturer's side. Errors are `hubblenetwork.errors`
+types: `NotFoundError` (404, which is also what a claim pinned to another org
+returns), `ConflictError` (409, not `AVAILABLE`), and `PermissionDeniedError` (a
+missing entitlement or scope):
+
+```python
+from hubblenetwork import DeviceClaim
+
+# New devices, each claimable on its own (destination_org_id is optional)
+devices = org.register_devices(10, claimable=True, destination_org_id=customer_org_id)
+device = org.register_device(claimable=True)        # directionless
+
+# Existing devices: one claim for several, or one claim each
+claim: DeviceClaim = org.create_claim(
+    destination_org_id=customer_org_id, name="lot 42", device_ids=[d1, d2]
+)
+claims = org.claim_devices([d1, d2])                # {device_id: DeviceClaim}
+
+# Manage claims
+org.link_device(existing.id, claim.claim_id)        # or unlink_device(id)
+for c in org.iter_claims(status="AVAILABLE"):
+    print(c.claim_id, c.status, c.destination_org_id)
+org.update_claim(claim.claim_id, destination_org_id="")   # "" clears: directionless
+org.delete_claim(claim.claim_id)
+```
+
+`Device.claim_id` records the claim a newly registered device was put in.
+`update_claim()` takes `None` to leave a field alone and `""` to clear it.
 
 Satellite, which manages the Docker container for you:
 
