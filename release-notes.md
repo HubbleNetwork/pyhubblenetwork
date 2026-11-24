@@ -1,5 +1,15 @@
 # Release Notes
 
+## [0.16.0] - 2026-11-24
+
+### Added
+- feat(cli): hand devices to another org with claim commands
+- feat(claim): scope device claims to the manufacturer side
+- feat(cli): register claimable devices with org register-device
+
+### Changed
+- `org register-device` prints a table of device IDs and keys (or JSON with `-f json`) instead of `Device(...)`. Its `[INFO]` notes go to stderr. Scripts that parse its output need updating.
+
 ## [0.15.0] - 2026-10-20
 
 ### Added
