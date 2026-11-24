@@ -63,7 +63,7 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | See which of my devices are nearby, no key needed | [`ble decode`](#decrypt-nearby-packets-in-the-cloud) |
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
-| Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
+| Register new devices and get their keys | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
 | Make devices claimable by a customer's org | [`claim`](#hand-devices-to-another-org) |
 | Hear a device's satellite uplink | [`sat scan`](#receive-a-devices-satellite-uplink) |
 | Capture raw RF for offline analysis | [`sat record`](#one-shot-capture-record--signal-report) |
@@ -215,7 +215,8 @@ hubblenetwork org get-packets <id>          # last 7 days by default
 hubblenetwork org get-packets <id> --days 30 --format csv
 hubblenetwork org get-packets <id> -n 50 --debug
 
-hubblenetwork org register-device           # returns the new device's key
+hubblenetwork org register-device           # prints the new device's ID and key
+hubblenetwork org register-device -n 10 -f json
 hubblenetwork org set-device-name <id> <name>
 hubblenetwork org delete-device <id>
 ```
@@ -233,21 +234,23 @@ tabular output when you want the run itself bounded.
 `register-device` takes `--encryption`, `--counter-source`, and — for AES-128-EAX on
 `DEVICE_UPTIME` — either `--period-seconds` or `--period-exponent` (period = 2ⁿ
 seconds; the cloud accepts 10-15, default 15 ≈ 9h). The two period flags are mutually
-exclusive.
+exclusive. `-n` registers several devices; more than 1000 go 1000 per request. The
+claim options `--claimable` and `--claim` are under
+[Hand devices to another org](#hand-devices-to-another-org).
 
 
 ## Hand devices to another org
 
 A **claim** moves devices from the org that owns them (typically a manufacturer that
 provisions them at the factory) to another org, with no shared credentials or keys.
-The `claim` group covers the manufacturer's side: making devices claimable and
-managing the claims. The receiving org redeems a claim on its side, and every linked
+Registering claimable devices is an option on `org register-device`; the `claim`
+group covers the rest of the manufacturer's side, managing the claims. The receiving org redeems a claim on its side, and every linked
 device moves across.
 
 ```bash
 # New devices, each in a claim of its own (claim ID = device ID)
-hubblenetwork claim register-device -n 10 --claimable
-hubblenetwork claim register-device -n 10 --claimable --destination-org <org-id>
+hubblenetwork org register-device -n 10 --claimable
+hubblenetwork org register-device -n 10 --claimable --destination-org <org-id>
 
 # Existing devices: one claim for all of them, or one claim each
 hubblenetwork claim create --device <id> --device <id>
@@ -257,7 +260,7 @@ hubblenetwork claim create --device <id> --device <id> --per-device
 # An empty claim to fill later
 hubblenetwork claim create --destination-org <org-id> --name "lot 42"
 hubblenetwork claim link <claim-id> <id> <id>
-hubblenetwork claim register-device -n 10 --claim <claim-id>
+hubblenetwork org register-device -n 10 --claim <claim-id>
 
 hubblenetwork claim list                    # claims this org created
 hubblenetwork claim get <claim-id>          # status and device count
@@ -285,10 +288,10 @@ a permanent record of the hand-off.
   exists. If linking fails, the new claim is deleted again so no empty claim is left
   behind. With `--per-device`, one device failing doesn't stop the rest.
 * **Provisioning.** The cloud registers devices before linking them and doesn't roll
-  back. If `register-device --claim` fails on the link, the devices may exist
+  back. If `org register-device --claim` fails on the link, the devices may exist
   unlinked, and the error says so.
 
-`list`, `get`, `create`, `update` and `register-device` take `-f json`.
+`list`, `get`, `create` and `update` take `-f json`, as does `org register-device`.
 
 
 ## Receive a device's satellite uplink

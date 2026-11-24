@@ -4327,7 +4327,7 @@ def _format_period_exponent(n: int) -> str:
 
 
 def _registration_options(fn):
-    """The encryption options shared by `org register-device` and `claim register-device`."""
+    """The encryption options of `org register-device`."""
     for option in reversed((
         click.option(
             "--encryption",
@@ -4362,41 +4362,6 @@ def _registration_options(fn):
     )):
         fn = option(fn)
     return fn
-
-
-@org.command("register-device", short_help="Register a new device and get its key")
-@_registration_options
-@pass_orgcfg
-def register_device(org: Organization, encryption, counter_source, period_seconds, period_exponent) -> None:
-    if period_seconds is not None and period_exponent is not None:
-        raise click.UsageError("provide at most one of --period-seconds / --period-exponent")
-
-    if encryption:
-        click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
-    if counter_source:
-        click.secho(f'[INFO] EID rotation counter source: "{counter_source}"')
-    if period_seconds is not None:
-        click.secho(f'[INFO] EID rotation period: {period_seconds}s')
-    if period_exponent is not None:
-        click.secho(
-            f'[INFO] EID rotation period exponent: {period_exponent} ({_format_period_exponent(period_exponent)})'
-        )
-    if (
-        encryption == "AES-128-EAX"
-        and counter_source == DEVICE_UPTIME
-        and period_seconds is None
-        and period_exponent is None
-    ):
-        click.secho(
-            f'[INFO] Using default EID rotation period exponent: 15 ({_format_period_exponent(15)})'
-        )
-
-    click.secho(str(org.register_device(
-        encryption=encryption,
-        counter_source=counter_source,
-        period_seconds=period_seconds,
-        period_exponent=period_exponent,
-    )))
 
 
 @org.command("delete-device", short_help="Delete a device from your organization")
@@ -4909,7 +4874,7 @@ def claim_create(
     devices to or register new ones into later.
 
     --per-device gives each --device a claim of its own instead, as
-    `claim register-device --claimable` does for new devices.
+    `org register-device --claimable` does for new devices.
 
     Without --destination-org a claim is directionless: whoever presents its
     claim ID first can redeem it, so share the ID only with the recipient.
@@ -4955,7 +4920,7 @@ def claim_create(
         err=True,
     )
     click.echo(
-        "    " + click.style(f"hubblenetwork claim register-device --claim {c.claim_id}", fg="cyan"),
+        "    " + click.style(f"hubblenetwork org register-device --claim {c.claim_id}", fg="cyan"),
         err=True,
     )
 
@@ -5122,7 +5087,7 @@ def claim_unlink(org: Organization, device_ids: tuple) -> None:
     _for_devices_in_batches(device_ids, org.unlink_devices, "unlinked", "Unlinked {n}")
 
 
-@claim.command("register-device", short_help="Register new devices into claims")
+@org.command("register-device", short_help="Register new devices and get their keys")
 @click.option(
     "--count", "-n", type=click.IntRange(min=1), default=1, show_default=True,
     help="How many devices to register.",
@@ -5142,7 +5107,7 @@ def claim_unlink(org: Organization, device_ids: tuple) -> None:
 @_registration_options
 @_FORMAT_OPTION
 @pass_orgcfg
-def claim_register_device(
+def register_device(
     org: Organization,
     count: int,
     claim_id: str | None,
@@ -5155,11 +5120,11 @@ def claim_register_device(
     output_format: str,
 ) -> None:
     """
-    Register new devices and make them claimable in the same request: each
-    in a claim of its own (--claimable), or all in one existing claim
-    (--claim). Prints each device's ID and key.
+    Register new devices and print each one's ID and key.
 
-    With --claimable, each device's claim ID is its device ID. Add
+    To hand them to another org, make them claimable in the same request:
+    each in a claim of its own (--claimable), or all in one existing claim
+    (--claim). With --claimable, each device's claim ID is its device ID. Add
     --destination-org to say which org may redeem the claims; without it they
     are directionless, and whoever presents a claim ID first can redeem it.
 
@@ -5169,10 +5134,13 @@ def claim_register_device(
 
     \b
     Example:
-      hubblenetwork claim register-device -n 10 --claimable
-      hubblenetwork claim register-device -n 10 --claimable --destination-org <org-id>
-      hubblenetwork claim register-device -n 10 --claim <claim-id>
+      hubblenetwork org register-device
+      hubblenetwork org register-device -n 10 --claimable
+      hubblenetwork org register-device -n 10 --claimable --destination-org <org-id>
+      hubblenetwork org register-device -n 10 --claim <claim-id>
     """
+    if period_seconds is not None and period_exponent is not None:
+        raise click.UsageError("provide at most one of --period-seconds / --period-exponent")
     if claim_id is not None and claimable:
         raise click.UsageError("Give at most one of --claim / --claimable.")
     if destination_org is not None and not claimable:
@@ -5181,6 +5149,7 @@ def claim_register_device(
             " destination is set on the claim:\n    "
             + click.style("hubblenetwork claim update <claim-id> --destination-org <org-id>", fg="cyan")
         )
+    _registration_notes(encryption, counter_source, period_seconds, period_exponent)
     is_tabular = output_format.lower() == "tabular"
     linking = bool(claim_id or claimable)
     batches = -(-count // cloud.REGISTER_BATCH_LIMIT)
@@ -5240,6 +5209,33 @@ def claim_register_device(
             details.append(f"redeemable by org {destination_org} only")
         notes.append("Hand one over:  send its device ID (its claim ID) to the recipient.")
     _org_summary(f"{len(devices)} registered", details, notes)
+
+
+def _registration_notes(encryption, counter_source, period_seconds, period_exponent) -> None:
+    """Say which non-default encryption settings a registration will use."""
+    notes = []
+    if encryption:
+        notes.append(f'Overriding default encryption, using "{encryption}"')
+    if counter_source:
+        notes.append(f'EID rotation counter source: "{counter_source}"')
+    if period_seconds is not None:
+        notes.append(f"EID rotation period: {period_seconds}s")
+    if period_exponent is not None:
+        notes.append(
+            f"EID rotation period exponent: {period_exponent}"
+            f" ({_format_period_exponent(period_exponent)})"
+        )
+    if (
+        encryption == "AES-128-EAX"
+        and counter_source == DEVICE_UPTIME
+        and period_seconds is None
+        and period_exponent is None
+    ):
+        notes.append(
+            f"Using default EID rotation period exponent: 15 ({_format_period_exponent(15)})"
+        )
+    for note in notes:
+        click.secho(f"[INFO] {note}", err=True)
 
 
 def _print_registered_devices(devices: list, org: Organization, output_format: str) -> None:

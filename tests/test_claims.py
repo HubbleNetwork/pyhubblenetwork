@@ -31,6 +31,7 @@ from hubblenetwork.org import Organization
 
 ANSI = re.compile(r"\033\[[0-9;]*m")
 CREDS = ["claim", "--org-id", "org-src", "--token", "fake-token"]
+ORG_CREDS = ["org", "--org-id", "org-src", "--token", "fake-token"]
 CREDENTIALS = Credentials("org-src", "tok")
 ENV = Environment("TESTING", "https://example.invalid")
 CLAIM_ID = "a1b2c3d4-e5f6-4789-a012-3456789abcde"
@@ -68,9 +69,9 @@ def _mock_org():
     return org
 
 
-def _run(args, org, input=None):
+def _run(args, org, input=None, creds=CREDS):
     with patch("hubblenetwork.cli.Organization", return_value=org):
-        res = CliRunner().invoke(cli, CREDS + args, input=input)
+        res = CliRunner().invoke(cli, creds + args, input=input)
     return res
 
 
@@ -595,7 +596,7 @@ class TestCliGetCreateUpdateDelete:
         err = _plain(res.stderr)
         assert "Directionless" in err
         assert f"claim link {CLAIM_ID} <id>..." in err
-        assert f"claim register-device --claim {CLAIM_ID}" in err
+        assert f"org register-device --claim {CLAIM_ID}" in err
 
     @pytest.mark.parametrize("dest", [None, DEST])
     def test_create_with_existing_devices(self, dest):
@@ -825,6 +826,8 @@ class TestCliDevices:
         assert "org list-devices" in _plain(res.output)
 
 class TestCliRegisterDevice:
+    """`org register-device` is the only registration command; claims are options on it."""
+
     def _devices(self, claim_id=None, n=2):
         return [
             Device(id=f"dev-{i}", key=bytes(range(32)), active=False,
@@ -835,7 +838,7 @@ class TestCliRegisterDevice:
     def test_claimable_with_destination(self):
         org = _mock_org()
         org.register_devices.return_value = self._devices()
-        res = _run(["register-device", "-n", "2", "--claimable",
+        res = _run_org(["register-device", "-n", "2", "--claimable",
                     "--destination-org", DEST], org)
         assert res.exit_code == 0, res.output
         kw = org.register_devices.call_args.kwargs
@@ -850,14 +853,14 @@ class TestCliRegisterDevice:
     def test_claimable_without_destination(self):
         org = _mock_org()
         org.register_devices.return_value = self._devices()
-        res = _run(["register-device", "--claimable"], org)
+        res = _run_org(["register-device", "--claimable"], org)
         assert res.exit_code == 0, res.output
         kw = org.register_devices.call_args.kwargs
         assert kw["claimable"] is True and kw["destination_org_id"] is None
         assert "redeemable by" not in _plain(res.stderr)
 
     def test_deactivated_is_not_offered(self):
-        res = _run(["register-device", "--claimable", "--deactivated"], _mock_org())
+        res = _run_org(["register-device", "--claimable", "--deactivated"], _mock_org())
         assert res.exit_code == 2
 
     def test_existing_claim_names_it_in_the_next_step(self):
@@ -865,7 +868,7 @@ class TestCliRegisterDevice:
         org.register_devices.return_value = [
             Device(id="dev-0", key=bytes(16), active=None, claim_id=CLAIM_ID)
         ]
-        res = _run(["register-device", "--claim", CLAIM_ID], org)
+        res = _run_org(["register-device", "--claim", CLAIM_ID], org)
         err = _plain(res.stderr)
         assert f"linked to claim {CLAIM_ID}" in err
         assert f"send claim ID {CLAIM_ID}" in err
@@ -873,7 +876,7 @@ class TestCliRegisterDevice:
     def test_json(self):
         org = _mock_org()
         org.register_devices.return_value = self._devices(claim_id=CLAIM_ID, n=1)
-        res = _run(["register-device", "--claim", CLAIM_ID, "-f", "json"], org)
+        res = _run_org(["register-device", "--claim", CLAIM_ID, "-f", "json"], org)
         data = json.loads(res.stdout)
         assert data == [{
             "device_id": "dev-0",
@@ -883,12 +886,12 @@ class TestCliRegisterDevice:
 
     def test_claim_and_claimable_conflict(self):
         org = _mock_org()
-        res = _run(["register-device", "--claim", CLAIM_ID, "--claimable"], org)
+        res = _run_org(["register-device", "--claim", CLAIM_ID, "--claimable"], org)
         assert res.exit_code == 2
         org.register_devices.assert_not_called()
 
     def test_destination_needs_claimable(self):
-        res = _run(["register-device", "--destination-org", DEST], _mock_org())
+        res = _run_org(["register-device", "--destination-org", DEST], _mock_org())
         assert res.exit_code == 2
         assert "claim update <claim-id> --destination-org" in _plain(res.output)
 
@@ -897,13 +900,13 @@ class TestCliRegisterDevice:
         org.register_devices.side_effect = ValidationError(
             "period_seconds/period_exponent requires encryption='AES-128-EAX'"
         )
-        res = _run(["register-device", "--period-exponent", "12"], org)
+        res = _run_org(["register-device", "--period-exponent", "12"], org)
         assert res.exit_code == 2
 
     def test_link_failure_warns_devices_may_exist(self):
         org = _mock_org()
         org.register_devices.side_effect = RequestError("400: device claim x not found")
-        res = _run(["register-device", "--claim", "x"], org)
+        res = _run_org(["register-device", "--claim", "x"], org)
         assert res.exit_code == 1
         msg = _plain(res.output)
         assert "device claim x not found" in msg and "some may exist" in msg
@@ -917,7 +920,7 @@ class TestCliRegisterDevice:
     def test_partial_failure_prints_registered_keys_tabular(self):
         org = _mock_org()
         org.register_devices.side_effect = self._partial()
-        res = _run(["register-device", "-n", "2500", "--claim", CLAIM_ID], org)
+        res = _run_org(["register-device", "-n", "2500", "--claim", CLAIM_ID], org)
         assert res.exit_code == 1
         out = _plain(res.stdout)
         key = base64.b64encode(bytes(range(32))).decode()
@@ -931,7 +934,7 @@ class TestCliRegisterDevice:
     def test_partial_failure_prints_registered_keys_json(self):
         org = _mock_org()
         org.register_devices.side_effect = self._partial()
-        res = _run(["register-device", "-n", "2500", "--claim", CLAIM_ID, "-f", "json"], org)
+        res = _run_org(["register-device", "-n", "2500", "--claim", CLAIM_ID, "-f", "json"], org)
         assert res.exit_code == 1
         data = json.loads(res.stdout)
         assert [d["device_id"] for d in data] == ["dev-0", "dev-1"]
@@ -941,7 +944,7 @@ class TestCliRegisterDevice:
     def test_partial_failure_on_interrupt(self):
         org = _mock_org()
         org.register_devices.side_effect = self._partial(KeyboardInterrupt())
-        res = _run(["register-device", "-n", "2500"], org)
+        res = _run_org(["register-device", "-n", "2500"], org)
         assert res.exit_code == 130
         assert "dev-0" in _plain(res.stdout)
         assert "interrupted" in _plain(res.stderr)
@@ -955,11 +958,11 @@ class TestCliRegisterDevice:
             return self._devices(n=2)
 
         org.register_devices.side_effect = fake
-        res = _run(["register-device", "-n", "1500"], org)
+        res = _run_org(["register-device", "-n", "1500"], org)
         assert res.exit_code == 0, res.output
         assert "registered 1,000 of 1,500 devices" in _plain(res.stderr)
         assert "registered 1,000" not in _plain(res.stdout)
-        res = _run(["register-device", "-n", "1500", "-f", "json"], org)
+        res = _run_org(["register-device", "-n", "1500", "-f", "json"], org)
         assert "registered 1,000" not in _plain(res.stderr)
         json.loads(res.stdout)
 
@@ -971,8 +974,48 @@ class TestCliRegisterDevice:
             return self._devices(n=2)
 
         org.register_devices.side_effect = fake
-        res = _run(["register-device", "-n", "2"], org)
+        res = _run_org(["register-device", "-n", "2"], org)
         assert "registered 2 of 2" not in _plain(res.stderr)
+
+    def test_plain_registration_prints_the_key_table(self):
+        org = _mock_org()
+        org.register_devices.return_value = [Device(id="dev-0", key=bytes(range(32)))]
+        res = _run_org(["register-device"], org)
+        assert res.exit_code == 0, res.output
+        assert org.register_devices.call_args.args == (1,)
+        kw = org.register_devices.call_args.kwargs
+        assert kw["claimable"] is False and kw["claim_id"] is None
+        out = _plain(res.stdout)
+        assert "dev-0" in out and base64.b64encode(bytes(range(32))).decode() in out
+        assert "1 registered" in _plain(res.stderr)
+
+    def test_encryption_notes_go_to_stderr(self):
+        org = _mock_org()
+        org.register_devices.return_value = self._devices(n=1)
+        res = _run_org(["register-device", "-e", "AES-128-EAX", "-c", "DEVICE_UPTIME",
+                        "-f", "json"], org)
+        assert res.exit_code == 0, res.output
+        json.loads(res.stdout)
+        err = _plain(res.stderr)
+        assert 'using "AES-128-EAX"' in err
+        assert "default EID rotation period exponent: 15" in err
+
+    def test_period_flags_conflict(self):
+        org = _mock_org()
+        res = _run_org(["register-device", "--period-seconds", "1024",
+                        "--period-exponent", "10"], org)
+        assert res.exit_code == 2
+        org.register_devices.assert_not_called()
+
+    def test_claim_group_has_no_register_device(self):
+        res = _run(["register-device", "--claimable"], _mock_org())
+        assert res.exit_code == 2
+        assert "org register-device" in _plain(res.output)
+
+
+def _run_org(args, org):
+    return _run(args, org, creds=ORG_CREDS)
+
 
 def test_help_needs_no_credentials():
     res = CliRunner().invoke(cli, ["claim", "get", "--help"], env={
