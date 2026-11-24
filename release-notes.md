@@ -8,6 +8,7 @@
 - feat(cli): register claimable devices with org register-device
 
 ### Changed
+- `org register-device` takes `-n <count>` to register several devices in one run. More than 1000 are sent 1000 per request.
 - `org register-device` prints a table of device IDs and keys (or JSON with `-f json`) instead of `Device(...)`. Its `[INFO]` notes go to stderr. Scripts that parse its output need updating.
 
 ## [0.15.0] - 2026-10-20
