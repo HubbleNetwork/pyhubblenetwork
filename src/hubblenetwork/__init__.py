@@ -5,10 +5,11 @@ Import from here; internal module layout may change without notice.
 """
 
 from . import ble, cloud, ready, sat
+from .claim import DeviceClaim
 from .cloud import Credentials, Environment
 from .crypto import DEVICE_UPTIME, UNIX_TIME, decrypt, decrypt_eax, decrypt_satellite
 from .device import Device
-from .errors import InvalidCredentialsError
+from .errors import InvalidCredentialsError, PartialRegistrationError
 from .org import Organization
 from .packets import (
     AesEaxPacket,
@@ -27,11 +28,13 @@ __all__ = [
     "Credentials",
     "DecryptedPacket",
     "Device",
+    "DeviceClaim",
     "EncryptedPacket",
     "Environment",
     "InvalidCredentialsError",
     "Location",
     "Organization",
+    "PartialRegistrationError",
     "SatellitePacket",
     "UnencryptedPacket",
     "UnknownPacket",

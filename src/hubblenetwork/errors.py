@@ -56,6 +56,34 @@ class RateLimitError(BackendError):
     """The Hubble Cloud API is rate-limiting these credentials (HTTP 429)."""
 
 
+class ConflictError(BackendError):
+    """The resource is not in a state that allows this call (HTTP 409)."""
+
+
+class PartialRegistrationError(BackendError):
+    """A multi-request registration failed after earlier requests succeeded.
+
+    The devices in ``devices`` exist in the cloud, and this is the only copy
+    of their keys, so a caller must save them before handling the failure.
+
+    Attributes:
+        devices: The devices registered before the failure, in order.
+        requested: How many devices the caller asked for.
+        cause: What stopped the run: usually a ``BackendError``, but a
+            ``KeyboardInterrupt`` or any other exception is wrapped too, so
+            the keys survive it. Also set as ``__cause__``.
+    """
+
+    def __init__(self, devices: list[Any], requested: int, cause: BaseException):
+        self.devices = devices
+        self.requested = requested
+        self.cause = cause
+        super().__init__(
+            f"registered {len(devices)} of {requested} devices before a request"
+            f" failed: {str(cause) or type(cause).__name__}"
+        )
+
+
 # Request/response semantics
 class ValidationError(BackendError):
     """The request was invalid (schema/semantics)."""
@@ -172,6 +200,7 @@ __all__ = [
     "APITimeout",
     "BackendError",
     "BleError",
+    "ConflictError",
     "DecryptionError",
     "DockerError",
     "ElfFetchError",
@@ -214,6 +243,8 @@ def map_http_status(status_code: int, detail: str | None = None) -> BackendError
         return PermissionDeniedError(msg)
     if status_code == 404:
         return NotFoundError(msg)
+    if status_code == 409:
+        return ConflictError(msg)
     if status_code == 429:
         return RateLimitError(msg)
     if status_code == 500:
@@ -240,6 +271,7 @@ def raise_for_response(
             or body.get("error")
             or body.get("message")
             or body.get("detail")
+            or body.get("description")
         )
     elif isinstance(body, str):
         detail = body.strip() or None
