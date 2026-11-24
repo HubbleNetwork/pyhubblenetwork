@@ -63,9 +63,8 @@ not be answered without doing real work (pulling the satellite receiver image, s
 | See which of my devices are nearby, no key needed | [`ble decode`](#decrypt-nearby-packets-in-the-cloud) |
 | See what's registered to my org | [`org list-devices`](#work-with-your-fleet-in-the-cloud) |
 | Read a device's history from the cloud | [`org get-packets <id>`](#work-with-your-fleet-in-the-cloud) |
-| Register a new device and get its key | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
-| Hand devices to a customer's org | [`claim`](#hand-devices-to-another-org) |
-| Take ownership of devices sent to me | [`claim redeem`](#hand-devices-to-another-org) |
+| Register new devices and get their keys | [`org register-device`](#work-with-your-fleet-in-the-cloud) |
+| Make devices claimable by a customer's org | [`claim`](#hand-devices-to-another-org) |
 | Hear a device's satellite uplink | [`sat scan`](#receive-a-devices-satellite-uplink) |
 | Capture raw RF for offline analysis | [`sat record`](#one-shot-capture-record--signal-report) |
 
@@ -216,7 +215,8 @@ hubblenetwork org get-packets <id>          # last 7 days by default
 hubblenetwork org get-packets <id> --days 30 --format csv
 hubblenetwork org get-packets <id> -n 50 --debug
 
-hubblenetwork org register-device           # returns the new device's key
+hubblenetwork org register-device           # prints the new device's ID and key
+hubblenetwork org register-device -n 10 -f json
 hubblenetwork org set-device-name <id> <name>
 hubblenetwork org delete-device <id>
 ```
@@ -234,36 +234,40 @@ tabular output when you want the run itself bounded.
 `register-device` takes `--encryption`, `--counter-source`, and — for AES-128-EAX on
 `DEVICE_UPTIME` — either `--period-seconds` or `--period-exponent` (period = 2ⁿ
 seconds; the cloud accepts 10-15, default 15 ≈ 9h). The two period flags are mutually
-exclusive.
+exclusive. `-n` registers several devices; more than 1000 go 1000 per request. The
+claim options `--claimable` and `--claim` are under
+[Hand devices to another org](#hand-devices-to-another-org).
 
 
 ## Hand devices to another org
 
 A **claim** moves devices from the org that owns them (typically a manufacturer that
 provisions them at the factory) to another org, with no shared credentials or keys.
-The source org links devices to a claim; the destination org redeems it, and every
-linked device moves across and is activated in one step.
+Registering claimable devices is an option on `org register-device`; the `claim`
+group covers the rest of the manufacturer's side, managing the claims. The receiving org redeems a claim on its side, and every linked
+device moves across.
 
 ```bash
-# Source org: create a claim, then put devices on it
+# New devices, each in a claim of its own (claim ID = device ID)
+hubblenetwork org register-device -n 10 --claimable
+hubblenetwork org register-device -n 10 --claimable --destination-org <org-id>
+
+# Existing devices: one claim for all of them, or one claim each
+hubblenetwork claim create --device <id> --device <id>
+hubblenetwork claim create --device <id> --device <id> --destination-org <org-id>
+hubblenetwork claim create --device <id> --device <id> --per-device
+
+# An empty claim to fill later
 hubblenetwork claim create --destination-org <org-id> --name "lot 42"
 hubblenetwork claim link <claim-id> <id> <id>
-hubblenetwork claim register-device -n 10 --claim <claim-id> --deactivated
-
-# ...or give each new device a claim of its own (claim ID = device ID)
-hubblenetwork claim register-device -n 10 --new-claim --deactivated
+hubblenetwork org register-device -n 10 --claim <claim-id>
 
 hubblenetwork claim list                    # claims this org created
 hubblenetwork claim get <claim-id>          # status and device count
+hubblenetwork claim get --claim-token "(01)12345678901231(21)ABC123"
 hubblenetwork claim update <claim-id> --directionless
 hubblenetwork claim unlink <id>
 hubblenetwork claim delete <claim-id>       # unredeemed claims only
-
-# Destination org: find and redeem
-hubblenetwork claim list --incoming
-hubblenetwork claim get --claim-token "(01)12345678901231(21)ABC123"
-hubblenetwork claim redeem <claim-id>       # shows the claim, asks, then waits for the move
-hubblenetwork claim redeem <claim-id> --yes -f json   # in a script: no prompt
 ```
 
 A claim goes `AVAILABLE` → `IN_PROGRESS` → `COMPLETED`, and only an `AVAILABLE` claim
@@ -273,33 +277,21 @@ a permanent record of the hand-off.
 * **Directional or directionless.** With `--destination-org`, only that org can redeem
   the claim, so a leaked claim ID is harmless. Without it, whoever presents the claim
   ID first wins it. Use that only when the recipient isn't known yet, and share the ID
-  only with them. Directionless claims never show up in `claim list --incoming`; the
-  recipient redeems them by ID.
+  only with them. `claim update` can set or remove the destination later.
 * **Claim tokens.** `--claim-token` adds an alternate ID that you can print on the
   box: a UUID, or a GS1-128 payload using AI `01` (GTIN) and/or `21` (serial). `get`
-  and `redeem` accept it in place of the claim ID.
-* **Entitlements.** Creating claims and linking devices need the
-  `can_create_device_claims` entitlement, and `--deactivated` / `claim deactivate`
-  need `can_deactivate_devices`. Both are off by default, and Hubble enables them per
-  org. Redeeming needs no entitlement.
-* **Deactivated inventory.** A deactivated device generates no EIDs, so it costs
-  nothing and its packets don't resolve. Redeeming its claim activates it.
-  `claim activate <id>` does it by hand, for testing.
+  accepts it in place of the claim ID.
+* **Entitlement.** Creating claims and linking devices need the
+  `can_create_device_claims` entitlement. It is off by default, and Hubble enables it
+  per org.
+* **Existing devices.** `claim create --device` links the devices once the claim
+  exists. If linking fails, the new claim is deleted again so no empty claim is left
+  behind. With `--per-device`, one device failing doesn't stop the rest.
 * **Provisioning.** The cloud registers devices before linking them and doesn't roll
-  back. If `register-device --claim` fails on the link, the devices may exist
+  back. If `org register-device --claim` fails on the link, the devices may exist
   unlinked, and the error says so.
 
-Redeeming can't be undone: the source org loses the devices and their packets. So
-`redeem` first shows the claim (source org, status, device count, and a warning if no
-devices are linked) and asks before going ahead. `--yes` skips the question. Without a
-terminal to answer it, nothing is redeemed and the error says to pass `--yes`. The
-preview and prompt go to stderr, so `-f json` output stays clean.
-
-`redeem` waits up to `--timeout` (120s) for the move and exits 1 if it is still in
-progress, which carries on in the background. `--no-wait` returns at once. Rerunning
-`redeem` while it is in progress for your org is safe and doesn't ask again; on a claim
-already redeemed into your org it does nothing and exits 0. `list`, `get`, `create`, `update`, `redeem`
-and `register-device` take `-f json`.
+`list`, `get`, `create` and `update` take `-f json`, as does `org register-device`.
 
 
 ## Receive a device's satellite uplink
@@ -575,7 +567,7 @@ variants — `ble.scan()` / `ble.scan_async()`. The CLI's auto-detection is avai
 too, in `hubblenetwork.detect`: `CtrCounterModeDetector` / `EaxExponentDetector` are
 the per-scan objects that own the sweep and its cache.
 
-Device claims, from both sides of the hand-off. Errors are `hubblenetwork.errors`
+Device claims, from the manufacturer's side. Errors are `hubblenetwork.errors`
 types: `NotFoundError` (404, which is also what a claim pinned to another org
 returns), `ConflictError` (409, not `AVAILABLE`), and `PermissionDeniedError` (a
 missing entitlement or scope):
@@ -583,21 +575,26 @@ missing entitlement or scope):
 ```python
 from hubblenetwork import DeviceClaim
 
-# Source org
-claim: DeviceClaim = org.create_claim(destination_org_id=customer_org_id, name="lot 42")
-devices = org.register_devices(10, claim_id=claim.claim_id, activated=False)
-org.link_device(existing.id, claim.claim_id)        # or unlink_device(id)
-for c in org.iter_claims():                         # incoming=True for the other side
-    print(c.claim_id, c.status, c.destination_org_id)
+# New devices, each claimable on its own (destination_org_id is optional)
+devices = org.register_devices(10, claimable=True, destination_org_id=customer_org_id)
+device = org.register_device(claimable=True)        # directionless
 
-# Destination org
-claim = customer.get_claim(claim_token="(01)12345678901231(21)ABC123")
-done = customer.redeem_claim(claim.claim_id)        # waits; check done.status
+# Existing devices: one claim for several, or one claim each
+claim: DeviceClaim = org.create_claim(
+    destination_org_id=customer_org_id, name="lot 42", device_ids=[d1, d2]
+)
+claims = org.claim_devices([d1, d2])                # {device_id: DeviceClaim}
+
+# Manage claims
+org.link_device(existing.id, claim.claim_id)        # or unlink_device(id)
+for c in org.iter_claims(status="AVAILABLE"):
+    print(c.claim_id, c.status, c.destination_org_id)
+org.update_claim(claim.claim_id, destination_org_id="")   # "" clears: directionless
+org.delete_claim(claim.claim_id)
 ```
 
-`register_devices(n, new_claim=True)` gives each device its own claim; `Device.claim_id`
-records which one. `update_claim()` takes `None` to leave a field alone and `""` to clear
-it. `set_device_activated(id, bool)` activates or deactivates a device.
+`Device.claim_id` records the claim a newly registered device was put in.
+`update_claim()` takes `None` to leave a field alone and `""` to clear it.
 
 Satellite, which manages the Docker container for you:
 

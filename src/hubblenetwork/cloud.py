@@ -198,7 +198,6 @@ def register_device(
     period_exponent: int | None = None,
     tags: dict[str, str] | None = None,
     n_devices: int = 1,
-    activated: bool | None = None,
     device_claims: list[dict | None] | None = None,
 ) -> Any:
     """Create ``n_devices`` new devices and return the response.
@@ -206,8 +205,6 @@ def register_device(
     Args:
         tags: Optional custom tags, applied to every new device. The Cloud API
             takes one tags map per device, so it is repeated ``n_devices`` times.
-        activated: ``False`` creates the devices deactivated (no EIDs, no
-            decode cost) and needs the ``can_deactivate_devices`` entitlement.
         device_claims: One entry per device: ``{"claim_id": ...}`` links it to
             an existing claim, ``{"new_claim_using_device_id": True}`` (plus an
             optional ``destination_org_id``) mints a claim whose ID is the
@@ -227,8 +224,6 @@ def register_device(
         data["eid_rotation"] = eid_rotation
     if tags is not None:
         data["tags"] = [tags] * n_devices
-    if activated is not None:
-        data["activated"] = activated
     if device_claims is not None:
         data["device_claims"] = device_claims
     return cloud_request(
@@ -555,8 +550,8 @@ def batch_update_devices(
     PATCH body plus its ID. Returns the updated devices' JSON.
 
     What the cloud does with a batch (device-provisioning/devices/update.go):
-    every item must request the same kind of change (ordinary fields such as
-    ``set_device_claim_id``, ``set_activated``, or ``set_destination_org_id``).
+    every item must request the same kind of change (for example
+    ``set_device_claim_id``).
     For ordinary fields every check runs before anything is written, so a
     missing device (400 ``device <id> not found``, naming only the first one),
     an unavailable claim (409) or a missing entitlement (403) applies nothing.
@@ -575,23 +570,6 @@ def batch_update_devices(
         json={"updates": updates},
     )[0]
     return (data or {}).get("devices", [])
-
-
-def set_device_activated(
-    *, credentials: Credentials, env: Environment, device_id: str, activated: bool
-) -> Any:
-    """Activate or deactivate a device. The cloud does it asynchronously.
-
-    ``set_activated`` must be the only field in its request. Deactivating needs
-    the ``can_deactivate_devices`` entitlement; activating does not.
-    """
-    return cloud_request(
-        method="PATCH",
-        path=_device_endpoint(credentials, device_id),
-        credentials=credentials,
-        env=env,
-        json={"set_activated": activated},
-    )[0]
 
 
 def create_claim(
@@ -623,16 +601,13 @@ def list_claims(
     *,
     credentials: Credentials,
     env: Environment,
-    role: str = "source",
     status: str | None = None,
     continuation_token: str | None = None,
 ) -> tuple[dict[str, Any], str | None]:
-    """One page of claims: ``({"claims": [...]}, next_continuation_token)``.
-
-    ``role="source"`` lists claims this org created; ``"destination"`` lists
-    claims pinned to this org (directionless claims never appear there).
+    """One page of the claims this org created:
+    ``({"claims": [...]}, next_continuation_token)``.
     """
-    params: dict[str, Any] = {"role": role}
+    params: dict[str, Any] = {"role": "source"}
     if status is not None:
         params["filter_status"] = status
     return cloud_request(
@@ -707,19 +682,3 @@ def delete_claim(
         env=env,
     )[0]
 
-
-def redeem_claim(
-    *, credentials: Credentials, env: Environment, claim_id: str
-) -> dict[str, Any]:
-    """Start moving a claim's devices into this org. Returns the IN_PROGRESS claim.
-
-    The move finishes in the background; poll :func:`get_claim` until
-    ``status`` is ``COMPLETED``. Calling again while it is in progress for this
-    org rejoins the same job.
-    """
-    return cloud_request(
-        method="POST",
-        path=_claim_endpoint(credentials, claim_id) + "/claim",
-        credentials=credentials,
-        env=env,
-    )[0]

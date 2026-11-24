@@ -41,7 +41,7 @@ from hubblenetwork import org as org_mod
 from hubblenetwork import ready as ready_mod
 from hubblenetwork import sat as sat_mod
 from hubblenetwork import validate as validate_mod
-from hubblenetwork.claim import CLAIM_STATUSES, COMPLETED, IN_PROGRESS, DeviceClaim
+from hubblenetwork.claim import CLAIM_STATUSES, DeviceClaim
 from hubblenetwork.detect import (
     CtrCounterModeDetector,
     EaxExponentDetector,
@@ -4327,7 +4327,7 @@ def _format_period_exponent(n: int) -> str:
 
 
 def _registration_options(fn):
-    """The encryption options shared by `org register-device` and `claim register-device`."""
+    """The encryption options of `org register-device`."""
     for option in reversed((
         click.option(
             "--encryption",
@@ -4362,41 +4362,6 @@ def _registration_options(fn):
     )):
         fn = option(fn)
     return fn
-
-
-@org.command("register-device", short_help="Register a new device and get its key")
-@_registration_options
-@pass_orgcfg
-def register_device(org: Organization, encryption, counter_source, period_seconds, period_exponent) -> None:
-    if period_seconds is not None and period_exponent is not None:
-        raise click.UsageError("provide at most one of --period-seconds / --period-exponent")
-
-    if encryption:
-        click.secho(f'[INFO] Overriding default encryption, using "{encryption}"')
-    if counter_source:
-        click.secho(f'[INFO] EID rotation counter source: "{counter_source}"')
-    if period_seconds is not None:
-        click.secho(f'[INFO] EID rotation period: {period_seconds}s')
-    if period_exponent is not None:
-        click.secho(
-            f'[INFO] EID rotation period exponent: {period_exponent} ({_format_period_exponent(period_exponent)})'
-        )
-    if (
-        encryption == "AES-128-EAX"
-        and counter_source == DEVICE_UPTIME
-        and period_seconds is None
-        and period_exponent is None
-    ):
-        click.secho(
-            f'[INFO] Using default EID rotation period exponent: 15 ({_format_period_exponent(15)})'
-        )
-
-    click.secho(str(org.register_device(
-        encryption=encryption,
-        counter_source=counter_source,
-        period_seconds=period_seconds,
-        period_exponent=period_exponent,
-    )))
 
 
 @org.command("delete-device", short_help="Delete a device from your organization")
@@ -4522,12 +4487,12 @@ def get_packets(
 
 
 # ---------------------------------------------------------------------------
-# claim -- hand devices from one org to another
+# claim -- the manufacturer side of handing devices to another org
 #
-# The source org links devices to a claim, the destination org redeems it, and
-# the devices move across and are activated. Originating (create, link,
-# register-device with a claim) needs the can_create_device_claims
-# entitlement; redeeming needs none.
+# The source org (the manufacturer) creates claims and links devices to them;
+# the destination org redeems a claim outside this CLI, and its devices move
+# across. Creating and linking (including register-device --claimable) needs
+# the can_create_device_claims entitlement.
 # ---------------------------------------------------------------------------
 
 
@@ -4535,15 +4500,10 @@ _FIND_CLAIM_ID = (
     "  Find a claim ID with:\n"
     + "    "
     + click.style("hubblenetwork claim list", fg="cyan")
-    + "  (claims you created)\n"
-    + "    "
-    + click.style("hubblenetwork claim list --incoming", fg="cyan")
-    + "  (claims sent to you)"
 )
 
 _ENTITLEMENTS = {
     "can_create_device_claims": "Creating claims and linking devices to them",
-    "can_deactivate_devices": "Deactivating devices",
 }
 
 _CLAIM_STATUS_STYLE = {
@@ -4551,9 +4511,6 @@ _CLAIM_STATUS_STYLE = {
     "IN_PROGRESS": {"fg": "yellow"},
     "COMPLETED": {"fg": "cyan"},
 }
-
-_REDEEM_PROGRESS_EVERY = 10.0  # seconds between "still moving" lines
-
 
 def _cloud_detail(exc: BackendError) -> str:
     """The server's message without the `404: ` status prefix."""
@@ -4590,7 +4547,7 @@ def _claim_exception(exc: BackendError, claim_id: str | None = None) -> click.Cl
     if isinstance(exc, ConflictError):
         return click.ClickException(
             f"{detail}\n\n"
-            "  Only an AVAILABLE claim can be changed, deleted, linked to or redeemed.\n"
+            "  Only an AVAILABLE claim can be changed, deleted or linked to.\n"
             "  See where it stands:\n    "
             + click.style(f"hubblenetwork claim get {claim_id or '<claim-id>'}", fg="cyan")
         )
@@ -4675,43 +4632,8 @@ def _claim_party(org_id: str | None, org: Organization) -> str:
     return "this org" if org_id == org.org_id else org_id[:8]
 
 
-def _for_each_device(device_ids: tuple, action, done: str, summary: str) -> None:
-    """Apply `action(device_id)` to each device, marking each one on its own row.
-
-    One device failing (not in this org, wrong claim state) doesn't stop the
-    rest. A missing entitlement or scope would fail every one of them the same
-    way, so that stops the run at the first device instead.
-
-    `done` labels a row that worked; `summary` is the closing line, with
-    `{n}` standing for the device count ("Linked {n} to ...").
-    """
-    marks = _check_marks()
-    failed = 0
-    for device_id in device_ids:
-        try:
-            action(device_id)
-        except (PermissionDeniedError, RateLimitError):
-            raise
-        except BackendError as exc:
-            failed += 1
-            detail = _cloud_detail(exc)
-            # The cloud's message often names the device already.
-            label = "" if device_id in detail else f"{device_id}  "
-            click.echo(f"  {marks[_CHECK_FAIL]} {label}{detail}")
-        else:
-            click.echo(f"  {marks[_CHECK_OK]} {device_id}  {done}")
-    total = len(device_ids)
-    click.echo("", err=True)
-    noun = f"device{'s' if total != 1 else ''}"
-    if failed:
-        n = f"{total - failed} of {total} {noun}"
-        click.secho(summary.format(n=n) + f"; {failed} failed.", bold=True, err=True)
-        raise SystemExit(1)
-    click.secho(summary.format(n=f"{total} {noun}") + ".", bold=True, err=True)
-
-
 def _for_devices_in_batches(device_ids: tuple, send, done: str, summary: str) -> None:
-    """Like `_for_each_device`, but `send(ids)` updates up to 1000 devices at once.
+    """Apply `send(ids)` to the devices, up to 1000 at a time, one row per device.
 
     Repeated IDs are sent once. The cloud checks a whole batch before writing
     any of it, so a 400/404 naming a device (`device <id> not found`) means
@@ -4799,20 +4721,16 @@ _CLAIM_ID_ARGUMENT = click.argument(
 
 @_org_group
 def claim() -> None:
-    """Hand devices from one org to another without sharing keys.
+    """Prepare devices to hand to another org without sharing keys.
 
-    The org that owns the devices links them to a claim; the org it is meant
-    for redeems it, and the devices move across and are activated. A claim
+    The org that owns the devices (the manufacturer) links them to a claim;
+    the org it is meant for redeems it, and the devices move across. A claim
     with a destination org can only be redeemed by that org; one without
     ("directionless") goes to whoever presents its claim ID first.
     """
 
 
-@claim.command("list", short_help="List claims you created or were sent")
-@click.option(
-    "--incoming", is_flag=True, default=False,
-    help="Claims addressed to this org, instead of ones it created.",
-)
+@claim.command("list", short_help="List the claims this org created")
 @click.option(
     "--status", "-s",
     type=click.Choice(list(CLAIM_STATUSES), case_sensitive=False),
@@ -4826,28 +4744,26 @@ def claim() -> None:
 @_FORMAT_OPTION
 @pass_orgcfg
 @_claim_errors
-def claim_list(org: Organization, incoming: bool, status: str | None, limit: int, output_format: str) -> None:
+def claim_list(org: Organization, status: str | None, limit: int, output_format: str) -> None:
     """
-    List the claims this org created, or with --incoming the ones addressed
-    to it. Directionless claims are never incoming: redeem one by its ID.
+    List the claims this org created.
 
     \b
     Example:
       hubblenetwork claim list
-      hubblenetwork claim list --incoming
       hubblenetwork claim list --status AVAILABLE -f json
     """
     status = status.upper() if status else None
     is_tabular = output_format.lower() == "tabular"
     if is_tabular:
-        _org_heading("Claims", org.name, "sent to this org" if incoming else "created by this org")
+        _org_heading("Claims", org.name, "created by this org")
 
     progress = _FetchProgress("claims", enabled=is_tabular)
     printer = (
         _OrgTablePrinter([
             ("CLAIM ID", 36, "<"),
             ("STATUS", 11, "<"),
-            ("FROM" if incoming else "TO", 8, "<"),
+            ("TO", 8, "<"),
             ("NAME", 18, "<"),
         ])
         if is_tabular
@@ -4858,17 +4774,16 @@ def claim_list(org: Organization, incoming: bool, status: str | None, limit: int
     truncated = False
 
     try:
-        for c in org.iter_claims(incoming=incoming, status=status, on_page=progress.page):
+        for c in org.iter_claims(status=status, on_page=progress.page):
             if limit and sum(counts.values()) >= limit:
                 truncated = True
                 break
             counts[c.status] = counts.get(c.status, 0) + 1
             if printer:
-                other = c.source_org_id if incoming else c.destination_org_id
                 printer.row([
                     c.claim_id,
                     c.status,
-                    _claim_party(other, org),
+                    _claim_party(c.destination_org_id, org),
                     _fit(c.name or "-", 18),
                 ])
             else:
@@ -4883,21 +4798,11 @@ def claim_list(org: Organization, incoming: bool, status: str | None, limit: int
     printer.finalize()
     if printer.count == 0:
         which = f"{status} claims" if status else "claims"
-        if incoming:
-            _org_summary(
-                f"No {which} addressed to this org.",
-                [],
-                [
-                    "A directionless claim never shows up here; redeem it by its ID:",
-                    "  hubblenetwork claim redeem <claim-id>",
-                ],
-            )
-        else:
-            _org_summary(
-                f"No {which} created by this org.",
-                [],
-                ["Create one:  hubblenetwork claim create"],
-            )
+        _org_summary(
+            f"No {which} created by this org.",
+            [],
+            ["Create one:  hubblenetwork claim create"],
+        )
         return
 
     details = [
@@ -4933,7 +4838,15 @@ def claim_get(org: Organization, claim_id: str | None, claim_token: str | None, 
     _show_claim(org.get_claim(claim_id, claim_token=claim_token), org, output_format)
 
 
-@claim.command("create", short_help="Create an empty claim to link devices to")
+@claim.command("create", short_help="Create a claim, empty or for devices")
+@click.option(
+    "--device", "device_ids", multiple=True, metavar="<device-id>",
+    help="An existing device to put in the claim. Repeat for more.",
+)
+@click.option(
+    "--per-device", is_flag=True, default=False,
+    help="With --device: one claim per device instead of one for all of them.",
+)
 @click.option(
     "--destination-org", default=None, metavar="<org-id>",
     help="The only org allowed to redeem it. Omit for a directionless claim.",
@@ -4948,24 +4861,49 @@ def claim_get(org: Organization, claim_id: str | None, claim_token: str | None, 
 @_claim_errors
 def claim_create(
     org: Organization,
+    device_ids: tuple,
+    per_device: bool,
     destination_org: str | None,
     claim_token: str | None,
     name: str | None,
     output_format: str,
 ) -> None:
     """
-    Create a claim with no devices yet. Link devices to it afterwards, or
-    register new ones straight into it.
+    Create a claim. With --device, the devices (already registered in this
+    org) are linked to it straight away; without, it starts empty, to link
+    devices to or register new ones into later.
 
-    Without --destination-org the claim is directionless: whoever presents
-    its claim ID first can redeem it, so share the ID only with the recipient.
+    --per-device gives each --device a claim of its own instead, as
+    `org register-device --claimable` does for new devices.
+
+    Without --destination-org a claim is directionless: whoever presents its
+    claim ID first can redeem it, so share the ID only with the recipient.
 
     \b
     Example:
       hubblenetwork claim create --destination-org <org-id> --name "lot 42"
+      hubblenetwork claim create --device <id> --device <id>
+      hubblenetwork claim create --device <id> --device <id> --per-device
       hubblenetwork claim create --claim-token "(01)12345678901231(21)ABC123"
     """
-    c = org.create_claim(destination_org_id=destination_org, claim_token=claim_token, name=name)
+    if per_device:
+        if not device_ids:
+            raise click.UsageError("--per-device needs at least one --device.")
+        if claim_token is not None:
+            raise click.UsageError(
+                "--claim-token names one claim, so it can't be used with --per-device."
+                " Set tokens afterwards:\n    "
+                + click.style("hubblenetwork claim update <claim-id> --claim-token <token>", fg="cyan")
+            )
+        _create_claim_per_device(org, device_ids, destination_org, name, output_format)
+        return
+
+    c = org.create_claim(
+        destination_org_id=destination_org,
+        claim_token=claim_token,
+        name=name,
+        device_ids=device_ids,
+    )
     _show_claim(c, org, output_format)
     if output_format.lower() == "json":
         return
@@ -4974,15 +4912,63 @@ def claim_create(
         click.secho(
             "  Directionless: anyone holding this claim ID can redeem it.", dim=True, err=True
         )
+    if device_ids:
+        return
     click.secho("  Add devices:", dim=True, err=True)
     click.echo(
         "    " + click.style(f"hubblenetwork claim link {c.claim_id} <id>...", fg="cyan"),
         err=True,
     )
     click.echo(
-        "    " + click.style(f"hubblenetwork claim register-device --claim {c.claim_id}", fg="cyan"),
+        "    " + click.style(f"hubblenetwork org register-device --claim {c.claim_id}", fg="cyan"),
         err=True,
     )
+
+
+def _create_claim_per_device(
+    org: Organization,
+    device_ids: tuple,
+    destination_org: str | None,
+    name: str | None,
+    output_format: str,
+) -> None:
+    """`claim create --per-device`: one claim per device, a row per device."""
+    is_tabular = output_format.lower() == "tabular"
+    marks = _check_marks()
+    failed: list[str] = []
+
+    def on_claim(device_id: str, c: DeviceClaim | None, exc: BackendError | None) -> None:
+        if exc is not None:
+            failed.append(device_id)
+            detail = _cloud_detail(exc)
+            label = "" if device_id in detail else f"{device_id}  "
+            if is_tabular:
+                click.echo(f"  {marks[_CHECK_FAIL]} {label}{detail}")
+            return
+        if is_tabular:
+            click.echo(f"  {marks[_CHECK_OK]} {device_id}  claim {c.claim_id}")
+
+    if is_tabular:
+        _org_heading("Claims", org.name, "one per device")
+    claims = org.claim_devices(
+        device_ids, destination_org_id=destination_org, name=name, on_claim=on_claim
+    )
+    if not is_tabular:
+        click.echo(json.dumps(
+            [{"device_id": d, **asdict(c)} for d, c in claims.items()]
+            + [{"device_id": d, "error": "not claimed"} for d in failed],
+            indent=2,
+        ))
+    else:
+        total = len(claims) + len(failed)
+        details = [
+            f"redeemable by org {destination_org} only" if destination_org else "directionless"
+        ]
+        if failed:
+            details.append(f"{len(failed)} failed")
+        _org_summary(f"{len(claims)} of {total} claimed", details, [])
+    if failed:
+        raise SystemExit(1)
 
 
 @claim.command("update", short_help="Change a claim's destination, token or name")
@@ -5101,201 +5087,7 @@ def claim_unlink(org: Organization, device_ids: tuple) -> None:
     _for_devices_in_batches(device_ids, org.unlink_devices, "unlinked", "Unlinked {n}")
 
 
-def _ask_yes_no(question: str) -> bool | None:
-    """Ask on stderr and read the answer from stdin; None if stdin hits EOF.
-
-    click.confirm(err=True) still writes the prompt's last character to
-    stdout (through input()), which would leave a stray space in front of
-    -f json output, and it reports EOF and Ctrl-C alike as Abort. This
-    keeps stdout untouched and tells "no answer" apart from "no".
-    """
-    while True:
-        click.echo(f"{question} [y/N]: ", nl=False, err=True)
-        try:
-            line = sys.stdin.readline()
-        except KeyboardInterrupt:
-            click.echo("", err=True)
-            raise click.Abort() from None
-        if not line:
-            click.echo("", err=True)
-            return None
-        answer = line.strip().lower()
-        if answer in ("", "n", "no"):
-            return False
-        if answer in ("y", "yes"):
-            return True
-        click.echo("Error: invalid input", err=True)
-
-
-def _devices_phrase(n: int | None) -> str:
-    """'3 devices move' / '1 device moves' / 'Its devices move'."""
-    if n is None:
-        return "Its devices move"
-    return f"{n} device moves" if n == 1 else f"{n} devices move"
-
-
-def _confirm_redeem(c: DeviceClaim, org: Organization, yes: bool) -> None:
-    """Show what redeeming `c` will do, on stderr, and ask before doing it.
-
-    Everything here goes to stderr so `-f json` keeps stdout to the result.
-    A declined or unanswerable prompt exits 1 without redeeming.
-    """
-    _org_heading("Redeem", c.claim_id, f"into {org.name}")
-    _show_claim(c, org, err=True)
-    if c.device_count == 0:
-        click.echo("", err=True)
-        click.secho(
-            "  No devices are linked to this claim: nothing will move, and the\n"
-            "  claim can't be redeemed again once it completes.",
-            fg="yellow", err=True,
-        )
-    if yes:
-        return
-    if c.device_count == 0:
-        question = f"Redeem empty claim {c.claim_id} anyway?"
-    else:
-        question = (
-            f"Redeem claim {c.claim_id}? {_devices_phrase(c.device_count)} into"
-            f" {org.name} permanently."
-        )
-    click.echo("", err=True)
-    ok = _ask_yes_no(question)
-    if ok is None:
-        raise click.ClickException(
-            "Not redeemed: nothing answered the confirmation (stdin is closed\n"
-            "  or not a terminal).\n\n"
-            "  Redeeming can't be undone. To redeem without being asked, pass --yes:\n    "
-            + click.style(f"hubblenetwork claim redeem {c.claim_id} --yes", fg="cyan")
-        )
-    if not ok:
-        click.echo("Not redeemed. Nothing changed.", err=True)
-        raise SystemExit(1)
-
-
-@claim.command("redeem", short_help="Take ownership of a claim's devices")
-@click.argument("claim_id", required=False, metavar="[<claim-id>]")
-@click.option(
-    "--claim-token", default=None,
-    help="Redeem the claim with this claim token instead of an ID.",
-)
-@click.option(
-    "--wait/--no-wait", default=True, show_default=True,
-    help="Wait until every device has moved.",
-)
-@click.option(
-    "--timeout", type=click.IntRange(min=0), default=120, show_default=True,
-    metavar="<seconds>", help="How long to wait for the move to finish.",
-)
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
-@_FORMAT_OPTION
-@pass_orgcfg
-@_claim_errors
-def claim_redeem(
-    org: Organization,
-    claim_id: str | None,
-    claim_token: str | None,
-    wait: bool,
-    timeout: int,
-    yes: bool,
-    output_format: str,
-) -> None:
-    """
-    Redeem a claim into this org: every device linked to it moves here and
-    is activated, and the org that sent it loses them. This can't be undone.
-
-    It first shows the claim (who it's from, how many devices) on stderr and
-    asks before going ahead. Pass --yes to skip the question, as a script
-    must: without a terminal to answer it, nothing is redeemed.
-
-    The move runs in the background; by default this waits until it
-    finishes. Rerunning it while the move is in progress is safe, and
-    doesn't ask again.
-
-    \b
-    Example:
-      hubblenetwork claim redeem <claim-id>
-      hubblenetwork claim redeem --claim-token "(01)12345678901231(21)ABC123"
-      hubblenetwork claim redeem <claim-id> --yes -f json
-    """
-    _require_claim_ref(claim_id, claim_token)
-    current = (
-        org.get_claim(claim_token=claim_token)
-        if claim_token is not None
-        else org.get_claim(claim_id)
-    )
-    claim_id = current.claim_id
-    ours = current.destination_org_id == org.org_id
-    is_tabular = output_format.lower() == "tabular"
-
-    if current.status == COMPLETED:
-        if not ours:
-            raise click.ClickException(
-                f"Claim {claim_id} was already redeemed"
-                + (f" by org {current.destination_org_id}" if current.destination_org_id else "")
-                + ". Its devices are no longer available.\n\n  See it:\n    "
-                + click.style(f"hubblenetwork claim get {claim_id}", fg="cyan")
-            )
-        _show_claim(current, org, output_format)
-        if is_tabular:
-            _org_summary(
-                "Already redeemed into this org.",
-                ["nothing to do"],
-                ["See the devices:  hubblenetwork org list-devices"],
-            )
-        return
-    if current.status == IN_PROGRESS:
-        if not ours:
-            raise click.ClickException(
-                f"Claim {claim_id} is already being redeemed by another org.\n\n"
-                "  See where it stands:\n    "
-                + click.style(f"hubblenetwork claim get {claim_id}", fg="cyan")
-            )
-        # Already committed by this org: rerunning only rejoins the move.
-        click.secho(
-            f"  Claim {claim_id} is already moving into this org; rejoining.",
-            dim=True, err=True,
-        )
-    else:
-        _confirm_redeem(current, org, yes)
-
-    if is_tabular:
-        _org_heading("Redeeming", claim_id, f"into {org.name}")
-
-    last_note = 0.0
-
-    def on_poll(c: DeviceClaim, elapsed: float) -> None:
-        nonlocal last_note
-        if is_tabular and elapsed - last_note >= _REDEEM_PROGRESS_EVERY:
-            last_note = elapsed
-            click.secho(
-                f"  moving devices{termcaps.sep_pad()}{c.status}{termcaps.sep_pad()}{elapsed:.0f}s",
-                dim=True,
-                err=True,
-            )
-
-    c = org.redeem_claim(claim_id, wait=wait, timeout=timeout, on_poll=on_poll)
-    _show_claim(c, org, output_format)
-    if c.status == COMPLETED:
-        if is_tabular:
-            n = c.device_count
-            moved = f"{n} device{'s' if n != 1 else ''}" if n is not None else "Its devices"
-            _org_summary(
-                "Claim redeemed.",
-                [f"{moved} now in this org, activated"],
-                ["See them:  hubblenetwork org list-devices"],
-            )
-        return
-    if is_tabular:
-        _org_summary(
-            f"Still {c.status}.",
-            ["the devices are moving in the background"],
-            [f"Check on it:  hubblenetwork claim get {claim_id}"],
-        )
-    if wait:
-        raise SystemExit(1)
-
-
-@claim.command("register-device", short_help="Register new devices into claims")
+@org.command("register-device", short_help="Register new devices and get their keys")
 @click.option(
     "--count", "-n", type=click.IntRange(min=1), default=1, show_default=True,
     help="How many devices to register.",
@@ -5305,27 +5097,22 @@ def claim_redeem(
     help="Link every new device to this existing claim.",
 )
 @click.option(
-    "--new-claim", is_flag=True, default=False,
+    "--claimable", is_flag=True, default=False,
     help="Give each device a claim of its own; its claim ID is the device ID.",
 )
 @click.option(
     "--destination-org", default=None, metavar="<org-id>",
-    help="With --new-claim: the only org allowed to redeem the new claims.",
-)
-@click.option(
-    "--deactivated", is_flag=True, default=False,
-    help="Create the devices deactivated, costing nothing until claimed.",
+    help="With --claimable: the only org allowed to redeem the new claims.",
 )
 @_registration_options
 @_FORMAT_OPTION
 @pass_orgcfg
-def claim_register_device(
+def register_device(
     org: Organization,
     count: int,
     claim_id: str | None,
-    new_claim: bool,
+    claimable: bool,
     destination_org: str | None,
-    deactivated: bool,
     encryption: str | None,
     counter_source: str | None,
     period_seconds: int | None,
@@ -5333,17 +5120,13 @@ def claim_register_device(
     output_format: str,
 ) -> None:
     """
-    Register new devices and link them to claims in the same request: all to
-    one existing claim (--claim), or each to a claim of its own (--new-claim).
-    Prints each device's ID and key.
+    Register new devices and print each one's ID and key.
 
-    --deactivated keeps factory inventory off the network, at no cost, until
-    a customer redeems its claim, which activates it. The cloud doesn't
-    resolve a deactivated device's packets until it is activated or claimed,
-    so test one beaconing with its key, not its device ID:
-
-    \b
-      hubblenetwork ble validate --key <key>
+    To hand them to another org, make them claimable in the same request:
+    each in a claim of its own (--claimable), or all in one existing claim
+    (--claim). With --claimable, each device's claim ID is its device ID. Add
+    --destination-org to say which org may redeem the claims; without it they
+    are directionless, and whoever presents a claim ID first can redeem it.
 
     More than 1000 devices are sent 1000 per request. If a request fails
     partway, the devices already registered are still printed with their
@@ -5351,19 +5134,24 @@ def claim_register_device(
 
     \b
     Example:
-      hubblenetwork claim register-device -n 10 --claim <claim-id> --deactivated
-      hubblenetwork claim register-device -n 10 --new-claim --deactivated
+      hubblenetwork org register-device
+      hubblenetwork org register-device -n 10 --claimable
+      hubblenetwork org register-device -n 10 --claimable --destination-org <org-id>
+      hubblenetwork org register-device -n 10 --claim <claim-id>
     """
-    if claim_id is not None and new_claim:
-        raise click.UsageError("Give at most one of --claim / --new-claim.")
-    if destination_org is not None and not new_claim:
+    if period_seconds is not None and period_exponent is not None:
+        raise click.UsageError("provide at most one of --period-seconds / --period-exponent")
+    if claim_id is not None and claimable:
+        raise click.UsageError("Give at most one of --claim / --claimable.")
+    if destination_org is not None and not claimable:
         raise click.UsageError(
-            "--destination-org applies to --new-claim only. An existing claim's"
+            "--destination-org applies to --claimable only. An existing claim's"
             " destination is set on the claim:\n    "
             + click.style("hubblenetwork claim update <claim-id> --destination-org <org-id>", fg="cyan")
         )
+    _registration_notes(encryption, counter_source, period_seconds, period_exponent)
     is_tabular = output_format.lower() == "tabular"
-    linking = bool(claim_id or new_claim)
+    linking = bool(claim_id or claimable)
     batches = -(-count // cloud.REGISTER_BATCH_LIMIT)
 
     def on_batch(done: int, total: int) -> None:
@@ -5383,9 +5171,8 @@ def claim_register_device(
             counter_source=counter_source,
             period_seconds=period_seconds,
             period_exponent=period_exponent,
-            activated=False if deactivated else None,
             claim_id=claim_id,
-            new_claim=new_claim,
+            claimable=claimable,
             destination_org_id=destination_org,
             on_batch=on_batch,
         )
@@ -5411,26 +5198,44 @@ def claim_register_device(
     if not is_tabular:
         return
 
-    if deactivated:
-        state = "deactivated until claimed"
-    elif all(d.active for d in devices):
-        state = "active"
-    else:
-        # The cloud reports activation only if it finished within the request.
-        state = "activating"
-    details = [state]
-    notes = []
+    details: list[str] = []
+    notes: list[str] = []
     if claim_id:
         details.append(f"linked to claim {claim_id}")
-        notes.append(f"Hand them over:  send {claim_id} to the recipient, who runs")
-        notes.append(f"  hubblenetwork claim redeem {claim_id}")
-    elif new_claim:
+        notes.append(f"Hand them over:  send claim ID {claim_id} to the recipient.")
+    elif claimable:
         details.append("each in its own claim (claim ID = device ID)")
-        notes.append("Hand one over:  send its device ID to the recipient, who runs")
-        notes.append("  hubblenetwork claim redeem <claim-id>")
-    if deactivated:
-        notes.append("Test one beaconing:  hubblenetwork ble validate --key <key>")
+        if destination_org:
+            details.append(f"redeemable by org {destination_org} only")
+        notes.append("Hand one over:  send its device ID (its claim ID) to the recipient.")
     _org_summary(f"{len(devices)} registered", details, notes)
+
+
+def _registration_notes(encryption, counter_source, period_seconds, period_exponent) -> None:
+    """Say which non-default encryption settings a registration will use."""
+    notes = []
+    if encryption:
+        notes.append(f'Overriding default encryption, using "{encryption}"')
+    if counter_source:
+        notes.append(f'EID rotation counter source: "{counter_source}"')
+    if period_seconds is not None:
+        notes.append(f"EID rotation period: {period_seconds}s")
+    if period_exponent is not None:
+        notes.append(
+            f"EID rotation period exponent: {period_exponent}"
+            f" ({_format_period_exponent(period_exponent)})"
+        )
+    if (
+        encryption == "AES-128-EAX"
+        and counter_source == DEVICE_UPTIME
+        and period_seconds is None
+        and period_exponent is None
+    ):
+        notes.append(
+            f"Using default EID rotation period exponent: 15 ({_format_period_exponent(15)})"
+        )
+    for note in notes:
+        click.secho(f"[INFO] {note}", err=True)
 
 
 def _print_registered_devices(devices: list, org: Organization, output_format: str) -> None:
@@ -5439,7 +5244,7 @@ def _print_registered_devices(devices: list, org: Organization, output_format: s
     if output_format.lower() == "json":
         click.echo(json.dumps(
             [
-                {"device_id": d.id, "key": key, "claim_id": d.claim_id, "activated": d.active}
+                {"device_id": d.id, "key": key, "claim_id": d.claim_id}
                 for d, key in zip(devices, keys)
             ],
             indent=2,
@@ -5487,46 +5292,6 @@ def _partial_register_failure(
         f" only once.\n  Register the rest with the same options and -n {requested - done}."
     )
     return err
-
-
-@claim.command("activate", short_help="Activate devices so they can report")
-@_device_ids_argument("activate")
-@pass_orgcfg
-@_claim_errors
-def claim_activate(org: Organization, device_ids: tuple) -> None:
-    """
-    Activate devices: the cloud starts resolving their packets (and billing
-    for them). Redeeming a claim does this for you; use it to test factory
-    inventory. The cloud applies it in the background.
-
-    \b
-    Example:
-      hubblenetwork claim activate <id>
-    """
-    _for_each_device(
-        device_ids, lambda d: org.set_device_activated(d, True), "activation requested",
-        "Requested activation for {n}; the cloud applies it in the background",
-    )
-
-
-@claim.command("deactivate", short_help="Take devices off the network until claimed")
-@_device_ids_argument("deactivate")
-@pass_orgcfg
-@_claim_errors
-def claim_deactivate(org: Organization, device_ids: tuple) -> None:
-    """
-    Deactivate devices: the cloud stops generating their EIDs, so they cost
-    nothing and their packets don't resolve until reactivated or claimed.
-    Needs the can_deactivate_devices entitlement.
-
-    \b
-    Example:
-      hubblenetwork claim deactivate <id>
-    """
-    _for_each_device(
-        device_ids, lambda d: org.set_device_activated(d, False), "deactivation requested",
-        "Requested deactivation for {n}; the cloud applies it in the background",
-    )
 
 
 # ---------------------------------------------------------------------------

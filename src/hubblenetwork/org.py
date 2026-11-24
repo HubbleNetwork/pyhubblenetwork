@@ -7,13 +7,15 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 
 from . import cloud
-from .claim import CLAIM_STATUSES, COMPLETED, DeviceClaim
+from .claim import CLAIM_STATUSES, DeviceClaim
 from .crypto import DEVICE_UPTIME, UNIX_TIME
 from .device import Device
 from .errors import (
     BackendError,
     InvalidCredentialsError,
     PartialRegistrationError,
+    PermissionDeniedError,
+    RateLimitError,
     ValidationError,
 )
 from .packets import AesEaxPacket, DecryptedPacket, EncryptedPacket, Location
@@ -106,6 +108,9 @@ class Organization:
         period_seconds: int | None = None,
         period_exponent: int | None = None,
         tags: dict[str, str] | None = None,
+        *,
+        claimable: bool = False,
+        destination_org_id: str | None = None,
     ) -> Device:
         """
         Register a new device in this organization and return it.
@@ -121,6 +126,10 @@ class Organization:
                              when encryption='AES-128-EAX' and counter_source='DEVICE_UPTIME'.
                              Mutually exclusive with period_seconds.
             tags: Optional custom key/value tags applied at registration.
+            claimable: Put the device in a claim of its own, whose claim ID is
+                       the device's ID. See :meth:`register_devices`.
+            destination_org_id: With ``claimable``, the only org allowed to
+                                redeem the claim. Omit for directionless.
         """
         return self.register_devices(
             1,
@@ -129,6 +138,8 @@ class Organization:
             period_seconds=period_seconds,
             period_exponent=period_exponent,
             tags=tags,
+            claimable=claimable,
+            destination_org_id=destination_org_id,
         )[0]
 
     def register_devices(
@@ -140,9 +151,8 @@ class Organization:
         period_exponent: int | None = None,
         tags: dict[str, str] | None = None,
         *,
-        activated: bool | None = None,
         claim_id: str | None = None,
-        new_claim: bool = False,
+        claimable: bool = False,
         destination_org_id: str | None = None,
         on_batch: Callable[[int, int], None] | None = None,
     ) -> list[Device]:
@@ -157,14 +167,11 @@ class Organization:
         Takes the same encryption options as :meth:`register_device`, plus:
 
         Args:
-            activated: ``False`` creates the devices deactivated, so they cost
-                       nothing on the decode path until claimed. Needs the
-                       ``can_deactivate_devices`` entitlement.
             claim_id: Link every device to this existing AVAILABLE claim.
-            new_claim: Give each device a claim of its own, whose claim ID is
+            claimable: Give each device a claim of its own, whose claim ID is
                        the device's ID.
             destination_org_id: The org allowed to redeem the new claims
-                                (``new_claim`` only; omit for directionless).
+                                (``claimable`` only; omit for directionless).
 
         Linking needs the ``can_create_device_claims`` entitlement. The cloud
         links after creating the devices and does not roll back, so if the
@@ -196,15 +203,15 @@ class Organization:
                 raise ValidationError(
                     "period_seconds/period_exponent requires counter_source='DEVICE_UPTIME'"
                 )
-        if claim_id is not None and new_claim:
-            raise ValidationError("provide at most one of claim_id, new_claim")
-        if destination_org_id is not None and not new_claim:
-            raise ValidationError("destination_org_id requires new_claim=True")
+        if claim_id is not None and claimable:
+            raise ValidationError("provide at most one of claim_id, claimable")
+        if destination_org_id is not None and not claimable:
+            raise ValidationError("destination_org_id requires claimable=True")
 
         claim_entry: dict | None = None
         if claim_id is not None:
             claim_entry = {"claim_id": claim_id}
-        elif new_claim:
+        elif claimable:
             claim_entry = {"new_claim_using_device_id": True}
             if destination_org_id is not None:
                 claim_entry["destination_org_id"] = destination_org_id
@@ -222,12 +229,11 @@ class Organization:
                     period_exponent=period_exponent,
                     tags=tags,
                     n_devices=n,
-                    activated=activated,
                     # One entry per device in this request.
                     device_claims=[claim_entry] * n if claim_entry else None,
                 )
                 batch = [
-                    self._registered_device(item, claim_id, new_claim)
+                    self._registered_device(item, claim_id, claimable)
                     for item in resp["devices"]
                 ]
                 if not batch:
@@ -247,7 +253,7 @@ class Organization:
         return devices
 
     @staticmethod
-    def _registered_device(item: dict, claim_id: str | None, new_claim: bool) -> Device:
+    def _registered_device(item: dict, claim_id: str | None, claimable: bool) -> Device:
         device_id = item["device_id"]
         return Device(
             id=device_id,
@@ -256,7 +262,7 @@ class Organization:
             created_ts=item.get("created_ts"),
             active=item.get("activated"),
             # A new claim takes the device's own ID.
-            claim_id=device_id if new_claim else claim_id,
+            claim_id=device_id if claimable else claim_id,
         )
 
     def set_device_name(self, device_id: str, name: str) -> Device:
@@ -297,18 +303,6 @@ class Organization:
             )
         )
 
-    def set_device_activated(self, device_id: str, activated: bool) -> None:
-        """
-        Activate or deactivate a device. The cloud applies it asynchronously.
-        Deactivating needs the ``can_deactivate_devices`` entitlement.
-        """
-        cloud.set_device_activated(
-            credentials=self.credentials,
-            env=self.env,
-            device_id=device_id,
-            activated=activated,
-        )
-
     # -- device claims ------------------------------------------------------
 
     def create_claim(
@@ -316,9 +310,12 @@ class Organization:
         destination_org_id: str | None = None,
         claim_token: str | None = None,
         name: str | None = None,
+        device_ids: Iterable[str] | None = None,
     ) -> DeviceClaim:
         """
-        Create an empty claim, to link devices to afterwards.
+        Create a claim, and link ``device_ids`` (devices already registered in
+        this org) to it. Without ``device_ids`` the claim starts empty, to link
+        devices to afterwards.
 
         Args:
             destination_org_id: The only org allowed to redeem it. Omit for a
@@ -327,10 +324,13 @@ class Organization:
             claim_token: An alternate ID to look the claim up by: a UUID or a
                          GS1-128 payload starting with AI 01 or 21.
             name: A label, up to 250 characters.
+            device_ids: Devices to link to the new claim. If linking fails,
+                        the new claim is deleted again before the error is
+                        raised, so no empty claim is left behind.
 
         Needs the ``can_create_device_claims`` entitlement.
         """
-        return DeviceClaim.from_json(
+        claim = DeviceClaim.from_json(
             cloud.create_claim(
                 credentials=self.credentials,
                 env=self.env,
@@ -339,17 +339,78 @@ class Organization:
                 name=name,
             )
         )
+        ids = list(dict.fromkeys(device_ids or ()))
+        if not ids:
+            return claim
+        try:
+            self.link_devices(ids, claim.claim_id)
+        except BaseException:
+            # Requests are all-or-nothing per 1000 devices, so a failure can
+            # leave earlier batches linked; deleting the claim unlinks them.
+            try:
+                self.delete_claim(claim.claim_id)
+            except BackendError:
+                pass  # Report the original failure, not the cleanup's.
+            raise
+        claim.device_count = len(ids)
+        return claim
+
+    def claim_devices(
+        self,
+        device_ids: Iterable[str],
+        destination_org_id: str | None = None,
+        name: str | None = None,
+        on_claim: Callable[[str, DeviceClaim | None, BackendError | None], None] | None = None,
+    ) -> dict[str, DeviceClaim]:
+        """
+        Give each existing device a claim of its own: one claim per device,
+        each with that device linked. The register-time equivalent is
+        ``register_devices(..., claimable=True)``.
+
+        Args:
+            device_ids: Devices already registered in this org. Repeats are
+                        claimed once.
+            destination_org_id: The only org allowed to redeem the claims.
+                                Omit for directionless claims.
+            name: A label given to every claim.
+            on_claim: Called as ``on_claim(device_id, claim, error)`` after each
+                      device: ``claim`` on success, ``error`` on failure.
+
+        A device that fails (not in this org, already in a claim that isn't
+        AVAILABLE) does not stop the rest; its claim is deleted again. A
+        missing entitlement or scope, or a rate limit, would fail every device
+        the same way, so ``PermissionDeniedError`` and ``RateLimitError`` stop
+        the run and are raised.
+
+        Returns:
+            The claims created, keyed by device ID, for the devices that worked.
+        """
+        claims: dict[str, DeviceClaim] = {}
+        for device_id in dict.fromkeys(device_ids):
+            try:
+                claim = self.create_claim(
+                    destination_org_id=destination_org_id,
+                    name=name,
+                    device_ids=[device_id],
+                )
+            except (PermissionDeniedError, RateLimitError):
+                raise
+            except BackendError as exc:
+                if on_claim:
+                    on_claim(device_id, None, exc)
+                continue
+            claims[device_id] = claim
+            if on_claim:
+                on_claim(device_id, claim, None)
+        return claims
 
     def iter_claims(
         self,
-        incoming: bool = False,
         status: str | None = None,
         on_page: Callable[[int, int], None] | None = None,
     ) -> Iterator[DeviceClaim]:
         """
-        Yield claims page by page: the ones this org created, or with
-        ``incoming=True`` the ones pinned to this org as destination.
-        Directionless claims are never incoming; they are redeemed by ID.
+        Yield the claims this org created, page by page.
 
         Args:
             status: Only claims in this status (AVAILABLE, IN_PROGRESS, COMPLETED).
@@ -363,7 +424,6 @@ class Organization:
             return cloud.list_claims(
                 credentials=self.credentials,
                 env=self.env,
-                role="destination" if incoming else "source",
                 status=status,
                 continuation_token=token,
             )
@@ -372,10 +432,10 @@ class Organization:
             yield DeviceClaim.from_json(item)
 
     def list_claims(
-        self, incoming: bool = False, status: str | None = None
+        self, status: str | None = None
     ) -> list[DeviceClaim]:
         """:meth:`iter_claims`, collected into a list."""
-        return list(self.iter_claims(incoming=incoming, status=status))
+        return list(self.iter_claims(status=status))
 
     def get_claim(
         self, claim_id: str | None = None, *, claim_token: str | None = None
@@ -491,47 +551,6 @@ class Organization:
             )
             updated.extend(d["id"] for d in devices if d.get("id"))
         return updated
-
-    def redeem_claim(
-        self,
-        claim_id: str,
-        wait: bool = True,
-        timeout: float = 120.0,
-        poll_interval: float = 2.0,
-        on_poll: Callable[[DeviceClaim, float], None] | None = None,
-    ) -> DeviceClaim:
-        """
-        Redeem a claim into this org: its devices move here and are activated.
-
-        The cloud does the move in the background. With ``wait`` this polls
-        until the claim is COMPLETED or ``timeout`` seconds pass, and returns
-        the latest claim either way, so check ``status``. Safe to call again
-        while the claim is IN_PROGRESS for this org.
-
-        Args:
-            on_poll: Called as ``on_poll(claim, elapsed_seconds)`` after each poll.
-
-        Raises:
-            NotFoundError: no such claim, or it is pinned to another org.
-            ConflictError: already COMPLETED, or otherwise not redeemable.
-        """
-        claim = DeviceClaim.from_json(
-            cloud.redeem_claim(
-                credentials=self.credentials, env=self.env, claim_id=claim_id
-            )
-        )
-        if not wait:
-            return claim
-        start = time.monotonic()
-        while claim.status != COMPLETED:
-            elapsed = time.monotonic() - start
-            if elapsed >= timeout:
-                break
-            time.sleep(min(poll_interval, max(0.0, timeout - elapsed)))
-            claim = self.get_claim(claim_id)
-            if on_poll:
-                on_poll(claim, time.monotonic() - start)
-        return claim
 
     def iter_devices(
         self, on_page: Callable[[int, int], None] | None = None
